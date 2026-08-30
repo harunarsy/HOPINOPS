@@ -6,6 +6,24 @@
 @media (max-width:900px){.content-grid{grid-template-columns:1fr}.side-column{display:grid;grid-template-columns:1fr 1fr}.welcome{align-items:flex-start;flex-direction:column}.save-state{min-width:0;width:100%}.login-page{grid-template-columns:1fr}.login-aside{display:none}.login-brand{margin-bottom:70px}.login-panel{min-height:100vh}}
 @media (max-width:650px){.topbar{height:62px;padding:0 16px}.topbar-right{gap:11px}.connection{font-size:0}.connection .dot{margin-right:0}.clock{font-size:9px}.brand strong{font-size:12px}.workspace{padding:31px 14px 60px}.welcome{margin-bottom:24px}.welcome h1{font-size:30px}.area-switch{display:grid;grid-template-columns:1fr 1fr}.switch-label{grid-column:1/-1;min-height:30px;padding:6px 8px}.area-button{min-width:0;padding:10px 8px}.tabs{gap:18px;overflow-x:auto;margin-bottom:21px}.tabs button{white-space:nowrap;font-size:11px}.hero-card{padding:21px;min-height:165px}.hero-card h2{font-size:23px}.hero-progress{margin-right:-5px}.progress-ring{width:74px;height:74px}.progress-ring strong{font-size:18px}.metric-row{grid-template-columns:1fr 1fr}.metric{min-height:94px;padding:13px}.metric strong{font-size:23px}.section-card,.side-card{padding:19px}.side-column{display:flex}.closing-header{align-items:flex-start}.closing-header h2{font-size:25px}.closing-score strong{font-size:25px}.closing-tools{align-items:stretch;flex-direction:column}.search-wrap{max-width:none}.filter-chips{justify-content:flex-start}.stock-row{grid-template-columns:1fr 108px;gap:10px;padding:12px}.stock-result{grid-column:1/-1;padding-left:37px;margin-top:-3px}.stock-info small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.stock-input>div{height:40px}.submit-bar{align-items:flex-start;flex-direction:column;gap:11px;bottom:10px}.submit-bar .primary-button{width:100%}.table-head,.table-row{grid-template-columns:minmax(0,1fr) 54px 62px;gap:7px}.table-row small{font-size:8px}.footer{padding:0 14px 19px;gap:15px;flex-direction:column}.report-summary{gap:7px}.report-summary strong{font-size:21px}.login-panel{padding:28px 24px}.login-brand{margin-bottom:55px}.login-copy h1{font-size:42px}.modal{padding:20px}.form-grid{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* Login dibuat fokus ke brand dan akses masuk. */
+.login-page{display:flex;justify-content:center}
+.login-panel{width:min(100%,760px)}
+.login-copy,.login-aside{display:none}
+.login-brand{margin-bottom:52px}
+.login-brand strong{font-size:clamp(25px,4vw,34px);letter-spacing:.16em}
+.login-brand small{font-size:11px;letter-spacing:.14em}
+@media (max-width:650px){.login-brand{margin-bottom:46px}.login-brand strong{font-size:25px}.login-brand small{font-size:10px}}
+
+/* Brand menjadi titik fokus utama di layar masuk. */
+.login-panel{align-items:center;text-align:center}
+.login-brand{justify-content:center;text-align:center;margin-bottom:64px}
+.login-brand strong{font-size:clamp(36px,7vw,54px);letter-spacing:.14em}
+.login-brand small{font-size:13px;letter-spacing:.18em}
+.login-panel form{width:min(100%,370px);text-align:left}
+.demo-hint{max-width:370px;text-align:center}
+@media (max-width:650px){.login-brand{margin-bottom:52px}.login-brand strong{font-size:35px}.login-brand small{font-size:11px}}
 *{scrollbar-color:#b1c9bd #edf2ee;scrollbar-width:thin}
 
 /* Runtime and data-entry refinements */
