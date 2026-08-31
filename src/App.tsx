@@ -2,8 +2,23 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 type Area = 'BAR' | 'KITCHEN';
 type Tab = 'overview' | 'opening' | 'movement' | 'closing' | 'reports';
+type ShiftType = 'SIANG' | 'MALAM' | 'FULL';
 type StockStatus = 'Belum diisi' | 'Aman' | 'Hampir habis' | 'Habis';
-type SubmissionState = Record<Area, boolean>;
+type ReportStatus = 'DRAFT' | 'SENT' | 'APPROVED' | 'NEEDS_CLARIFICATION';
+
+type Assignment = {
+  id: string; workDate: string; shift: ShiftType; area: Area; name: string; confirmedAt: string;
+};
+
+type OpeningRecord = {
+  reference: Record<string, number>;
+  counts: Record<string, number | null>;
+  reasons: Record<string, string>;
+  notes: Record<string, string>;
+  confirmedAt?: string;
+};
+
+type ClosingRecord = { status: ReportStatus; submittedAt?: string; revision: number };
 
 type Item = {
   id: string; area: Area; name: string; unit: string; low: number;
@@ -19,9 +34,14 @@ type Movement = {
 type AppData = {
   items: Record<Area, Item[]>;
   movements: Record<Area, Movement[]>;
-  submitted: SubmissionState;
-  submittedAt: Partial<Record<Area, string>>;
-  closingBaseline: Partial<Record<Area, Item[]>>;
+  openings: Record<string, OpeningRecord>;
+  reports: Record<string, ClosingRecord>;
+};
+
+const shiftOptions: Record<ShiftType, { label: string; hours: string }> = {
+  SIANG: { label: 'Shift siang', hours: '11.00–17.00 WIB' },
+  MALAM: { label: 'Shift malam', hours: '17.00–23.00 WIB' },
+  FULL: { label: 'Full shift', hours: '11.00–23.00 WIB' },
 };
 
 const seedItems: Record<Area, Item[]> = {
@@ -58,13 +78,13 @@ const seedMovements: Record<Area, Movement[]> = {
 const initialData: AppData = {
   items: seedItems,
   movements: seedMovements,
-  submitted: { BAR: false, KITCHEN: false },
-  submittedAt: {},
-  closingBaseline: {},
+  openings: {},
+  reports: {},
 };
 
-const storageKey = 'hopin-stock-demo-v03';
-const leaseKey = 'hopin-stock-local-lease-v01';
+const storageKey = 'hopin-stock-demo-v04';
+const assignmentStorageKey = 'hopin-assignment-demo-v01';
+const leaseKey = 'hopin-stock-local-lease-v02';
 const inactivityMs = 30 * 60 * 1000;
 const fmt = (value: number) => new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 }).format(value);
 const wibTime = (date = new Date()) => new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date);
@@ -80,6 +100,10 @@ const movementCategoryLabel = (category: string) => ({
   TRANSFER_OUT: 'Pindahan keluar',
   WASTE: 'Waste',
 }[category] ?? category);
+const workDateKey = (date = new Date()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+const assignmentId = (workDate: string, shift: ShiftType, area: Area) => `${workDate}:${shift}:${area}`;
+const shiftLabel = (shift: ShiftType) => shiftOptions[shift].label;
+const areaLabel = (area: Area) => area === 'BAR' ? 'Bar' : 'Kitchen';
 const initialsOf = (value: string) => {
   const parts = value.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return 'OP';
@@ -103,12 +127,20 @@ function loadData(): AppData {
     return {
       items: parsed.items,
       movements: parsed.movements ?? structuredClone(seedMovements),
-      submitted: parsed.submitted ?? { BAR: false, KITCHEN: false },
-      submittedAt: parsed.submittedAt ?? {},
-      closingBaseline: parsed.closingBaseline ?? {},
+      openings: parsed.openings ?? {},
+      reports: parsed.reports ?? {},
     };
   } catch {
     return structuredClone(initialData);
+  }
+}
+
+function loadAssignment(name: string): Assignment | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(assignmentStorageKey) || 'null') as Assignment | null;
+    return saved?.name === name.trim() && saved.workDate === workDateKey() ? saved : null;
+  } catch {
+    return null;
   }
 }
 
@@ -117,6 +149,10 @@ function App() {
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [assignment, setAssignment] = useState<Assignment | null>(null);
+  const [selectedShift, setSelectedShift] = useState<ShiftType>('SIANG');
+  const [selectedArea, setSelectedArea] = useState<Area>('BAR');
+  const [assignmentConfirmOpen, setAssignmentConfirmOpen] = useState(false);
   const [area, setArea] = useState<Area>('BAR');
   const [tab, setTab] = useState<Tab>('overview');
   const [data, setData] = useState<AppData>(loadData);
@@ -137,11 +173,13 @@ function App() {
   const toastTimer = useRef<number | undefined>(undefined);
 
   const current = data.items[area];
-  const baseline = data.closingBaseline[area];
-  const isSubmitted = data.submitted[area];
+  const activeOpening = assignment ? data.openings[assignment.id] : undefined;
+  const activeReport = assignment ? data.reports[assignment.id] : undefined;
+  const isSubmitted = activeReport?.status === 'SENT' || activeReport?.status === 'APPROVED' || activeReport?.status === 'NEEDS_CLARIFICATION';
   const systemBalance = (item: Item) => {
-    const frozen = baseline?.find((entry) => entry.id === item.id) ?? item;
-    return frozen.opening + frozen.incoming - frozen.outgoing;
+    const openingCount = activeOpening?.counts[item.id];
+    const openingValue = openingCount !== null && openingCount !== undefined ? openingCount : item.opening;
+    return openingValue + item.incoming - item.outgoing;
   };
 
   const stats = useMemo(() => {
@@ -153,7 +191,9 @@ function App() {
       empty: status.filter((value) => value === 'Habis').length,
       variance: current.filter((item) => item.closing !== null && item.closing !== systemBalance(item)).length,
     };
-  }, [current, baseline]);
+  }, [current, activeOpening]);
+  const openingConfirmed = Boolean(activeOpening?.confirmedAt);
+  const closingAvailable = assignment?.shift === 'MALAM' || assignment?.shift === 'FULL';
 
   const filtered = current.filter((item) => {
     const queryMatches = item.name.toLowerCase().includes(search.trim().toLowerCase());
@@ -173,7 +213,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-      setSyncLabel('Menyimpan...');
+    setSyncLabel('Menyimpan...');
     try {
       localStorage.setItem(storageKey, JSON.stringify(data));
       setSaveError('');
@@ -229,7 +269,35 @@ function App() {
       }
       localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: name.trim(), activeAt: Date.now() }));
     } catch { /* local lease is only a demo convenience */ }
+    const savedAssignment = loadAssignment(name);
+    setAssignment(savedAssignment);
+    if (savedAssignment) {
+      setArea(savedAssignment.area);
+      setTab('overview');
+    }
     setLoggedIn(true);
+  }
+
+  function confirmAssignment() {
+    const workDate = workDateKey();
+    const id = assignmentId(workDate, selectedShift, selectedArea);
+    const existing = data.openings[id];
+    const sourceItems = data.items[selectedArea];
+    const reference = existing?.reference ?? Object.fromEntries(sourceItems.map((item) => [item.id, item.opening + item.incoming - item.outgoing]));
+    const counts = existing?.counts ?? Object.fromEntries(sourceItems.map((item) => [item.id, item.closing]));
+    const record: OpeningRecord = existing ?? { reference, counts, reasons: {}, notes: {} };
+    const nextAssignment: Assignment = { id, workDate, shift: selectedShift, area: selectedArea, name: name.trim(), confirmedAt: new Date().toISOString() };
+    try { localStorage.setItem(assignmentStorageKey, JSON.stringify(nextAssignment)); } catch { /* local assignment is only a demo convenience */ }
+    setData((previous) => ({
+      ...previous,
+      openings: { ...previous.openings, [id]: record },
+      items: existing ? previous.items : { ...previous.items, [selectedArea]: sourceItems.map((item) => ({ ...item, closing: null, incoming: 0, outgoing: 0, updatedAt: undefined })) },
+      movements: existing ? previous.movements : { ...previous.movements, [selectedArea]: [] },
+    }));
+    setAssignment(nextAssignment);
+    setArea(selectedArea);
+    setTab('opening');
+    setAssignmentConfirmOpen(false);
   }
 
   function handleLogout() {
@@ -249,8 +317,19 @@ function App() {
 
   function goTab(next: Tab) {
     if (next !== 'closing') setEditingClosingId(null);
-    if (next === 'closing' && !data.closingBaseline[area]) {
-      setData((previous) => ({ ...previous, closingBaseline: { ...previous.closingBaseline, [area]: previous.items[area].map((item) => ({ ...item })) } }));
+    if (next === 'movement' && !openingConfirmed) {
+      setTab('opening');
+      showToast('Konfirmasi stok awal dulu sebelum mencatat perubahan.');
+      return;
+    }
+    if (next === 'closing' && !closingAvailable) {
+      showToast('Closing akhir dilakukan pada shift malam.');
+      return;
+    }
+    if (next === 'closing' && !openingConfirmed) {
+      setTab('opening');
+      showToast('Konfirmasi stok awal dulu sebelum mengisi closing.');
+      return;
     }
     setTab(next);
   }
@@ -265,7 +344,47 @@ function App() {
     updateItem(id, { closing: parsed !== null && Number.isFinite(parsed) ? parsed : null });
   }
 
+  function updateOpening(id: string, value: string) {
+    if (!assignment || openingConfirmed) return;
+    const parsed = value === '' ? null : Math.max(0, Number(value));
+    setData((previous) => {
+      const record = previous.openings[assignment.id];
+      if (!record) return previous;
+      return { ...previous, openings: { ...previous.openings, [assignment.id]: { ...record, counts: { ...record.counts, [id]: parsed !== null && Number.isFinite(parsed) ? parsed : null } } } };
+    });
+  }
+
+  function updateOpeningMeta(id: string, field: 'reason' | 'note', value: string) {
+    if (!assignment || openingConfirmed) return;
+    setData((previous) => {
+      const record = previous.openings[assignment.id];
+      if (!record) return previous;
+      const key = field === 'reason' ? 'reasons' : 'notes';
+      return { ...previous, openings: { ...previous.openings, [assignment.id]: { ...record, [key]: { ...record[key], [id]: value } } } };
+    });
+  }
+
+  function confirmOpening() {
+    if (!assignment || !activeOpening) return;
+    const missing = current.find((item) => activeOpening.counts[item.id] === null || activeOpening.counts[item.id] === undefined);
+    if (missing) { showToast(`${missing.name} belum diisi pada stok awal.`); return; }
+    const missingReason = current.find((item) => {
+      const count = activeOpening.counts[item.id] ?? 0;
+      return count !== activeOpening.reference[item.id] && (!activeOpening.reasons[item.id] || !activeOpening.notes[item.id]?.trim());
+    });
+    if (missingReason) { showToast(`Tambahkan alasan selisih stok awal untuk ${missingReason.name}.`); return; }
+    const confirmedAt = new Date().toISOString();
+    setData((previous) => ({
+      ...previous,
+      openings: { ...previous.openings, [assignment.id]: { ...activeOpening, confirmedAt } },
+      items: { ...previous.items, [area]: previous.items[area].map((item) => ({ ...item, opening: activeOpening.counts[item.id] ?? item.opening, incoming: 0, outgoing: 0, closing: null, updatedAt: confirmedAt })) },
+    }));
+    setTab('movement');
+    showToast(`Stok awal ${areaLabel(area)} dikonfirmasi · ${wibDateTime(confirmedAt)}`);
+  }
+
   function addMovement() {
+    if (!openingConfirmed) { showToast('Konfirmasi stok awal dulu sebelum mencatat perubahan.'); return; }
     if (isSubmitted) { showToast('Laporan area ini sudah dikirim. Catatan baru tidak bisa ditambahkan.'); return; }
     const selected = current.find((item) => item.id === movementItem) ?? current[0];
     const qty = Number(movementQty);
@@ -281,6 +400,8 @@ function App() {
   }
 
   function submitReport() {
+    if (!assignment || !closingAvailable) { showToast('Closing akhir hanya dikirim dari shift malam atau full shift.'); return; }
+    if (!openingConfirmed) { setTab('opening'); showToast('Konfirmasi stok awal dulu sebelum mengirim closing.'); return; }
     if (stats.filled < stats.total) {
       setTab('closing'); setFilter('Belum diisi');
       showToast(`${stats.total - stats.filled} item belum diisi. Pengiriman masih dikunci.`);
@@ -296,12 +417,13 @@ function App() {
       return;
     }
     const submittedAt = new Date().toISOString();
-    setData((previous) => ({ ...previous, submitted: { ...previous.submitted, [area]: true }, submittedAt: { ...previous.submittedAt, [area]: submittedAt } }));
-    showToast(`Laporan ${area === 'BAR' ? 'Bar' : 'Kitchen'} dikirim · ${wibDateTime(submittedAt)}`);
+    const revision = (activeReport?.revision ?? 0) + 1;
+    setData((previous) => ({ ...previous, reports: { ...previous.reports, [assignment.id]: { status: 'SENT', submittedAt, revision } } }));
+    showToast(`Laporan ${areaLabel(area)} terkirim ke supervisor · ${wibDateTime(submittedAt)}`);
   }
 
   async function copyReport() {
-    const text = createReportText(area, current, isSubmitted, data.submittedAt[area]);
+    const text = createReportText(area, current, isSubmitted, activeReport?.submittedAt, assignment?.shift);
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
       await navigator.clipboard.writeText(text);
@@ -310,6 +432,7 @@ function App() {
   }
 
   if (!loggedIn) return <Login name={name} setName={setName} pin={pin} setPin={setPin} error={loginError} onLogin={handleLogin} />;
+  if (!assignment) return <AssignmentPicker name={name} selectedShift={selectedShift} setSelectedShift={setSelectedShift} selectedArea={selectedArea} setSelectedArea={setSelectedArea} confirmOpen={assignmentConfirmOpen} setConfirmOpen={setAssignmentConfirmOpen} onConfirm={confirmAssignment} />;
 
   return (
     <div className="app-shell">
@@ -319,14 +442,14 @@ function App() {
       </header>
       {saveError && <div className="save-error" role="alert">{saveError}</div>}
       <main className="workspace">
-        <section className="welcome"><div><p className="eyebrow">SHIFT SIANG · 11.00–17.00 WIB</p><h1>Halo, {name}.</h1><p className="muted">Catat perubahan stok saat terjadi. Tutup shift dengan angka yang bisa dicek.</p></div><div className="save-state"><span className="save-icon">↻</span><span><strong>Tersimpan otomatis di perangkat</strong><small>{syncLabel}</small></span></div></section>
-        <section className="area-switch" aria-label="Pilih area kerja"><div className="switch-label"><span className="eyebrow">AREA SAYA</span><strong>Pilih area</strong></div>{(['BAR', 'KITCHEN'] as Area[]).map((option) => <button key={option} className={`area-button ${area === option ? 'selected' : ''}`} aria-pressed={area === option} onClick={() => switchArea(option)}><span className="area-symbol">{option === 'BAR' ? '◒' : '⌁'}</span><span><strong>{option === 'BAR' ? 'Bar' : 'Kitchen'}</strong><small>{data.items[option].length} item aktif</small></span>{area === option && <span className="check">✓</span>}</button>)}</section>
-        <nav className="tabs" aria-label="Navigasi operasi">{([['overview', 'Ringkasan'], ['opening', 'Stok awal'], ['movement', 'Perubahan'], ['closing', 'Stok akhir'], ['reports', 'Laporan']] as [Tab, string][]).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} onClick={() => goTab(key)}>{label}{key === 'closing' && stats.filled < stats.total && <span className="tab-count">{stats.total - stats.filled}</span>}</button>)}</nav>
-        {tab === 'overview' && <Overview area={area} stats={stats} items={current} submitted={isSubmitted} onTab={goTab} />}
-        {tab === 'opening' && <Opening area={area} items={current} onTab={goTab} />}
-        {tab === 'movement' && <MovementView area={area} movements={data.movements[area]} submitted={isSubmitted} onAdd={() => { setMovementItem(current[0]?.id ?? ''); setMovementOpen(true); }} />}
-        {tab === 'closing' && <Closing items={filtered} baseline={baseline ?? current} stats={stats} filter={filter} setFilter={setFilter} search={search} setSearch={setSearch} updateItem={updateItem} updateClosing={updateClosing} editingClosingId={editingClosingId} setEditingClosingId={setEditingClosingId} submitted={isSubmitted} submittedAt={data.submittedAt[area]} onSubmit={submitReport} />}
-        {tab === 'reports' && <Reports area={area} items={current} submitted={isSubmitted} submittedAt={data.submittedAt[area]} onCopy={copyReport} />}
+        <section className="welcome"><div><p className="eyebrow">{shiftLabel(assignment.shift)} · {shiftOptions[assignment.shift].hours}</p><h1>Halo, {name}.</h1><p className="muted">Catat perubahan stok saat terjadi. {closingAvailable ? 'Tutup shift dengan angka yang bisa dicek.' : 'Closing akhir dilakukan pada shift malam.'}</p></div><div className="save-state"><span className="save-icon">↻</span><span><strong>Tersimpan otomatis di perangkat</strong><small>{syncLabel}</small></span></div></section>
+        <section className="area-switch locked" aria-label="Penugasan area terkunci"><div className="switch-label"><span className="eyebrow">AREA TERKUNCI</span><strong>{areaLabel(area)}</strong></div><div className="area-button selected" aria-current="true"><span className="area-symbol">{area === 'BAR' ? '◒' : '⌁'}</span><span><strong>{areaLabel(area)}</strong><small>{shiftLabel(assignment.shift)}</small></span><span className="check">Terkunci</span></div></section>
+        <nav className="tabs" aria-label="Navigasi operasi">{([['overview', 'Ringkasan'], ['opening', 'Stok awal'], ['movement', 'Perubahan'], ...(closingAvailable ? [['closing', 'Stok akhir'] as [Tab, string]] : []), ['reports', 'Laporan']] as [Tab, string][]).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined} disabled={key === 'movement' && !openingConfirmed} onClick={() => goTab(key)}>{label}{key === 'closing' && stats.filled < stats.total && <span className="tab-count">{stats.total - stats.filled}</span>}</button>)}</nav>
+        {tab === 'overview' && <Overview area={area} shift={assignment.shift} stats={stats} items={current} submitted={isSubmitted} openingConfirmed={openingConfirmed} onTab={goTab} />}
+        {tab === 'opening' && <Opening area={area} shift={assignment.shift} items={current} opening={activeOpening} updateOpening={updateOpening} updateOpeningMeta={updateOpeningMeta} onConfirm={confirmOpening} onTab={goTab} />}
+        {tab === 'movement' && <MovementView area={area} shift={assignment.shift} movements={data.movements[area]} submitted={isSubmitted} openingConfirmed={openingConfirmed} onAdd={() => { setMovementItem(current[0]?.id ?? ''); setMovementOpen(true); }} />}
+        {tab === 'closing' && closingAvailable && <Closing items={filtered} baseline={activeOpening ? current : current} stats={stats} filter={filter} setFilter={setFilter} search={search} setSearch={setSearch} updateItem={updateItem} updateClosing={updateClosing} setEditingClosingId={setEditingClosingId} submitted={isSubmitted} submittedAt={activeReport?.submittedAt} onSubmit={submitReport} />}
+        {tab === 'reports' && <Reports area={area} shift={assignment.shift} items={current} submitted={isSubmitted} submittedAt={activeReport?.submittedAt} financeReady={Boolean(data.reports[`${assignment.workDate}:${assignment.shift}:BAR`]?.status === 'SENT' && data.reports[`${assignment.workDate}:${assignment.shift}:KITCHEN`]?.status === 'SENT')} onCopy={copyReport} />}
       </main>
       <footer className="footer"><span>v0.3 · Demo lokal · 1 outlet</span><span>Draf dipulihkan dari perangkat ini</span></footer>
       {movementOpen && <MovementModal area={area} items={current} type={movementType} setType={setMovementType} item={movementItem} setItem={setMovementItem} qty={movementQty} setQty={setMovementQty} category={movementCategory} setCategory={setMovementCategory} onClose={() => setMovementOpen(false)} onSave={addMovement} />}
@@ -335,29 +458,45 @@ function App() {
   );
 }
 
+function AssignmentPicker({ name, selectedShift, setSelectedShift, selectedArea, setSelectedArea, confirmOpen, setConfirmOpen, onConfirm }: { name: string; selectedShift: ShiftType; setSelectedShift: (value: ShiftType) => void; selectedArea: Area; setSelectedArea: (value: Area) => void; confirmOpen: boolean; setConfirmOpen: (value: boolean) => void; onConfirm: () => void }) {
+  return <div className="assignment-page"><section className="assignment-card"><p className="eyebrow">PENUGASAN HARI INI</p><h1>Mulai dengan pilihan yang tepat.</h1><p className="muted">Pilih shift dan area kerja. Pilihan ini akan terkunci setelah Anda mulai.</p><div className="assignment-group"><span className="assignment-label">Shift</span><div className="assignment-options">{(Object.keys(shiftOptions) as ShiftType[]).map((value) => <button key={value} className={selectedShift === value ? 'selected' : ''} aria-pressed={selectedShift === value} onClick={() => setSelectedShift(value)}><strong>{shiftOptions[value].label}</strong><small>{shiftOptions[value].hours}</small></button>)}</div></div><div className="assignment-group"><span className="assignment-label">Area kerja</span><div className="assignment-options area-options">{(['BAR', 'KITCHEN'] as Area[]).map((value) => <button key={value} className={selectedArea === value ? 'selected' : ''} aria-pressed={selectedArea === value} onClick={() => setSelectedArea(value)}><strong>{areaLabel(value)}</strong><small>{value === 'BAR' ? 'Kasir dan stok bar' : 'Stok bahan dan kitchen'}</small></button>)}</div></div><div className="assignment-summary"><span>Penugasan Anda</span><strong>{shiftLabel(selectedShift)} · {areaLabel(selectedArea)}</strong><small>{wibDate()} · {shiftOptions[selectedShift].hours}</small></div><button className="primary-button assignment-start" onClick={() => setConfirmOpen(true)}>Lanjutkan <span>→</span></button>{confirmOpen && <AssignmentConfirm shift={selectedShift} area={selectedArea} onCancel={() => setConfirmOpen(false)} onConfirm={onConfirm} />}</section></div>;
+}
+
+function AssignmentConfirm({ shift, area, onCancel, onConfirm }: { shift: ShiftType; area: Area; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop" role="presentation"><div className="modal assignment-confirm" role="dialog" aria-modal="true" aria-labelledby="assignment-confirm-title"><div className="modal-head"><div><p className="eyebrow">KONFIRMASI PENUGASAN</p><h2 id="assignment-confirm-title">Pastikan pilihan Anda.</h2></div></div><p className="muted">Anda akan masuk ke <strong>{shiftLabel(shift)}</strong>, area <strong>{areaLabel(area)}</strong>, tanggal <strong>{wibDate()}</strong>.</p><div className="assignment-warning"><strong>Setelah dimulai, shift dan area tidak dapat diganti dari akun ini.</strong><span>Logout tidak menghapus penugasan. Jika salah, hubungi supervisor untuk reset.</span></div><div className="modal-actions"><button className="outline-button" onClick={onCancel}>Kembali</button><button className="primary-button" onClick={onConfirm}>Mulai shift <span>→</span></button></div></div></div>;
+}
+
 function Login({ name, setName, pin, setPin, error, onLogin }: { name: string; setName: (value: string) => void; pin: string; setPin: (value: string) => void; error: string; onLogin: () => void }) {
   const [showPin, setShowPin] = useState(false);
   return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · DEMO LOKAL</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); onLogin(); }}><label>Nama atau peran<input autoComplete="username" value={name} onChange={(event) => setName(event.target.value)} placeholder="Contoh: PIC Bar" /></label><label>PIN demo<span className="password-field"><input type={showPin ? 'text' : 'password'} autoComplete="current-password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="••••" /><button type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></span></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" type="submit">Masuk ke aplikasi <span>→</span></button></form><p className="demo-hint">Demo: isi nama apa saja · PIN 1234 · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
 }
 
-function Overview({ area, stats, items, submitted, onTab }: { area: Area; stats: { total: number; filled: number; low: number; empty: number; variance: number }; items: Item[]; submitted: boolean; onTab: (tab: Tab) => void }) {
+function Overview({ area, shift, stats, items, submitted, openingConfirmed, onTab }: { area: Area; shift: ShiftType; stats: { total: number; filled: number; low: number; empty: number; variance: number }; items: Item[]; submitted: boolean; openingConfirmed: boolean; onTab: (tab: Tab) => void }) {
   const percentage = Math.round((stats.filled / stats.total) * 100);
-  return <div className="content-grid"><div className="main-column"><section className="hero-card"><div><p className="eyebrow">{submitted ? 'LAPORAN TERKIRIM · REVISI 01' : 'SHIFT SEDANG BERJALAN'}</p><h2>{area === 'BAR' ? 'Bar' : 'Kitchen'} <span>·</span> Shift siang</h2><p className="muted">Stok awal diambil dari penutupan terakhir. Catat perubahan hari ini di sini.</p></div><div className="hero-progress"><div className="progress-ring" style={{ '--progress': `${percentage}%` } as React.CSSProperties}><strong>{percentage}<small>%</small></strong></div><span>stok akhir terisi</span></div></section><section className="metric-row"><Metric label="Item terisi" value={`${stats.filled}/${stats.total}`} hint={stats.filled === stats.total ? 'Siap dikirim' : 'Masih ada yang kosong'} tone={stats.filled === stats.total ? 'good' : 'warn'} /><Metric label="Hampir habis" value={String(stats.low)} hint="Perlu dicek" tone="warn" /><Metric label="Habis" value={String(stats.empty)} hint="Perlu diisi ulang" tone="danger" /><Metric label="Berselisih" value={String(stats.variance)} hint="Perlu keterangan" tone="neutral" /></section><section className="section-card"><div className="section-heading"><div><p className="eyebrow">CEK CEPAT</p><h3>Perlu dicek</h3></div><button className="text-button" onClick={() => onTab('closing')}>Buka stok akhir <span>→</span></button></div><div className="attention-list">{items.filter((item) => statusOf(item) !== 'Aman').slice(0, 4).map((item) => <AttentionItem key={item.id} item={item} />)}{items.every((item) => statusOf(item) === 'Aman') && <div className="empty-state">Semua stok dalam kondisi aman. ✦</div>}</div></section></div><aside className="side-column"><section className="side-card shift-card"><p className="eyebrow">DETAIL SHIFT</p><div className="shift-time"><strong>11.00</strong><span>–</span><strong>17.00</strong></div><div className="shift-meta"><span><i className="green-dot" />Sedang berjalan</span><span>{wibDate()}</span></div><div className="thin-rule" /><dl><div><dt>Area</dt><dd>{area === 'BAR' ? 'Bar' : 'Kitchen'}</dd></div><div><dt>Peran</dt><dd>PIC {area === 'BAR' ? 'Bar' : 'Kitchen'}</dd></div><div><dt>Status</dt><dd>{submitted ? 'Terkirim · 01' : 'Draf · 01'}</dd></div></dl></section><section className="side-card action-card"><p className="eyebrow">LANGKAH BERIKUT</p><h3>{stats.filled < stats.total ? 'Lengkapi stok akhir' : 'Periksa dan kirim'}</h3><p>{stats.filled < stats.total ? `${stats.total - stats.filled} item belum dihitung.` : 'Semua item sudah diisi. Periksa keterangan untuk setiap selisih.'}</p><button className="primary-button small" onClick={() => onTab(stats.filled < stats.total ? 'closing' : 'reports')}>{stats.filled < stats.total ? 'Isi stok akhir' : 'Periksa laporan'} <span>→</span></button></section></aside></div>;
+  const shiftHours = shiftOptions[shift].hours.replace(' WIB', '').split('–');
+  const nextTab: Tab = !openingConfirmed ? 'opening' : shift === 'SIANG' ? 'movement' : 'closing';
+  return <div className="content-grid"><div className="main-column"><section className="hero-card"><div><p className="eyebrow">{submitted ? 'LAPORAN TERKIRIM · REVISI 01' : 'SHIFT SEDANG BERJALAN'}</p><h2>{areaLabel(area)} <span>·</span> {shiftLabel(shift)}</h2><p className="muted">{openingConfirmed ? 'Catat perubahan stok saat terjadi.' : 'Selesaikan stok awal sebelum mulai mencatat perubahan.'}</p></div><div className="hero-progress"><div className="progress-ring" style={{ '--progress': `${percentage}%` } as React.CSSProperties}><strong>{percentage}<small>%</small></strong></div><span>stok akhir terisi</span></div></section><section className="metric-row"><Metric label="Item terisi" value={`${stats.filled}/${stats.total}`} hint={stats.filled === stats.total ? 'Siap dikirim' : 'Masih ada yang kosong'} tone={stats.filled === stats.total ? 'good' : 'warn'} /><Metric label="Hampir habis" value={String(stats.low)} hint="Perlu dicek" tone="warn" /><Metric label="Habis" value={String(stats.empty)} hint="Perlu diisi ulang" tone="danger" /><Metric label="Berselisih" value={String(stats.variance)} hint="Perlu keterangan" tone="neutral" /></section><section className="section-card"><div className="section-heading"><div><p className="eyebrow">CEK CEPAT</p><h3>Perlu dicek</h3></div><button className="text-button" onClick={() => onTab(nextTab)}>{openingConfirmed ? shift === 'SIANG' ? 'Buka perubahan' : 'Buka stok akhir' : 'Isi stok awal'} <span>→</span></button></div><div className="attention-list">{items.filter((item) => statusOf(item) !== 'Aman').slice(0, 4).map((item) => <AttentionItem key={item.id} item={item} />)}{items.every((item) => statusOf(item) === 'Aman') && <div className="empty-state">Semua stok dalam kondisi aman. ✦</div>}</div></section></div><aside className="side-column"><section className="side-card shift-card"><p className="eyebrow">DETAIL SHIFT</p><div className="shift-time"><strong>{shiftHours[0]}</strong><span>–</span><strong>{shiftHours[1]}</strong></div><div className="shift-meta"><span><i className="green-dot" />Sedang berjalan</span><span>{wibDate()}</span></div><div className="thin-rule" /><dl><div><dt>Area</dt><dd>{areaLabel(area)}</dd></div><div><dt>Peran</dt><dd>PIC {areaLabel(area)}</dd></div><div><dt>Status</dt><dd>{submitted ? 'Terkirim · 01' : openingConfirmed ? 'Draf · 01' : 'Opening belum dikonfirmasi'}</dd></div></dl></section><section className="side-card action-card"><p className="eyebrow">LANGKAH BERIKUT</p><h3>{!openingConfirmed ? 'Konfirmasi stok awal' : shift === 'SIANG' ? 'Catat perubahan stok' : stats.filled < stats.total ? 'Lengkapi stok akhir' : 'Periksa dan kirim'}</h3><p>{!openingConfirmed ? 'Hitung semua item lalu konfirmasi angka awal.' : shift === 'SIANG' ? 'Catat barang masuk atau pemakaian saat terjadi.' : stats.filled < stats.total ? `${stats.total - stats.filled} item belum dihitung.` : 'Semua item sudah diisi. Periksa keterangan untuk setiap selisih.'}</p><button className="primary-button small" onClick={() => onTab(nextTab)}>{!openingConfirmed ? 'Isi stok awal' : shift === 'SIANG' ? 'Buka perubahan' : stats.filled < stats.total ? 'Isi stok akhir' : 'Periksa laporan'} <span>→</span></button></section></aside></div>;
 }
 
 function Metric({ label, value, hint, tone }: { label: string; value: string; hint: string; tone: string }) { return <div className={`metric ${tone}`}><span className="metric-label">{label}</span><strong>{value}</strong><small>{hint}</small></div>; }
 function StatusMark({ status }: { status: StockStatus }) { const tone = status === 'Habis' ? 'danger' : status === 'Hampir habis' || status === 'Belum diisi' ? 'warning' : 'success'; const glyph = status === 'Habis' ? '!' : status === 'Hampir habis' ? '~' : status === 'Belum diisi' ? '·' : '✓'; return <span className={`status-mark ${tone}`} aria-label={status}>{glyph}</span>; }
 function AttentionItem({ item }: { item: Item }) { const status = statusOf(item); return <div className="attention-item"><StatusMark status={status} /><div><strong>{item.name}</strong><small>{item.closing === null ? 'Belum diisi' : `${fmt(item.closing)} ${item.unit}`} · {status}</small></div><span className="chevron">›</span></div>; }
 
-function Opening({ area, items, onTab }: { area: Area; items: Item[]; onTab: (tab: Tab) => void }) {
-  return <div className="content-grid"><div className="main-column"><section className="section-card opening-intro"><p className="eyebrow">STOK AWAL · {area}</p><h2>Stok awal shift ini</h2><p className="muted">Angka ini berasal dari penutupan terakhir. Cek jumlah fisik saat serah-terima sebelum mencatat perubahan.</p><div className="opening-callout"><span className="callout-icon">↗</span><div><strong>Stok awal tersimpan</strong><p>Stok awal menjadi patokan shift. Kalau ada koreksi saat serah-terima, catat sebagai perubahan dan beri alasannya.</p></div></div></section><section className="section-card"><div className="section-heading"><div><p className="eyebrow">PATOKAN STOK AWAL</p><h3>{items.length} item</h3></div><span className="tag neutral">Tidak bisa diedit</span></div><div className="opening-table"><div className="table-head"><span>Item</span><span>Satuan</span><span>Stok awal</span></div>{items.map((item) => <div className="table-row" key={item.id}><span><strong>{item.name}</strong><small>Mulai menipis di: {fmt(item.low)} {item.unit}</small></span><span className="unit-pill">{item.unit}</span><strong>{fmt(item.opening)}</strong></div>)}</div></section></div><aside className="side-column"><section className="side-card action-card"><p className="eyebrow">SEBELUM MULAI</p><h3>Catat perubahan</h3><p>Stok awal sudah ada. Tambahkan barang masuk atau pemakaian saat terjadi.</p><button className="primary-button small" onClick={() => onTab('movement')}>Buka perubahan <span>→</span></button></section></aside></div>;
+function Opening({ area, shift, items, opening, updateOpening, updateOpeningMeta, onConfirm, onTab }: { area: Area; shift: ShiftType; items: Item[]; opening?: OpeningRecord; updateOpening: (id: string, value: string) => void; updateOpeningMeta: (id: string, field: 'reason' | 'note', value: string) => void; onConfirm: () => void; onTab: (tab: Tab) => void }) {
+  const confirmed = Boolean(opening?.confirmedAt);
+  const complete = Boolean(opening) && items.every((item) => opening?.counts[item.id] !== null && opening?.counts[item.id] !== undefined);
+  const hasMissingReason = Boolean(opening) && items.some((item) => {
+    const count = opening?.counts[item.id];
+    return count !== null && count !== undefined && count !== opening?.reference[item.id] && (!opening?.reasons[item.id] || !opening?.notes[item.id]?.trim());
+  });
+  return <div className="content-grid"><div className="main-column"><section className="section-card opening-intro"><p className="eyebrow">STOK AWAL · {areaLabel(area)}</p><h2>{shiftLabel(shift)} dimulai di sini</h2><p className="muted">Bandingkan angka fisik dengan saldo referensi sebelum mencatat aktivitas shift.</p><div className="opening-callout"><span className="callout-icon">↗</span><div><strong>{confirmed ? 'Stok awal sudah dikonfirmasi' : 'Konfirmasi stok awal sebelum mulai'}</strong><p>{confirmed ? `Dikonfirmasi ${wibDateTime(opening?.confirmedAt ?? new Date().toISOString())}. Angka ini menjadi patokan shift.` : 'Isi semua item. Jika ada selisih, pilih alasan dan tulis catatan singkat.'}</p></div></div></section><section className="section-card"><div className="section-heading"><div><p className="eyebrow">REFERENSI STOK</p><h3>{items.length} item</h3></div><span className="tag neutral">{confirmed ? 'Terkunci' : 'Belum dikonfirmasi'}</span></div><div className="opening-table"><div className="table-head"><span>Item</span><span>Referensi</span><span>Hitungan awal</span></div>{items.map((item) => { const reference = opening?.reference[item.id] ?? item.opening; const count = opening?.counts[item.id] ?? null; const variance = count === null ? null : count - reference; return <div className={`table-row opening-row ${variance !== null && variance !== 0 ? 'has-variance' : ''}`} key={item.id}><span><strong>{item.name}</strong><small>Mulai menipis di: {fmt(item.low)} {item.unit}</small>{variance !== null && variance !== 0 && <span className="opening-variance">Selisih {variance > 0 ? '+' : ''}{fmt(variance)} {item.unit}</span>}</span><span><span className="unit-pill">{fmt(reference)} {item.unit}</span></span><label className="opening-input"><span className="sr-only">Hitungan awal {item.name}</span><input aria-label={`Hitungan awal ${item.name}`} type="number" min="0" step={item.unit === 'pcs' || item.unit === 'pack' ? '1' : '0.01'} value={count ?? ''} onChange={(event) => updateOpening(item.id, event.target.value)} disabled={confirmed} placeholder="0" /><em>{item.unit}</em></label>{variance !== null && variance !== 0 && <div className="opening-reason"><label>Alasan selisih<select aria-label={`Alasan selisih ${item.name}`} value={opening?.reasons[item.id] ?? ''} onChange={(event) => updateOpeningMeta(item.id, 'reason', event.target.value)} disabled={confirmed}><option value="">Pilih alasan...</option><option value="COUNTING_ERROR">Salah hitung</option><option value="DELIVERY_MISMATCH">Jumlah kiriman berbeda</option><option value="WASTE_UNRECORDED">Waste belum tercatat</option><option value="OTHER">Lainnya</option></select></label><label>Catatan<textarea aria-label={`Catatan selisih ${item.name}`} value={opening?.notes[item.id] ?? ''} onChange={(event) => updateOpeningMeta(item.id, 'note', event.target.value)} disabled={confirmed} placeholder="Tulis penyebabnya supaya mudah dicek" /></label></div>}</div>; })}</div></section><div className="opening-submit"><div><strong>{confirmed ? 'Opening terkunci' : complete && !hasMissingReason ? 'Siap dikonfirmasi' : 'Opening belum lengkap'}</strong><span>{confirmed ? 'Perubahan stok dapat dicatat.' : !complete ? 'Semua item harus diisi.' : hasMissingReason ? 'Lengkapi alasan dan catatan untuk setiap selisih.' : 'Setelah dikonfirmasi, angka awal tidak dapat diedit.'}</span></div><button className="primary-button" disabled={confirmed || !complete || hasMissingReason} onClick={onConfirm}>{confirmed ? 'Sudah dikonfirmasi' : 'Konfirmasi stok awal'} <span>→</span></button></div></div><aside className="side-column"><section className="side-card action-card"><p className="eyebrow">SETELAH OPENING</p><h3>Catat perubahan</h3><p>{confirmed ? 'Catat barang masuk, pemakaian, pindahan, atau waste saat terjadi.' : 'Perubahan stok terbuka setelah Opening dikonfirmasi.'}</p><button className="primary-button small" disabled={!confirmed} onClick={() => onTab('movement')}>Buka perubahan <span>→</span></button></section></aside></div>;
 }
 
-function MovementView({ area, movements, submitted, onAdd }: { area: Area; movements: Movement[]; submitted: boolean; onAdd: () => void }) {
-  return <div className="content-grid"><div className="main-column"><section className="section-card"><div className="section-heading"><div><p className="eyebrow">PERUBAHAN STOK · {area}</p><h2>Perubahan stok</h2><p className="muted">Setiap catatan masuk ke riwayat dan tersimpan di perangkat ini.</p></div><button className="primary-button small" disabled={submitted} onClick={onAdd}>+ Catat perubahan</button></div><div className="ledger-list">{movements.map((movement) => <div className="ledger-row" key={movement.id}><span className={`movement-icon ${movement.type === 'Masuk' ? 'in' : 'out'}`}>{movement.type === 'Masuk' ? '↑' : '↓'}</span><div><strong>{movement.item}</strong><small>{movementCategoryLabel(movement.category)} · {wibDateTime(movement.occurredAt)}</small></div><span className={`movement-qty ${movement.type === 'Masuk' ? 'positive' : 'negative'}`}>{movement.type === 'Masuk' ? '+' : '−'}{fmt(movement.qty)} {movement.unit}</span></div>)}</div>{movements.length === 0 && <div className="empty-state">Belum ada perubahan di shift ini.</div>}</section></div><aside className="side-column"><section className="side-card ledger-note"><p className="eyebrow">CARA MENCATAT</p><h3>Catat saat terjadi.</h3><p>Pilih <strong>Masuk</strong> untuk barang datang atau pindahan. Pilih <strong>Keluar</strong> untuk pemakaian atau waste. Catatan yang sudah disimpan tidak bisa diedit atau dihapus.</p><div className="rule-row"><span>Sisa menurut catatan</span><strong>Dihitung otomatis</strong></div></section></aside></div>;
+function MovementView({ area, shift, movements, submitted, openingConfirmed, onAdd }: { area: Area; shift: ShiftType; movements: Movement[]; submitted: boolean; openingConfirmed: boolean; onAdd: () => void }) {
+  return <div className="content-grid"><div className="main-column"><section className="section-card"><div className="section-heading"><div><p className="eyebrow">PERUBAHAN STOK · {areaLabel(area)}</p><h2>{shiftLabel(shift)}: perubahan stok</h2><p className="muted">Setiap catatan masuk ke riwayat dan tersimpan di perangkat ini.</p></div><button className="primary-button small" disabled={submitted || !openingConfirmed} onClick={onAdd}>+ Catat perubahan</button></div><div className="ledger-list">{movements.map((movement) => <div className="ledger-row" key={movement.id}><span className={`movement-icon ${movement.type === 'Masuk' ? 'in' : 'out'}`}>{movement.type === 'Masuk' ? '↑' : '↓'}</span><div><strong>{movement.item}</strong><small>{movementCategoryLabel(movement.category)} · {wibDateTime(movement.occurredAt)}</small></div><span className={`movement-qty ${movement.type === 'Masuk' ? 'positive' : 'negative'}`}>{movement.type === 'Masuk' ? '+' : '−'}{fmt(movement.qty)} {movement.unit}</span></div>)}</div>{movements.length === 0 && <div className="empty-state">Belum ada perubahan di shift ini.</div>}</section></div><aside className="side-column"><section className="side-card ledger-note"><p className="eyebrow">CARA MENCATAT</p><h3>Catat saat terjadi.</h3><p>Pilih <strong>Masuk</strong> untuk barang datang atau pindahan. Pilih <strong>Keluar</strong> untuk pemakaian atau waste. Catatan yang sudah disimpan tidak bisa diedit atau dihapus.</p><div className="rule-row"><span>Sisa menurut catatan</span><strong>Dihitung otomatis</strong></div></section></aside></div>;
 }
 
-function Closing({ items, baseline, stats, filter, setFilter, search, setSearch, updateItem, updateClosing, editingClosingId, setEditingClosingId, submitted, submittedAt, onSubmit }: { items: Item[]; baseline: Item[]; stats: { total: number; filled: number; low: number; empty: number; variance: number }; filter: 'Semua' | 'Belum diisi' | 'Berselisih' | 'Kritis'; setFilter: (value: 'Semua' | 'Belum diisi' | 'Berselisih' | 'Kritis') => void; search: string; setSearch: (value: string) => void; updateItem: (id: string, patch: Partial<Item>) => void; updateClosing: (id: string, value: string) => void; editingClosingId: string | null; setEditingClosingId: (id: string | null) => void; submitted: boolean; submittedAt?: string; onSubmit: () => void }) {
+function Closing({ items, baseline, stats, filter, setFilter, search, setSearch, updateItem, updateClosing, setEditingClosingId, submitted, submittedAt, onSubmit }: { items: Item[]; baseline: Item[]; stats: { total: number; filled: number; low: number; empty: number; variance: number }; filter: 'Semua' | 'Belum diisi' | 'Berselisih' | 'Kritis'; setFilter: (value: 'Semua' | 'Belum diisi' | 'Berselisih' | 'Kritis') => void; search: string; setSearch: (value: string) => void; updateItem: (id: string, patch: Partial<Item>) => void; updateClosing: (id: string, value: string) => void; setEditingClosingId: (id: string | null) => void; submitted: boolean; submittedAt?: string; onSubmit: () => void }) {
   const percentage = Math.round((stats.filled / stats.total) * 100);
   return <div className="closing-page"><section className="closing-header"><div><p className="eyebrow">STOK AKHIR · HITUNG FISIK</p><h2>Hitung stok akhir dengan teliti.</h2><p className="muted">Isi semua item. Status dan selisih akan dihitung dari stok awal saat pengecekan dimulai.</p></div><div className="closing-score"><strong>{stats.filled}<small> / {stats.total}</small></strong><span>item terisi</span></div></section><div className="baseline-note">◷ <span><strong>Patokan stok sudah dikunci.</strong> Perubahan yang dicatat setelah halaman ini dibuka tidak mengubah angka patokan di sini.</span></div><div className="closing-tools"><div className="search-wrap"><span>⌕</span><input aria-label="Cari item" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari nama item..." />{search && <button onClick={() => setSearch('')} aria-label="Hapus pencarian">×</button>}</div><div className="filter-chips">{(['Semua', 'Belum diisi', 'Berselisih', 'Kritis'] as const).map((value) => <button className={filter === value ? 'active' : ''} aria-pressed={filter === value} key={value} onClick={() => setFilter(value)}>{value}{value === 'Belum diisi' && stats.total - stats.filled > 0 ? <b>{stats.total - stats.filled}</b> : value === 'Kritis' && stats.low + stats.empty > 0 ? <b>{stats.low + stats.empty}</b> : null}</button>)}</div></div><div className="progress-line"><span style={{ width: `${percentage}%` }} /><small>{percentage}% selesai</small></div><section className="closing-list">{items.map((item) => { const frozen = baseline.find((entry) => entry.id === item.id) ?? item; return <StockRow key={item.id} item={item} baseline={frozen} updateItem={updateItem} updateClosing={updateClosing} setEditingClosingId={setEditingClosingId} submitted={submitted} />; })}{items.length === 0 && <div className="empty-state">Tidak ada item yang cocok.</div>}</section><div className="submit-bar"><div><strong>{submitted ? 'Laporan terkunci · Revisi 01' : stats.filled === stats.total ? 'Siap dikirim' : 'Belum siap dikirim'}</strong><span>{submitted && submittedAt ? `Dikirim ${wibDateTime(submittedAt)}.` : stats.filled === stats.total ? 'Periksa angka dan catatan sebelum kirim.' : `${stats.total - stats.filled} item belum diisi.`}</span></div><button className="primary-button" disabled={submitted} onClick={onSubmit}>{submitted ? 'Terkirim ✓' : 'Periksa & kirim'} <span>→</span></button></div></div>;
 }
@@ -367,15 +506,15 @@ function StockRow({ item, baseline, updateItem, updateClosing, setEditingClosing
   return <div className={`stock-row ${item.closing === null ? 'is-empty' : ''}`}><div className="stock-info"><StatusMark status={status} /><div><strong>{item.name}</strong><small>Sisa menurut catatan <b>{fmt(system)} {baseline.unit}</b> · mulai menipis di {fmt(baseline.low)} {baseline.unit}</small>{item.updatedAt && <small>Input terakhir {wibDateTime(item.updatedAt)}</small>}</div></div><div className="stock-input"><label htmlFor={`closing-${item.id}`}>Hitungan fisik</label><div><input id={`closing-${item.id}`} inputMode="decimal" type="number" min="0" step={item.unit === 'pcs' || item.unit === 'pack' ? '1' : '0.01'} value={item.closing ?? ''} onFocus={() => setEditingClosingId(item.id)} onBlur={() => setEditingClosingId(null)} onChange={(event) => updateClosing(item.id, event.target.value)} disabled={submitted} placeholder="0" /><span>{item.unit}</span></div></div><div className="stock-result">{variance === null ? <span className="tag pending">Belum diisi</span> : <><span className={`tag ${status === 'Aman' ? 'good' : status === 'Habis' ? 'bad' : 'warn'}`}>{status}</span><small className={variance === 0 ? 'zero' : ''}>{variance === 0 ? 'Sesuai' : `Selisih ${variance > 0 ? '+' : ''}${fmt(variance)} ${item.unit}`}</small></>}</div>{variance !== null && variance !== 0 && <div className="variance-fields"><label htmlFor={`reason-${item.id}`}>Kenapa berbeda?<select id={`reason-${item.id}`} value={item.varianceReason ?? ''} disabled={submitted} onChange={(event) => updateItem(item.id, { varianceReason: event.target.value })}><option value="">Pilih alasan...</option><option value="COUNTING_ERROR">Salah hitung</option><option value="OVER_PORTIONING">Porsi berlebih</option><option value="SPILLAGE_UNRECORDED">Tumpah belum tercatat</option><option value="WASTE_UNRECORDED">Waste belum tercatat</option><option value="UNIT_MISMATCH">Satuan tidak sesuai</option><option value="OTHER">Lainnya</option></select></label><label htmlFor={`notes-${item.id}`}>Catatan<textarea id={`notes-${item.id}`} value={item.varianceNotes ?? ''} disabled={submitted} onChange={(event) => updateItem(item.id, { varianceNotes: event.target.value })} placeholder="Tulis penyebabnya supaya mudah dicek" /></label></div>}</div>;
 }
 
-function createReportText(area: Area, items: Item[], submitted: boolean, submittedAt?: string) {
+function createReportText(area: Area, items: Item[], submitted: boolean, submittedAt?: string, shift: ShiftType = 'SIANG') {
   const counts = { safe: items.filter((item) => statusOf(item) === 'Aman').length, low: items.filter((item) => statusOf(item) === 'Hampir habis').length, empty: items.filter((item) => statusOf(item) === 'Habis').length, missing: items.filter((item) => statusOf(item) === 'Belum diisi').length };
   const timestamp = submittedAt ? wibDateTime(submittedAt) : `${wibDate()} · ${wibTime()} WIB`;
-  return `STOK HOPIN · ${area === 'BAR' ? 'BAR' : 'KITCHEN'}\nShift siang · ${wibDate()}\nStatus: ${submitted ? 'TERKIRIM' : 'DRAF'}\nWaktu: ${timestamp}\n\nAman ${counts.safe} · Hampir habis ${counts.low} · Habis ${counts.empty} · Belum diisi ${counts.missing}\n\n${items.map((item) => `• ${item.name}: ${item.closing === null ? 'Belum diisi' : `${fmt(item.closing)} ${item.unit}`} · ${statusOf(item)}`).join('\n')}`;
+  return `STOK HOPIN · ${areaLabel(area).toUpperCase()}\n${shiftLabel(shift)} · ${wibDate()}\nStatus: ${submitted ? 'TERKIRIM KE SUPERVISOR' : 'DRAF'}\nWaktu: ${timestamp}\n\nAman ${counts.safe} · Hampir habis ${counts.low} · Habis ${counts.empty} · Belum diisi ${counts.missing}\n\n${items.map((item) => `• ${item.name}: ${item.closing === null ? 'Belum diisi' : `${fmt(item.closing)} ${item.unit}`} · ${statusOf(item)}`).join('\n')}`;
 }
 
-function Reports({ area, items, submitted, submittedAt, onCopy }: { area: Area; items: Item[]; submitted: boolean; submittedAt?: string; onCopy: () => void }) {
+function Reports({ area, shift, items, submitted, submittedAt, financeReady, onCopy }: { area: Area; shift: ShiftType; items: Item[]; submitted: boolean; submittedAt?: string; financeReady: boolean; onCopy: () => void }) {
   const counts = { safe: items.filter((item) => statusOf(item) === 'Aman').length, low: items.filter((item) => statusOf(item) === 'Hampir habis').length, empty: items.filter((item) => statusOf(item) === 'Habis').length };
-  return <div className="content-grid"><div className="main-column"><section className="hero-card report-hero"><div><p className="eyebrow">RINGKASAN LAPORAN · {submitted ? 'REVISI 01' : 'DRAF'}</p><h2>{area === 'BAR' ? 'Bar' : 'Kitchen'} · Shift siang</h2><p className="muted">Ringkasan memakai angka terakhir dari stok akhir.</p></div><span className={`status-badge ${submitted ? 'submitted' : 'draft'}`}>{submitted ? 'TERKIRIM' : 'DRAF'}</span></section><section className="section-card report-card"><div className="report-summary"><div><span className="eyebrow">STATUS STOK</span><strong>{counts.safe}<small> aman</small></strong></div><div><span className="eyebrow">PERLU DICEK</span><strong>{counts.low + counts.empty}<small> item</small></strong></div><div><span className="eyebrow">KELENGKAPAN</span><strong>{items.filter((item) => item.closing !== null).length}/{items.length}</strong></div></div><div className="report-preview"><p className="eyebrow">CONTOH PESAN</p><pre>{createReportText(area, items, submitted, submittedAt)}</pre></div><button className="outline-button" onClick={onCopy}>Salin untuk WhatsApp <span>↗</span></button></section></div><aside className="side-column"><section className="side-card action-card"><p className="eyebrow">STATUS LAPORAN</p><h3>{submitted ? 'Menunggu cek supervisor' : 'Masih berupa draf di perangkat'}</h3><p>{submitted && submittedAt ? `Waktu kirim: ${wibDateTime(submittedAt)}.` : 'Lengkapi stok akhir lalu kirim agar laporan tercatat.'}</p><div className="channel-row"><span>WA</span><span>PDF</span><span>Link</span></div></section></aside></div>;
+  return <div className="content-grid"><div className="main-column"><section className="hero-card report-hero"><div><p className="eyebrow">RINGKASAN LAPORAN · {submitted ? 'REVISI 01' : 'DRAF'}</p><h2>{areaLabel(area)} · {shiftLabel(shift)}</h2><p className="muted">Ringkasan memakai angka terakhir dari stok akhir.</p></div><span className={`status-badge ${submitted ? 'submitted' : 'draft'}`}>{submitted ? 'TERKIRIM KE SUPERVISOR' : 'DRAF'}</span></section><section className="section-card report-card"><div className="report-summary"><div><span className="eyebrow">STATUS STOK</span><strong>{counts.safe}<small> aman</small></strong></div><div><span className="eyebrow">PERLU DICEK</span><strong>{counts.low + counts.empty}<small> item</small></strong></div><div><span className="eyebrow">KELENGKAPAN</span><strong>{items.filter((item) => item.closing !== null).length}/{items.length}</strong></div></div><div className="report-preview"><p className="eyebrow">CONTOH PESAN</p><pre>{createReportText(area, items, submitted, submittedAt, shift)}</pre></div><button className="outline-button" onClick={onCopy}>Salin untuk WhatsApp <span>↗</span></button></section></div><aside className="side-column"><section className="side-card action-card"><p className="eyebrow">STATUS LAPORAN</p><h3>{submitted ? 'Terkirim ke supervisor' : 'Masih berupa draf di perangkat'}</h3><p>{submitted && submittedAt ? `Dikirim ${wibDateTime(submittedAt)}. Cek supervisor berjalan terpisah.` : 'Lengkapi stok akhir lalu kirim agar laporan tercatat.'}</p><div className="channel-row"><span>WA</span><span>PDF</span><span>Link</span></div></section>{area === 'BAR' && <section className="side-card finance-note"><p className="eyebrow">LAPORAN KEUANGAN</p><h3>{financeReady ? 'Siap diisi' : 'Menunggu stok lengkap'}</h3><p>{financeReady ? 'Closing Bar dan Kitchen sudah terkirim. Laporan keuangan dapat dilanjutkan.' : 'Closing Bar dan Kitchen harus terkirim sebelum laporan keuangan dikirim.'}</p></section>}</aside></div>;
 }
 
 function MovementModal({ area, items, type, setType, item, setItem, qty, setQty, category, setCategory, onClose, onSave }: { area: Area; items: Item[]; type: 'Masuk' | 'Keluar'; setType: (value: 'Masuk' | 'Keluar') => void; item: string; setItem: (value: string) => void; qty: string; setQty: (value: string) => void; category: string; setCategory: (value: string) => void; onClose: () => void; onSave: () => void }) {
