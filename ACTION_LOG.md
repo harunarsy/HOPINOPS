@@ -18,23 +18,27 @@
 - Added Vercel auth endpoints with server-only Supabase service-role access and HttpOnly cookies.
 - Switched the frontend login from Supabase Auth to the custom auth API.
 - Added interactive `pnpm provision:user` without accepting PINs as command-line arguments.
+- Added a direct management dashboard for `OWNER`, `INVESTOR`, and `ADMIN` users.
+- Added visible logout controls on both the assignment screen and dashboard.
+- Persisted staff assignments per username and work date so another user cannot overwrite them on the same device.
 
 ## Current state
 
 - Supabase project exists, is linked locally, and migrations `0001`-`0003` are applied.
 - RLS is enabled for all application tables by the migration.
 - `0003` removes the app profile dependency on `auth.users`; no Supabase Auth users are required.
-- No custom operator profiles or PINs have been provisioned yet.
+- No additional operator profiles have been provisioned yet.
+- HARUN is provisioned as `OWNER` and the deployed auth endpoint returns his active login option.
 - The application still reads and writes `localStorage`.
 - No Supabase credentials are stored in this repository.
-- The custom auth code is local until pushed and requires `SUPABASE_SERVICE_ROLE_KEY` in Vercel.
+- The custom auth code requires `SUPABASE_SERVICE_ROLE_KEY` in Vercel.
+- Management dashboard and per-user assignment changes are deployed on `main`.
 
 ## Next
 
-- Configure the server-only Supabase service-role variable in Vercel.
-- Provision initial custom users without sharing PINs.
+- Provision JEZY as `OWNER` with job title `SUPERVISOR / CO-OWNER`, and CATUR/AYAS as `INVESTOR`, without sharing PINs.
 - Wire auth, assignment, opening, movement, closing, and report commands to Supabase.
-- Add Vercel environment variables and verify the deployed auth flow.
+- Add Preview/Development environment variables if those deployments are needed.
 
 ## Not committed
 
