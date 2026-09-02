@@ -1094,7 +1094,7 @@ export default {
 
         (profiles ?? []).forEach(p => {
           const empComp = employeeCompList?.find(c => c.profile_id === p.id);
-          const base = empComp?.monthly_base ? Number(empComp.monthly_base) : (policy?.minimum_workdays ? 1536000 : 1536000);
+          const base = empComp?.monthly_base ? Number(empComp.monthly_base) : (policy?.monthly_base ? Number(policy.monthly_base) : 0);
           const userAtt = (attendance ?? []).filter(a => a.profile_id === p.id && (a.status === 'CHECKED_OUT' || a.status === 'APPROVED'));
           const userBonus = (bonuses ?? []).filter(b => b.profile_id === p.id).reduce((acc, curr) => acc + Number(curr.amount), 0);
 

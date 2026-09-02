@@ -193,9 +193,9 @@ begin
     'schedule_deviation', v_schedule_deviation
   );
 end;
-$$;
+$$ language plpgsql security definer set search_path = public, pg_temp;
 
--- 5. Revoke direct operational table access from public, anon, and authenticated
+-- 5. Revoke legacy and operational tables from anon & authenticated
 revoke all on public.assignments from anon, authenticated;
 revoke all on public.opening_records from anon, authenticated;
 revoke all on public.opening_lines from anon, authenticated;
@@ -205,19 +205,20 @@ revoke all on public.closing_report_revisions from anon, authenticated;
 revoke all on public.closing_lines from anon, authenticated;
 revoke all on public.audit_events from anon, authenticated;
 
-revoke execute on function public.enforce_append_only from public, anon, authenticated;
-revoke execute on function public.log_audit_event from public, anon, authenticated;
-revoke execute on function public.rpc_claim_assignment from public, anon, authenticated;
-
 grant all on public.assignments, public.opening_records, public.opening_lines,
   public.movements, public.closing_reports, public.closing_report_revisions,
   public.closing_lines, public.audit_events to service_role;
 
-grant execute on function public.log_audit_event to service_role;
-grant execute on function public.rpc_claim_assignment to service_role;
+-- Grant RPC execution strictly to service_role
+revoke execute on function public.prevent_update_or_delete() from public, anon, authenticated;
+revoke execute on function public.log_audit_event(uuid, uuid, text, text, text, jsonb, text) from public, anon, authenticated;
+revoke execute on function public.rpc_claim_assignment(uuid, date, text, public.area_code, text, uuid, boolean) from public, anon, authenticated;
 
--- 6. Indexes for audit and high-frequency queries
-create index if not exists audit_events_composite_idx on public.audit_events (outlet_id, action, server_occurred_at desc);
+grant execute on function public.prevent_update_or_delete() to service_role;
+grant execute on function public.log_audit_event(uuid, uuid, text, text, text, jsonb, text) to service_role;
+grant execute on function public.rpc_claim_assignment(uuid, date, text, public.area_code, text, uuid, boolean) to service_role;
+
+-- 6. Helpful Indexes for performance and reporting
 create index if not exists work_cycles_lookup_idx on public.work_cycles (outlet_id, work_date, shift_code, area_code);
 create index if not exists work_assignments_active_idx on public.work_assignments (cycle_id, status);
 create index if not exists stock_movements_cycle_idx on public.stock_movements (cycle_id, server_occurred_at desc);
