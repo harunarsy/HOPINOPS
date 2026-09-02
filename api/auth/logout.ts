@@ -2,7 +2,7 @@ import {
   clearedSessionCookie,
   jsonResponse,
   revokeCurrentSession,
-} from '../_lib/auth';
+} from '../auth-shared';
 
 export default {
   async fetch(request: Request) {

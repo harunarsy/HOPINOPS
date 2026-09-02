@@ -1,4 +1,4 @@
-import { jsonResponse, listLoginOptions } from '../_lib/auth';
+import { jsonResponse, listLoginOptions } from '../auth-shared';
 
 export default {
   async fetch() {
