@@ -1,7 +1,7 @@
-import { jsonResponse } from '../src/server/auth';
+import { randomBytes } from 'node:crypto';
 
 export default {
   fetch() {
-    return jsonResponse({ ok: true });
+    return new Response(String(randomBytes(1).length));
   },
 };
