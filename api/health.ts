@@ -1,7 +1,7 @@
-import { createClient } from '@supabase/supabase-js';
+import { jsonResponse } from '../src/server/auth';
 
 export default {
   fetch() {
-    return new Response(typeof createClient);
+    return jsonResponse({ ok: true });
   },
 };
