@@ -1,19 +1,15 @@
 import {
-  clearSessionCookie,
+  clearedSessionCookie,
+  jsonResponse,
   revokeCurrentSession,
-  type ApiRequest,
-  type ApiResponse,
 } from '../../src/server/auth';
 
-export default async function handler(request: ApiRequest & { method?: string }, response: ApiResponse & { status: (code: number) => { json: (body: unknown) => unknown } }) {
-  if (request.method !== 'POST') return response.status(405).json({ error: 'Method not allowed' });
+export async function POST(request: Request) {
   try {
     await revokeCurrentSession(request);
-    clearSessionCookie(response);
-    return response.status(200).json({ ok: true });
+    return jsonResponse({ ok: true }, 200, { 'Set-Cookie': clearedSessionCookie() });
   } catch (error) {
     console.error('Unable to logout', error);
-    clearSessionCookie(response);
-    return response.status(200).json({ ok: true });
+    return jsonResponse({ ok: true }, 200, { 'Set-Cookie': clearedSessionCookie() });
   }
 }

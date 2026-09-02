@@ -3,12 +3,8 @@ import { promisify } from 'node:util';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export type ApiRequest = {
-  headers: Record<string, string | string[] | undefined>;
+  headers: Headers | Record<string, string | string[] | undefined>;
   body?: unknown;
-};
-
-export type ApiResponse = {
-  setHeader: (name: string, value: string | string[]) => void;
 };
 
 export type AuthProfile = {
@@ -147,7 +143,9 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown) {
 }
 
 function cookieValue(request: ApiRequest, name: string) {
-  const header = request.headers.cookie;
+  const webHeaders = request.headers as Headers;
+  const nodeHeaders = request.headers as Record<string, string | string[] | undefined>;
+  const header = typeof webHeaders.get === 'function' ? webHeaders.get('cookie') : nodeHeaders.cookie;
   const cookieHeader = Array.isArray(header) ? header.join(';') : header;
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(';')) {
@@ -211,10 +209,17 @@ function cookieFlags() {
     : '';
 }
 
-export function setSessionCookie(response: ApiResponse, token: string) {
-  response.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeMs / 1000}${cookieFlags()}`);
+export function sessionCookie(token: string) {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeMs / 1000}${cookieFlags()}`;
 }
 
-export function clearSessionCookie(response: ApiResponse) {
-  response.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieFlags()}`);
+export function clearedSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieFlags()}`;
+}
+
+export function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers },
+  });
 }
