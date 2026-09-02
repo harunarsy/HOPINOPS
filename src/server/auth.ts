@@ -21,7 +21,10 @@ const inactivityMs = 30 * 60 * 1000;
 const lockoutMs = 15 * 60 * 1000;
 const maxPinAttempts = 5;
 const pinIterations = 310_000;
-const encoder = new TextEncoder();
+
+function encodeText(value: string) {
+  return Uint8Array.from(value, (character) => character.charCodeAt(0));
+}
 
 function getAdminClient(): SupabaseClient {
   const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
@@ -41,8 +44,8 @@ function isValidPin(value: unknown): value is string {
 }
 
 async function derivePin(pin: string, salt: string) {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(pin), 'PBKDF2', false, ['deriveBits']);
-  const derived = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: pinIterations, hash: 'SHA-256' }, key, 512);
+  const key = await crypto.subtle.importKey('raw', encodeText(pin), 'PBKDF2', false, ['deriveBits']);
+  const derived = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encodeText(salt), iterations: pinIterations, hash: 'SHA-256' }, key, 512);
   return btoa(String.fromCharCode(...new Uint8Array(derived)));
 }
 
@@ -65,7 +68,7 @@ async function verifyPin(pin: string, salt: string, expectedHash: string) {
 }
 
 async function hashSessionToken(token: string) {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(token));
+  const digest = await crypto.subtle.digest('SHA-256', encodeText(token));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
