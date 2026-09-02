@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { supabase, supabaseConfigured } from './lib/supabase';
 
 type Area = 'BAR' | 'KITCHEN';
 type Tab = 'overview' | 'opening' | 'movement' | 'closing' | 'reports';
@@ -30,6 +31,8 @@ type Movement = {
   id: string; type: 'Masuk' | 'Keluar'; itemId: string; item: string;
   qty: number; unit: string; category: string; occurredAt: string;
 };
+
+type LoginOption = { username: string; display_name: string; job_title: string | null };
 
 type AppData = {
   items: Record<Area, Item[]>;
@@ -102,6 +105,7 @@ const movementCategoryLabel = (category: string) => ({
 }[category] ?? category);
 const workDateKey = (date = new Date()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 const assignmentId = (workDate: string, shift: ShiftType, area: Area) => `${workDate}:${shift}:${area}`;
+const authEmailFor = (username: string) => `${username.toLowerCase()}@hopin.local`;
 const shiftLabel = (shift: ShiftType) => shiftOptions[shift].label;
 const areaLabel = (area: Area) => area === 'BAR' ? 'Bar' : 'Kitchen';
 const initialsOf = (value: string) => {
@@ -147,8 +151,11 @@ function loadAssignment(name: string): Assignment | null {
 function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loginOptions, setLoginOptions] = useState<LoginOption[]>([]);
+  const [authLoading, setAuthLoading] = useState(true);
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [selectedShift, setSelectedShift] = useState<ShiftType>('SIANG');
   const [selectedArea, setSelectedArea] = useState<Area>('BAR');
@@ -207,6 +214,49 @@ function App() {
   });
 
   useEffect(() => {
+    const client = supabase;
+    if (!client) {
+      setAuthLoading(false);
+      return;
+    }
+    let mounted = true;
+    const loadAuth = async () => {
+      const [{ data: sessionData }, { data: options, error }] = await Promise.all([
+        client.auth.getSession(),
+        client.rpc('get_login_options'),
+      ]);
+      if (!mounted) return;
+      if (error) setLoginError('Daftar user belum bisa dimuat. Periksa migration Supabase.');
+      setLoginOptions((options ?? []) as LoginOption[]);
+      const session = sessionData.session;
+      if (session) {
+        const sessionUsername = session.user.user_metadata?.username ?? session.user.email?.split('@')[0] ?? '';
+        setUsername(sessionUsername.toLowerCase());
+        setName(String(session.user.user_metadata?.display_name ?? sessionUsername).toUpperCase());
+        setLoggedIn(true);
+      }
+      setAuthLoading(false);
+    };
+    void loadAuth();
+    const { data: authState } = client.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (!session) {
+        setLoggedIn(false);
+        setAssignment(null);
+        return;
+      }
+      const sessionUsername = session.user.user_metadata?.username ?? session.user.email?.split('@')[0] ?? '';
+      setUsername(sessionUsername.toLowerCase());
+      setName(String(session.user.user_metadata?.display_name ?? sessionUsername).toUpperCase());
+      setLoggedIn(true);
+    });
+    return () => {
+      mounted = false;
+      authState.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     sessionStorage.setItem('hopin-tab-id', tabId.current);
     const id = window.setInterval(() => setClock(new Date()), 1000);
     return () => window.clearInterval(id);
@@ -257,24 +307,37 @@ function App() {
     toastTimer.current = window.setTimeout(() => setToast(''), 3600);
   }
 
-  function handleLogin() {
+  async function handleLogin() {
     setLoginError('');
-    if (!name.trim()) { setLoginError('Isi nama atau peran dulu.'); return; }
-    if (pin !== '1234') { setLoginError('PIN demo salah. Coba 1234.'); return; }
+    if (!supabaseConfigured || !supabase) { setLoginError('Supabase belum dikonfigurasi. Tambahkan environment variables dulu.'); return; }
+    if (!username) { setLoginError('Pilih nama user dulu.'); return; }
+    if (pin.length < 6) { setLoginError('PIN harus terdiri dari minimal 6 digit.'); return; }
     try {
       const lease = JSON.parse(localStorage.getItem(leaseKey) || 'null') as { tabId: string; activeAt: number } | null;
       if (lease && lease.tabId !== tabId.current && Date.now() - lease.activeAt < inactivityMs) {
         setLoginError('Sesi masih aktif di tab lain. Keluar dari sana atau tunggu 30 menit.');
         return;
       }
-      localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: name.trim(), activeAt: Date.now() }));
     } catch { /* local lease is only a demo convenience */ }
-    const savedAssignment = loadAssignment(name);
+    setAuthLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: authEmailFor(username), password: pin });
+    if (error) {
+      setAuthLoading(false);
+      setLoginError('Nama user atau PIN salah.');
+      return;
+    }
+    const selected = loginOptions.find((option) => option.username === username);
+    const displayName = selected?.display_name ?? username.toUpperCase();
+    try { localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: displayName, activeAt: Date.now() })); } catch { /* local lease is only a demo convenience */ }
+    const savedAssignment = loadAssignment(displayName);
     setAssignment(savedAssignment);
     if (savedAssignment) {
       setArea(savedAssignment.area);
       setTab('overview');
     }
+    setName(displayName);
+    setPin('');
+    setAuthLoading(false);
     setLoggedIn(true);
   }
 
@@ -300,12 +363,15 @@ function App() {
     setAssignmentConfirmOpen(false);
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try { await supabase?.auth.signOut(); } catch { /* return to login even if auth is unavailable */ }
     try {
       const lease = JSON.parse(localStorage.getItem(leaseKey) || 'null') as { tabId: string } | null;
       if (lease?.tabId === tabId.current) localStorage.removeItem(leaseKey);
     } catch { /* return to login even if local storage is unavailable */ }
     setLoggedIn(false);
+    setAssignment(null);
+    setUsername('');
     setPin('');
   }
 
@@ -431,7 +497,7 @@ function App() {
     } catch { showToast('Browser tidak mengizinkan salin otomatis. Salin dari contoh pesan.'); }
   }
 
-  if (!loggedIn) return <Login name={name} setName={setName} pin={pin} setPin={setPin} error={loginError} onLogin={handleLogin} />;
+  if (!loggedIn) return <Login username={username} setUsername={setUsername} pin={pin} setPin={setPin} options={loginOptions} loading={authLoading} configured={supabaseConfigured} error={loginError} onLogin={handleLogin} />;
   if (!assignment) return <AssignmentPicker name={name} selectedShift={selectedShift} setSelectedShift={setSelectedShift} selectedArea={selectedArea} setSelectedArea={setSelectedArea} confirmOpen={assignmentConfirmOpen} setConfirmOpen={setAssignmentConfirmOpen} onConfirm={confirmAssignment} />;
 
   return (
@@ -466,9 +532,9 @@ function AssignmentConfirm({ shift, area, onCancel, onConfirm }: { shift: ShiftT
   return <div className="modal-backdrop" role="presentation"><div className="modal assignment-confirm" role="dialog" aria-modal="true" aria-labelledby="assignment-confirm-title"><div className="modal-head"><div><p className="eyebrow">KONFIRMASI PENUGASAN</p><h2 id="assignment-confirm-title">Pastikan pilihan Anda.</h2></div></div><p className="muted">Anda akan masuk ke <strong>{shiftLabel(shift)}</strong>, area <strong>{areaLabel(area)}</strong>, tanggal <strong>{wibDate()}</strong>.</p><div className="assignment-warning"><strong>Setelah dimulai, shift dan area tidak dapat diganti dari akun ini.</strong><span>Logout tidak menghapus penugasan. Jika salah, hubungi supervisor untuk reset.</span></div><div className="modal-actions"><button className="outline-button" onClick={onCancel}>Kembali</button><button className="primary-button" onClick={onConfirm}>Mulai shift <span>→</span></button></div></div></div>;
 }
 
-function Login({ name, setName, pin, setPin, error, onLogin }: { name: string; setName: (value: string) => void; pin: string; setPin: (value: string) => void; error: string; onLogin: () => void }) {
+function Login({ username, setUsername, pin, setPin, options, loading, configured, error, onLogin }: { username: string; setUsername: (value: string) => void; pin: string; setPin: (value: string) => void; options: LoginOption[]; loading: boolean; configured: boolean; error: string; onLogin: () => void | Promise<void> }) {
   const [showPin, setShowPin] = useState(false);
-  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · DEMO LOKAL</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); onLogin(); }}><label>Nama atau peran<input autoComplete="username" value={name} onChange={(event) => setName(event.target.value)} placeholder="Contoh: PIC Bar" /></label><label>PIN demo<span className="password-field"><input type={showPin ? 'text' : 'password'} autoComplete="current-password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="••••" /><button type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></span></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" type="submit">Masuk ke aplikasi <span>→</span></button></form><p className="demo-hint">Demo: isi nama apa saja · PIN 1234 · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
+  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · {configured ? 'LOGIN USER' : 'KONFIGURASI DIPERLUKAN'}</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); void onLogin(); }}><label>Nama user<select autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading || !configured}><option value="">Pilih user...</option>{options.map((option) => <option key={option.username} value={option.username}>{option.display_name}{option.job_title ? ` · ${option.job_title}` : ''}</option>)}</select></label><label>PIN<span className="password-field"><input type={showPin ? 'text' : 'password'} autoComplete="current-password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="••••••" disabled={loading || !configured} /><button type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></span></label>{error && <p className="form-error" role="alert">{error}</p>}{configured && options.length === 0 && <p className="form-error" role="status">Belum ada user aktif di Supabase.</p>}<button className="primary-button" type="submit" disabled={loading || !configured || !username || pin.length < 6}>{loading ? 'Memuat...' : 'Masuk ke aplikasi'} <span>→</span></button></form><p className="demo-hint">Login memakai user terdaftar · PIN 6 digit · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
 }
 
 function Overview({ area, shift, stats, items, submitted, openingConfirmed, onTab }: { area: Area; shift: ShiftType; stats: { total: number; filled: number; low: number; empty: number; variance: number }; items: Item[]; submitted: boolean; openingConfirmed: boolean; onTab: (tab: Tab) => void }) {

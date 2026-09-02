@@ -9,6 +9,16 @@
     "lint": "tsc --noEmit",
     "test": "npm run lint"
   },
-  "dependencies": { "@vitejs/plugin-react": "^5.0.4", "react": "^19.0.1", "react-dom": "^19.0.1", "vite": "^6.2.3" },
-  "devDependencies": { "@types/react": "^19.0.2", "@types/react-dom": "^19.0.2", "typescript": "~5.8.2" }
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
+    "@vitejs/plugin-react": "^5.0.4",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "typescript": "~5.8.2"
+  }
 }
