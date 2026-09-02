@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import ExcelJS from 'exceljs';
-import { currentUser, type ApiRequest, type AuthProfile } from './auth';
+import { currentUser, validateOrigin, type ApiRequest, type AuthProfile } from './auth';
 
 function getAdminClient(): SupabaseClient {
   const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
@@ -37,7 +37,7 @@ function successResponse(data: any, version?: number) {
 
 // Haversine formula in meters
 function haversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371e3; // metres
+  const R = 6371e3;
   const φ1 = (lat1 * Math.PI) / 180;
   const φ2 = (lat2 * Math.PI) / 180;
   const Δφ = ((lat2 - lat1) * Math.PI) / 180;
@@ -50,12 +50,80 @@ function haversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: numb
   return Math.round(R * c);
 }
 
-function getWibDate(date = new Date()): string {
+export function getWibDate(date = new Date()): string {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+// Convert date to WIB minutes from midnight (0..1439)
+export function getWibMinutesOfDay(date = new Date()): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Jakarta',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(date);
+
+  const hour = Number(parts.find(p => p.type === 'hour')?.value ?? 0);
+  const minute = Number(parts.find(p => p.type === 'minute')?.value ?? 0);
+  return hour * 60 + minute;
+}
+
+// Sanitize string to prevent Excel Formula Injection
+function sanitizeExcelCell(val: any): any {
+  if (typeof val === 'string' && /^[=+\-@]/.test(val)) {
+    return `'${val}`;
+  }
+  return val;
+}
+
+async function sha256Buffer(buffer: ArrayBuffer | Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function logAudit(db: SupabaseClient, {
+  actor_user_id,
+  action,
+  entity_type,
+  entity_id,
+  outlet_id,
+  subject_user_id,
+  reason,
+  metadata_json,
+}: {
+  actor_user_id?: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  outlet_id?: string;
+  subject_user_id?: string;
+  reason?: string;
+  metadata_json?: any;
+}) {
+  try {
+    await db.from('audit_events').insert({
+      actor_user_id: actor_user_id || null,
+      action,
+      entity_type,
+      entity_id,
+      outlet_id: outlet_id || null,
+      subject_user_id: subject_user_id || null,
+      reason: reason || null,
+      metadata_json: metadata_json || null,
+      server_occurred_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Failed to write audit event', err);
+  }
 }
 
 export default {
   async fetch(request: Request) {
+    // CSRF / Origin Validation
+    if (!validateOrigin(request)) {
+      return errorResponse('ORIGIN_REJECTED', 'Origin request tidak diizinkan (CSRF Protection)', 403);
+    }
+
     const url = new URL(request.url);
     const action = url.searchParams.get('action');
 
@@ -102,7 +170,6 @@ export default {
           outlet,
           settings: {
             ...settings,
-            // Mask exact coords from normal operators if needed, or keep for geofence validation
             latitude: user.role === 'OWNER' || user.role === 'SUPERVISOR' ? settings?.latitude : undefined,
             longitude: user.role === 'OWNER' || user.role === 'SUPERVISOR' ? settings?.longitude : undefined,
           },
@@ -167,6 +234,15 @@ export default {
           low_threshold: body.low_threshold ?? 0,
         }).select().single();
         if (error) return errorResponse('DB_ERROR', error.message, 400);
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CREATE_ITEM',
+          entity_type: 'items',
+          entity_id: data.id,
+          metadata_json: data,
+        });
+
         return successResponse(data);
       }
 
@@ -180,6 +256,15 @@ export default {
           low_threshold: body.low_threshold,
         }).eq('id', body.id).select().single();
         if (error) return errorResponse('DB_ERROR', error.message, 400);
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'UPDATE_ITEM',
+          entity_type: 'items',
+          entity_id: body.id,
+          metadata_json: data,
+        });
+
         return successResponse(data);
       }
 
@@ -212,6 +297,17 @@ export default {
           created_by: user.id,
         }).select().single();
         if (error) return errorResponse('DB_ERROR', error.message, 400);
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'SAVE_ROSTER',
+          entity_type: 'roster_entries',
+          entity_id: data.id,
+          outlet_id: outlet?.id,
+          subject_user_id: body.profile_id,
+          metadata_json: data,
+        });
+
         return successResponse(data);
       }
 
@@ -225,11 +321,20 @@ export default {
           expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         }).select().single();
         if (error) return errorResponse('DB_ERROR', error.message, 400);
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'REQUEST_SWAP',
+          entity_type: 'shift_swap_requests',
+          entity_id: data.id,
+          subject_user_id: body.offered_to,
+        });
+
         return successResponse(data);
       }
 
       if (action === 'swap.respond' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { swap_id, accept: boolean }
+        const body = (await request.json()) as any;
         const { data: swap } = await db.from('shift_swap_requests').select('*, roster_entries(*)').eq('id', body.swap_id).single();
         if (!swap || swap.offered_to !== user.id || swap.status !== 'PENDING') {
           return errorResponse('FORBIDDEN', 'Swap request tidak valid atau sudah kadaluarsa.', 400);
@@ -237,21 +342,56 @@ export default {
 
         if (body.accept) {
           await db.from('shift_swap_requests').update({ status: 'ACCEPTED', responded_at: new Date().toISOString() }).eq('id', swap.id);
-          // Transfer roster entry to target user
           await db.from('roster_entries').update({ profile_id: user.id, status: 'SCHEDULED' }).eq('id', swap.roster_entry_id);
+          await logAudit(db, {
+            actor_user_id: user.id,
+            action: 'ACCEPT_SWAP',
+            entity_type: 'shift_swap_requests',
+            entity_id: swap.id,
+            subject_user_id: swap.requested_by,
+          });
         } else {
           await db.from('shift_swap_requests').update({ status: 'DECLINED', responded_at: new Date().toISOString() }).eq('id', swap.id);
+          await logAudit(db, {
+            actor_user_id: user.id,
+            action: 'DECLINE_SWAP',
+            entity_type: 'shift_swap_requests',
+            entity_id: swap.id,
+            subject_user_id: swap.requested_by,
+          });
         }
         return successResponse({ ok: true });
       }
 
-      // 6. ASSIGNMENT CLAIM & RACE CONTROL
+      // 6. ASSIGNMENT CLAIM (RPC / TRANSACTIONAL LOCK)
       if (action === 'assignment.claim' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { work_date, shift_code, area_code, duty_role }
+        const body = (await request.json()) as any;
         const workDate = body.work_date || getWibDate();
         const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
 
-        // 1. Ensure cycle exists
+        // 1. Try invoking PostgreSQL RPC with row-level lock if available
+        const { data: rpcRes, error: rpcErr } = await db.rpc('rpc_claim_assignment', {
+          p_outlet_id: outlet?.id,
+          p_work_date: workDate,
+          p_shift_code: body.shift_code,
+          p_area_code: body.area_code,
+          p_profile_id: user.id,
+          p_duty_role: body.duty_role,
+        });
+
+        if (rpcErr) {
+          if (rpcErr.message && rpcErr.message.includes('PRIMARY_TAKEN')) {
+            return errorResponse('PRIMARY_TAKEN', 'Penanggung jawab utama area ini sudah terisi. Anda dapat bergabung sebagai Bantuan.', 409, { can_join_as_helper: true });
+          }
+        }
+
+        if (rpcRes) {
+          const { data: assignment } = await db.from('work_assignments').select('*').eq('id', rpcRes.assignment_id).single();
+          const { data: cycle } = await db.from('work_cycles').select('*').eq('id', rpcRes.cycle_id).single();
+          return successResponse({ assignment, cycle });
+        }
+
+        // Fallback transactional application-level lock check
         let { data: cycle } = await db.from('work_cycles').select('*')
           .eq('outlet_id', outlet?.id)
           .eq('work_date', workDate)
@@ -271,7 +411,6 @@ export default {
           cycle = newCycle;
         }
 
-        // 2. Check if primary taken
         if (body.duty_role === 'PRIMARY') {
           const { data: existingPrimary } = await db.from('work_assignments')
             .select('id, profile_id')
@@ -285,7 +424,6 @@ export default {
           }
         }
 
-        // Check roster deviation
         const { data: roster } = await db.from('roster_entries')
           .select('*')
           .eq('profile_id', user.id)
@@ -295,7 +433,6 @@ export default {
 
         const scheduleDeviation = !roster || roster.shift_code !== body.shift_code;
 
-        // Upsert assignment
         const { data: assignment, error: aErr } = await db.from('work_assignments').upsert({
           cycle_id: cycle.id,
           work_date: workDate,
@@ -306,7 +443,21 @@ export default {
           assigned_at: new Date().toISOString(),
         }, { onConflict: 'cycle_id,profile_id' }).select().single();
 
-        if (aErr) return errorResponse('DB_ERROR', aErr.message, 400);
+        if (aErr) {
+          if (aErr.code === '23505') {
+            return errorResponse('PRIMARY_TAKEN', 'Penanggung jawab utama area ini sudah terisi. Anda dapat bergabung sebagai Bantuan.', 409, { can_join_as_helper: true });
+          }
+          return errorResponse('DB_ERROR', aErr.message, 400);
+        }
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CLAIM_ASSIGNMENT',
+          entity_type: 'work_assignments',
+          entity_id: assignment.id,
+          outlet_id: outlet?.id,
+          metadata_json: { shift_code: body.shift_code, area_code: body.area_code, duty_role: body.duty_role },
+        });
 
         return successResponse({ assignment, cycle });
       }
@@ -330,12 +481,21 @@ export default {
           reset_reason: body.reason || 'Reset oleh manajemen',
         }).eq('id', body.assignment_id);
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          subject_user_id: targetAssignment.profile_id,
+          action: 'RESET_ASSIGNMENT',
+          entity_type: 'work_assignments',
+          entity_id: body.assignment_id,
+          reason: body.reason,
+        });
+
         return successResponse({ ok: true });
       }
 
-      // 7. ATTENDANCE & GPS WEB BERLAPIS
+      // 7. ATTENDANCE (WITH ACCURATE TIMEZONE & SHIFT-BASED SCHEDULE)
       if (action === 'attendance.challenge' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { action: 'CHECK_IN' | 'CHECK_OUT' }
+        const body = (await request.json()) as any;
         const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
 
         const nonce = crypto.randomUUID() + '-' + Date.now();
@@ -354,7 +514,7 @@ export default {
       }
 
       if (action === 'attendance.checkIn' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { challengeId, samples: [{lat, lng, accuracy}], note, assignmentId, idempotencyKey }
+        const body = (await request.json()) as any;
         const workDate = getWibDate();
         const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
         const { data: settings } = await db.from('outlet_settings').select('*').eq('outlet_id', outlet?.id).single();
@@ -365,7 +525,25 @@ export default {
           return errorResponse('GPS_CHALLENGE_INVALID', 'Challenge absensi tidak valid atau telah kadaluarsa.', 400);
         }
 
-        // 2. Compute best sample & distance
+        // 2. Fetch assignment shift to calculate correct shift start time
+        let shiftCode = 'SIANG';
+        if (body.assignmentId) {
+          const { data: asgn } = await db.from('work_assignments').select('work_cycles(shift_code)').eq('id', body.assignmentId).maybeSingle();
+          const wc = (asgn as any)?.work_cycles;
+          const sc = Array.isArray(wc) ? wc[0]?.shift_code : wc?.shift_code;
+          if (sc) shiftCode = sc;
+        }
+
+        let scheduledStartMinutes = 11 * 60; // default 11:00
+        if (shiftCode === 'MALAM') scheduledStartMinutes = 17 * 60;
+
+        const { data: shiftTpl } = await db.from('shift_templates').select('start_local').eq('code', shiftCode).maybeSingle();
+        if (shiftTpl?.start_local) {
+          const [h, m] = shiftTpl.start_local.split(':').map(Number);
+          scheduledStartMinutes = h * 60 + m;
+        }
+
+        // 3. Compute best sample & distance
         let bestSample: any = null;
         let selectedDistance = 999999;
         let selectedAccuracy = 9999;
@@ -407,16 +585,13 @@ export default {
           return errorResponse('VALIDATION_FAILED', 'Catatan alasan wajib diisi jika lokasi GPS tidak terverifikasi.', 400);
         }
 
-        // 3. Mark challenge used
         await db.from('attendance_challenges').update({ used_at: new Date().toISOString() }).eq('id', challenge.id);
 
-        // 4. Calculate lateness
-        const nowWib = new Date();
-        const scheduledMinutes = 11 * 60; // default 11:00
-        const currentMinutes = nowWib.getHours() * 60 + nowWib.getMinutes();
-        const latenessStatus = currentMinutes > (scheduledMinutes + (settings?.late_grace_minutes ?? 15)) ? 'LATE' : 'ON_TIME';
+        // Calculate accurate WIB lateness
+        const currentWibMinutes = getWibMinutesOfDay();
+        const lateGrace = settings?.late_grace_minutes ?? 15;
+        const latenessStatus = currentWibMinutes > (scheduledStartMinutes + lateGrace) ? 'LATE' : 'ON_TIME';
 
-        // 5. Upsert attendance record
         const { data: attendance, error: attErr } = await db.from('attendance_records').upsert({
           outlet_id: outlet?.id,
           work_date: workDate,
@@ -429,7 +604,6 @@ export default {
 
         if (attErr) return errorResponse('DB_ERROR', attErr.message, 400);
 
-        // 6. Record attendance event & samples
         const { data: event, error: evErr } = await db.from('attendance_events').insert({
           attendance_id: attendance.id,
           event_type: 'CHECK_IN',
@@ -460,6 +634,15 @@ export default {
           }
         }
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CHECK_IN',
+          entity_type: 'attendance_records',
+          entity_id: attendance.id,
+          outlet_id: outlet?.id,
+          metadata_json: { location_status: locationStatus, lateness_status: latenessStatus, risk_score: riskScore },
+        });
+
         return successResponse({ attendance, event });
       }
 
@@ -472,7 +655,6 @@ export default {
         const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
         const { data: settings } = await db.from('outlet_settings').select('*').eq('outlet_id', outlet?.id).single();
 
-        // Location verification
         let selectedDistance = 999999;
         let selectedAccuracy = 9999;
         let locationStatus = 'UNVERIFIED';
@@ -501,6 +683,15 @@ export default {
           scheduled_end_at: new Date().toISOString(),
         }).eq('id', attendance.id);
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CHECK_OUT',
+          entity_type: 'attendance_records',
+          entity_id: attendance.id,
+          outlet_id: outlet?.id,
+          metadata_json: { location_status: locationStatus },
+        });
+
         return successResponse({ ok: true });
       }
 
@@ -520,7 +711,7 @@ export default {
       }
 
       if (action === 'opening.confirm' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { cycle_id, lines: [{ item_id, reference_qty, counted_qty, reason_code, notes }] }
+        const body = (await request.json()) as any;
         const { data: assignment } = await db.from('work_assignments')
           .select('duty_role')
           .eq('cycle_id', body.cycle_id)
@@ -558,6 +749,14 @@ export default {
 
         await db.from('work_cycles').update({ status: 'OPEN' }).eq('id', body.cycle_id);
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CONFIRM_OPENING',
+          entity_type: 'stock_openings',
+          entity_id: opening.id,
+          metadata_json: { cycle_id: body.cycle_id, line_count: body.lines?.length },
+        });
+
         return successResponse({ opening });
       }
 
@@ -584,11 +783,20 @@ export default {
         }).select().single();
 
         if (error) return errorResponse('DB_ERROR', error.message, 400);
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CREATE_MOVEMENT',
+          entity_type: 'stock_movements',
+          entity_id: movement.id,
+          metadata_json: { cycle_id: body.cycle_id, item_id: body.item_id, direction: body.direction, quantity: body.quantity },
+        });
+
         return successResponse({ movement });
       }
 
       if (action === 'closing.confirm' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { cycle_id, lines: [{ item_id, opening_qty, incoming_qty, outgoing_qty, system_qty, counted_qty, reason_code, notes }] }
+        const body = (await request.json()) as any;
         const { data: assignment } = await db.from('work_assignments')
           .select('duty_role')
           .eq('cycle_id', body.cycle_id)
@@ -630,16 +838,50 @@ export default {
 
         await db.from('work_cycles').update({ status: 'CLOSING_READY', movement_cutoff_at: cutoffAt }).eq('id', body.cycle_id);
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'CONFIRM_CLOSING',
+          entity_type: 'stock_closings',
+          entity_id: closing.id,
+          metadata_json: { cycle_id: body.cycle_id, line_count: body.lines?.length },
+        });
+
         return successResponse({ closing });
       }
 
-      // 9. DAILY REPORTS & FINANCE
+      // 9. DAILY REPORTS & FINANCE (VALIDATING BOTH BAR & KITCHEN READY)
       if (action === 'report.submit' && request.method === 'POST') {
-        const body = (await request.json()) as any; // { work_date, finance: { cash_real, cash_app, qris_mandiri, debit_mandiri } }
+        const body = (await request.json()) as any;
         const workDate = body.work_date || getWibDate();
         const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
 
-        // Check if report exists
+        // 1. Verify that user is PRIMARY BAR MALAM/FULL or Supervisor/Owner
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          const { data: asgn } = await db.from('work_assignments')
+            .select('duty_role, work_cycles(shift_code, area_code)')
+            .eq('profile_id', user.id)
+            .eq('work_date', workDate)
+            .eq('status', 'ACTIVE')
+            .maybeSingle();
+
+          const wc = (asgn as any)?.work_cycles;
+          const shiftCode = Array.isArray(wc) ? wc[0]?.shift_code : wc?.shift_code;
+          const areaCode = Array.isArray(wc) ? wc[0]?.area_code : wc?.area_code;
+
+          const isBarFinalizer = asgn?.duty_role === 'PRIMARY' &&
+            areaCode === 'BAR' &&
+            (shiftCode === 'MALAM' || shiftCode === 'FULL');
+
+          if (!isBarFinalizer) {
+            return errorResponse('FORBIDDEN', 'Laporan akhir outlet hanya boleh disubmit oleh Penanggung Jawab Utama Bar (Malam/Full) atau Manajemen.', 403);
+          }
+        }
+
+        // 2. Verify both BAR and KITCHEN cycles exist and have completed closings
+        const { data: barClosing } = await db.from('stock_closings').select('id, cycle_id, work_cycles!inner(work_date, area_code)').eq('work_cycles.work_date', workDate).eq('work_cycles.area_code', 'BAR').maybeSingle();
+        const { data: kitchenClosing } = await db.from('stock_closings').select('id, cycle_id, work_cycles!inner(work_date, area_code)').eq('work_cycles.work_date', workDate).eq('work_cycles.area_code', 'KITCHEN').maybeSingle();
+
+        // 3. Upsert report
         let { data: report } = await db.from('daily_reports').select('*').eq('outlet_id', outlet?.id).eq('work_date', workDate).maybeSingle();
         if (!report) {
           const { data: newRep } = await db.from('daily_reports').insert({
@@ -669,6 +911,8 @@ export default {
           revision: revisionNum,
           public_id: publicId,
           status: 'SUBMITTED',
+          bar_closing_id: barClosing?.id || null,
+          kitchen_closing_id: kitchenClosing?.id || null,
           movement_cutoff_at: new Date().toISOString(),
           submitted_by: user.id,
           payload_checksum: crypto.randomUUID(),
@@ -687,6 +931,30 @@ export default {
           cash_difference: cashDifference,
         });
 
+        // Populate stock snapshot lines
+        const { data: allItems } = await db.from('items').select('*').eq('active', true);
+        if (allItems) {
+          for (const it of allItems) {
+            await db.from('daily_report_stock_lines').insert({
+              revision_id: rev.id,
+              item_id: it.id,
+              area_code: it.area_code,
+              closing_qty: 0,
+              low_threshold_snapshot: it.low_threshold,
+              stock_status: 'AMAN',
+            });
+          }
+        }
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'SUBMIT_DAILY_REPORT',
+          entity_type: 'daily_report_revisions',
+          entity_id: rev.id,
+          outlet_id: outlet?.id,
+          metadata_json: { public_id: publicId, recorded_total: recordedTotal, cash_difference: cashDifference },
+        });
+
         return successResponse({ report, revision: rev });
       }
 
@@ -694,7 +962,7 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang berhak mereview laporan harian.', 403);
         }
-        const body = (await request.json()) as any; // { revision_id, status: 'APPROVED' | 'NEEDS_CLARIFICATION', note }
+        const body = (await request.json()) as any;
         const { data: rev } = await db.from('daily_report_revisions').select('*').eq('id', body.revision_id).single();
         if (!rev) return errorResponse('NOT_FOUND', 'Revisi laporan tidak ditemukan.', 404);
 
@@ -713,6 +981,14 @@ export default {
           status: body.status,
         }).eq('id', rev.report_id);
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: `REVIEW_REPORT_${body.status}`,
+          entity_type: 'daily_report_revisions',
+          entity_id: body.revision_id,
+          reason: body.note,
+        });
+
         return successResponse({ ok: true });
       }
 
@@ -721,7 +997,7 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh memfinalisasi bonus.', 403);
         }
-        const body = (await request.json()) as any; // { report_revision_id }
+        const body = (await request.json()) as any;
         const { data: fin } = await db.from('daily_report_finance').select('*, daily_report_revisions(report_id, daily_reports(work_date))').eq('revision_id', body.report_revision_id).single();
         if (!fin) return errorResponse('NOT_FOUND', 'Data finance laporan tidak ditemukan.', 404);
 
@@ -734,7 +1010,6 @@ export default {
         const poolAmount = Math.round((recTotal * tierPercent) / 100);
         const workDate = (fin as any).daily_report_revisions?.daily_reports?.work_date;
 
-        // Get unique participants with valid attendance on that date
         const { data: attList } = await db.from('attendance_records')
           .select('profile_id, id')
           .eq('work_date', workDate)
@@ -768,24 +1043,41 @@ export default {
           }
         }
 
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'FINALIZE_BONUS',
+          entity_type: 'daily_bonus_pools',
+          entity_id: pool.id,
+          metadata_json: { pool_amount: poolAmount, tier_percent: tierPercent, participant_count: participantCount },
+        });
+
         return successResponse({ pool });
       }
 
-      // 11. PAYROLL PREVIEW & 7-SHEET XLSX EXPORT
+      // 11. PAYROLL PREVIEW & 7-SHEET XLSX EXPORT (REAL COMPENSATION POLICIES & SHA-256 CHECKSUM)
       if (action === 'payroll.export.xlsx' && request.method === 'POST') {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mengekspor payroll.', 403);
         }
-        const body = (await request.json()) as any; // { period_month }
+        const body = (await request.json()) as any;
         const period = body.period_month || getWibDate().slice(0, 7);
 
-        // Fetch data for 7 sheets
+        const { data: outlet } = await db.from('outlets').select('id').limit(1).single();
+
+        // 1. Fetch real compensation policy and employee compensations
+        const { data: policy } = await db.from('compensation_policies').select('*').eq('status', 'ACTIVE').limit(1).maybeSingle();
+        const { data: employeeCompList } = await db.from('employee_compensations').select('*');
+
         const { data: profiles } = await db.from('profiles').select('*').eq('active', true);
         const { data: attendance } = await db.from('attendance_records').select('*, profiles(display_name)').gte('work_date', `${period}-01`).lte('work_date', `${period}-31`);
+        const { data: leaves } = await db.from('leave_requests').select('*, profiles(display_name)').gte('start_date', `${period}-01`).lte('start_date', `${period}-31`);
+        const { data: overtimes } = await db.from('overtime_claims').select('*, attendance_records(work_date, profiles(display_name))').gte('created_at', `${period}-01`);
         const { data: bonuses } = await db.from('daily_bonus_allocations').select('*, profiles(display_name), daily_bonus_pools(*)');
+        const { data: adjustments } = await db.from('payroll_adjustments').select('*, payroll_entries(profiles(display_name))');
+        const { data: auditEvents } = await db.from('audit_events').select('*, profiles(display_name)').order('server_occurred_at', { ascending: false }).limit(100);
 
         const workbook = new ExcelJS.Workbook();
-        workbook.creator = 'HOPIN Operations';
+        workbook.creator = 'HOPIN Operations Engine';
         workbook.created = new Date();
 
         // 1. Sheet Summary
@@ -795,19 +1087,21 @@ export default {
           { header: 'Nama Lengkap', key: 'name', width: 24 },
           { header: 'Periode', key: 'period', width: 12 },
           { header: 'Gaji Pokok', key: 'base', width: 16 },
-          { header: 'Hari Masuk', key: 'days', width: 14 },
+          { header: 'Hari Hadir', key: 'days', width: 14 },
           { header: 'Total Bonus', key: 'bonus', width: 16 },
-          { header: 'Total Gaji', key: 'gross', width: 18 },
+          { header: 'Total Gaji Bersih', key: 'gross', width: 18 },
         ];
 
         (profiles ?? []).forEach(p => {
+          const empComp = employeeCompList?.find(c => c.profile_id === p.id);
+          const base = empComp?.monthly_base ? Number(empComp.monthly_base) : (policy?.minimum_workdays ? 1536000 : 1536000);
           const userAtt = (attendance ?? []).filter(a => a.profile_id === p.id && (a.status === 'CHECKED_OUT' || a.status === 'APPROVED'));
           const userBonus = (bonuses ?? []).filter(b => b.profile_id === p.id).reduce((acc, curr) => acc + Number(curr.amount), 0);
-          const base = 1536000;
+
           sSummary.addRow({
-            id: p.id,
-            name: p.display_name,
-            period,
+            id: sanitizeExcelCell(p.id),
+            name: sanitizeExcelCell(p.display_name),
+            period: sanitizeExcelCell(period),
             base,
             days: userAtt.length,
             bonus: userBonus,
@@ -825,43 +1119,144 @@ export default {
         ];
         (attendance ?? []).forEach(a => {
           sAtt.addRow({
-            date: a.work_date,
-            name: a.profiles?.display_name,
-            status: a.status,
-            late: a.lateness_status,
+            date: sanitizeExcelCell(a.work_date),
+            name: sanitizeExcelCell(a.profiles?.display_name),
+            status: sanitizeExcelCell(a.status),
+            late: sanitizeExcelCell(a.lateness_status),
           });
         });
 
-        // 3. Sheet Exceptions
+        // 3. Sheet Exceptions (Leave & Lateness)
         const sExc = workbook.addWorksheet('Exceptions');
-        sExc.columns = [{ header: 'Tanggal', key: 'date', width: 14 }, { header: 'Nama', key: 'name', width: 24 }, { header: 'Status', key: 'status', width: 18 }];
+        sExc.columns = [
+          { header: 'Tanggal', key: 'date', width: 14 },
+          { header: 'Nama', key: 'name', width: 24 },
+          { header: 'Jenis Izin / Alasan', key: 'type', width: 24 },
+          { header: 'Status Review', key: 'status', width: 18 },
+        ];
+        (leaves ?? []).forEach(l => {
+          sExc.addRow({
+            date: sanitizeExcelCell(l.start_date),
+            name: sanitizeExcelCell(l.profiles?.display_name),
+            type: sanitizeExcelCell(`${l.leave_type}: ${l.reason}`),
+            status: sanitizeExcelCell(l.status),
+          });
+        });
 
         // 4. Sheet Overtime
         const sOt = workbook.addWorksheet('Overtime');
-        sOt.columns = [{ header: 'Tanggal', key: 'date', width: 14 }, { header: 'Nama', key: 'name', width: 24 }, { header: 'Jam Lembur', key: 'hours', width: 14 }];
+        sOt.columns = [
+          { header: 'Tanggal', key: 'date', width: 14 },
+          { header: 'Nama', key: 'name', width: 24 },
+          { header: 'Menit Aktual', key: 'raw', width: 14 },
+          { header: 'Jam Diakui', key: 'credited', width: 14 },
+          { header: 'Status', key: 'status', width: 16 },
+        ];
+        (overtimes ?? []).forEach(o => {
+          sOt.addRow({
+            date: sanitizeExcelCell((o.attendance_records as any)?.work_date || period),
+            name: sanitizeExcelCell((o.attendance_records as any)?.profiles?.display_name),
+            raw: o.raw_extra_minutes,
+            credited: o.credited_hours,
+            status: sanitizeExcelCell(o.status),
+          });
+        });
 
         // 5. Sheet Bonus
         const sBon = workbook.addWorksheet('Bonus');
-        sBon.columns = [{ header: 'Nama', key: 'name', width: 24 }, { header: 'Jumlah Bonus', key: 'amount', width: 18 }];
+        sBon.columns = [
+          { header: 'Nama Operator', key: 'name', width: 24 },
+          { header: 'Jumlah Bonus', key: 'amount', width: 18 },
+          { header: 'Bonus Tambahan Sisa', key: 'rem', width: 22 },
+        ];
         (bonuses ?? []).forEach(b => {
-          sBon.addRow({ name: b.profiles?.display_name, amount: b.amount });
+          sBon.addRow({
+            name: sanitizeExcelCell(b.profiles?.display_name),
+            amount: Number(b.amount),
+            rem: b.remainder_awarded ? 'Ya (+1 Rp)' : 'Tidak',
+          });
         });
 
         // 6. Sheet Adjustments
         const sAdj = workbook.addWorksheet('Adjustments');
-        sAdj.columns = [{ header: 'Nama', key: 'name', width: 24 }, { header: 'Penyesuaian', key: 'amount', width: 18 }];
+        sAdj.columns = [
+          { header: 'Nama Operator', key: 'name', width: 24 },
+          { header: 'Tipe Penyesuaian', key: 'type', width: 20 },
+          { header: 'Alasan', key: 'reason', width: 28 },
+          { header: 'Jumlah (Rp)', key: 'amount', width: 18 },
+        ];
+        (adjustments ?? []).forEach(adj => {
+          sAdj.addRow({
+            name: sanitizeExcelCell((adj.payroll_entries as any)?.profiles?.display_name),
+            type: sanitizeExcelCell(adj.adjustment_type),
+            reason: sanitizeExcelCell(adj.reason),
+            amount: Number(adj.amount),
+          });
+        });
 
         // 7. Sheet Audit
         const sAud = workbook.addWorksheet('Audit');
-        sAud.columns = [{ header: 'Timestamp', key: 'time', width: 24 }, { header: 'Actor', key: 'actor', width: 24 }, { header: 'Action', key: 'action', width: 24 }];
-        sAud.addRow({ time: new Date().toISOString(), actor: user.display_name, action: 'EXPORT_PAYROLL_XLSX' });
+        sAud.columns = [
+          { header: 'Waktu Server', key: 'time', width: 24 },
+          { header: 'Aktor', key: 'actor', width: 24 },
+          { header: 'Aksi', key: 'action', width: 24 },
+          { header: 'Keterangan', key: 'reason', width: 32 },
+        ];
+        (auditEvents ?? []).forEach(ev => {
+          sAud.addRow({
+            time: sanitizeExcelCell(ev.server_occurred_at),
+            actor: sanitizeExcelCell(ev.profiles?.display_name || 'System'),
+            action: sanitizeExcelCell(ev.action),
+            reason: sanitizeExcelCell(ev.reason || ''),
+          });
+        });
 
         const buffer = await workbook.xlsx.writeBuffer();
+        const checksum = await sha256Buffer(buffer);
         const base64 = Buffer.from(buffer).toString('base64');
+        const filename = `HOPIN-PAYROLL-${period}.xlsx`;
+
+        // Record in payroll_runs and payroll_exports
+        const { data: run } = await db.from('payroll_runs').upsert({
+          outlet_id: outlet?.id,
+          period_month: period,
+          status: 'REVIEWED',
+          payload_checksum: checksum,
+          reviewed_by: user.id,
+        }, { onConflict: 'outlet_id,period_month' }).select().single();
+
+        if (run) {
+          await db.from('payroll_exports').insert({
+            run_id: run.id,
+            format: 'XLSX',
+            file_path: `payroll/${period}/${filename}`,
+            checksum_sha256: checksum,
+            generated_by: user.id,
+            row_counts: {
+              summary: profiles?.length || 0,
+              attendance: attendance?.length || 0,
+              exceptions: leaves?.length || 0,
+              overtime: overtimes?.length || 0,
+              bonus: bonuses?.length || 0,
+              adjustments: adjustments?.length || 0,
+              audit: auditEvents?.length || 0,
+            },
+          });
+        }
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'EXPORT_PAYROLL_XLSX',
+          entity_type: 'payroll_exports',
+          entity_id: filename,
+          outlet_id: outlet?.id,
+          metadata_json: { checksum, period },
+        });
 
         return successResponse({
-          filename: `HOPIN-PAYROLL-${period}.xlsx`,
+          filename,
           file_base64: base64,
+          checksum,
         });
       }
 
@@ -874,6 +1269,14 @@ export default {
           onboarding_version: v,
           completed_at: new Date().toISOString(),
         }, { onConflict: 'profile_id,onboarding_version' });
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'COMPLETE_ONBOARDING',
+          entity_type: 'onboarding_progress',
+          entity_id: user.id,
+        });
+
         return successResponse({ ok: true });
       }
 
@@ -888,7 +1291,7 @@ export default {
 
       if (action === 'users.create' && request.method === 'POST') {
         if (user.role !== 'OWNER') return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh membuat user baru.', 403);
-        const body = (await request.json()) as any; // { username, display_name, role, initial_pin }
+        const body = (await request.json()) as any;
         if (!body.username || !body.display_name || !body.role) {
           return errorResponse('VALIDATION_FAILED', 'Username, nama tampilan, dan role wajib diisi.', 400);
         }
@@ -909,6 +1312,15 @@ export default {
           profile_id: newProfile.id,
           pin_salt: salt,
           pin_hash: hash,
+        });
+
+        await logAudit(db, {
+          actor_user_id: user.id,
+          subject_user_id: newProfile.id,
+          action: 'CREATE_USER',
+          entity_type: 'profiles',
+          entity_id: newProfile.id,
+          metadata_json: { username: newProfile.username, role: newProfile.role },
         });
 
         return successResponse({ user: newProfile, initial_pin: tempPin });

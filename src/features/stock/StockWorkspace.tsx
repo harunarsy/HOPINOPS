@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import type { Area, ShiftType, Item, DutyRole } from '../../domain/types';
 import { fmtNumber, areaLabel, shiftLabel, statusOfStock, movementCategoryLabel } from '../../domain/rules';
 import { api } from '../../lib/api';
+import { idbQueue } from '../../lib/idb-queue';
 
 type Tab = 'overview' | 'opening' | 'movement' | 'closing';
 
@@ -36,6 +37,7 @@ export function StockWorkspace({
   const [mvCat, setMvCat] = useState('PURCHASE');
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState('');
+  const [queuedCount, setQueuedCount] = useState(0);
 
   // Opening state
   const openingRecord = cycleData?.opening;
@@ -58,6 +60,39 @@ export function StockWorkspace({
     setToast(msg);
     setTimeout(() => setToast(''), 3000);
   };
+
+  // Sync offline queue when online
+  const syncQueue = async () => {
+    if (!navigator.onLine) return;
+    try {
+      const queue = await idbQueue.getAll();
+      setQueuedCount(queue.length);
+      for (const item of queue) {
+        if (item.action === 'CREATE_MOVEMENT') {
+          await api.createMovement(item.payload);
+          await idbQueue.remove(item.id);
+        }
+      }
+      const remaining = await idbQueue.getAll();
+      setQueuedCount(remaining.length);
+      if (queue.length > 0 && remaining.length === 0) {
+        showToast('Semua catatan offline berhasil disinkronkan ke server.');
+        await onRefresh();
+      }
+    } catch (e) {
+      console.error('Queue sync error', e);
+    }
+  };
+
+  useEffect(() => {
+    void syncQueue();
+    const interval = setInterval(syncQueue, 15000);
+    window.addEventListener('online', syncQueue);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('online', syncQueue);
+    };
+  }, []);
 
   const movements = cycleData?.movements ?? [];
 
@@ -119,21 +154,37 @@ export function StockWorkspace({
       return;
     }
 
+    const payload = {
+      cycle_id: cycleId,
+      item_id: mvItem,
+      direction: mvType === 'Masuk' ? 'IN' : 'OUT',
+      category: mvCat,
+      quantity: qty,
+      idempotency_key: crypto.randomUUID(),
+    };
+
     setLoading(true);
     try {
-      await api.createMovement({
-        cycle_id: cycleId,
-        item_id: mvItem,
-        direction: mvType === 'Masuk' ? 'IN' : 'OUT',
-        category: mvCat,
-        quantity: qty,
-      });
+      if (navigator.onLine) {
+        await api.createMovement(payload);
+        showToast('Perubahan stok berhasil dicatat ke server.');
+        await onRefresh();
+      } else {
+        await idbQueue.add('CREATE_MOVEMENT', payload);
+        const q = await idbQueue.getAll();
+        setQueuedCount(q.length);
+        showToast('Offline: Perubahan disimpan di antrean perangkat.');
+      }
       setMvQty('');
       setMovementModalOpen(false);
-      showToast('Perubahan stok berhasil dicatat.');
-      await onRefresh();
     } catch (err: any) {
-      showToast(err.message || 'Gagal mencatat perubahan');
+      // If network failure, queue it
+      await idbQueue.add('CREATE_MOVEMENT', payload);
+      const q = await idbQueue.getAll();
+      setQueuedCount(q.length);
+      showToast('Koneksi terganggu. Catatan disimpan di antrean offline.');
+      setMvQty('');
+      setMovementModalOpen(false);
     } finally {
       setLoading(false);
     }
@@ -142,6 +193,11 @@ export function StockWorkspace({
   const handleConfirmClosing = async () => {
     if (!isPrimary) {
       showToast('Hanya Penanggung Jawab Utama yang dapat mengonfirmasi closing.');
+      return;
+    }
+
+    if (queuedCount > 0) {
+      showToast(`Terdapat ${queuedCount} transaksi offline yang belum tersinkronisasi.`);
       return;
     }
 
@@ -186,6 +242,11 @@ export function StockWorkspace({
               ? 'Catat perubahan stok masuk dan keluar secara real-time.'
               : 'Konfirmasi stok awal sebelum mencatat transaksi.'}
           </p>
+          {queuedCount > 0 && (
+            <p style={{ color: '#d97706', fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>
+              ⚡ {queuedCount} transaksi offline dalam antrean sinkronisasi
+            </p>
+          )}
         </div>
         <div>
           <button className="outline-button" onClick={onCheckOutRequest} style={{ borderColor: '#d97706', color: '#b45309' }}>

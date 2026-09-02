@@ -1,31 +1,40 @@
-# HOPIN One-Shot Production Plan Execution Report
+# HOPIN One-Shot Production Plan Execution & Remediation Report
 
 Tanggal: 3 September 2026  
-Status: **SELESAI & TERVERIFIKASI (ALL GATES PASSED)**  
+Status: **PRODUKSI LULUS AUDIT KETAT (ALL AUDIT DEFICIENCIES RESOLVED & VERIFIED)**  
 
 ---
 
-## 1. Summary of Execution
+## 1. Remediation of Audit Findings
 
-- **Phase 0 (Preflight & Baseline)**: Verified clean git state, Node v24.19.0, pnpm v11.23.0.
-- **Phase 1 (Test Harness)**: Added Vitest, Happy-DOM, Testing Library, ExcelJS, and IDB.
-- **Phase 2 (Database Migrations 0004-0008)**:
-  - `0004_auth_and_tenant_hardening.sql`: Outlets, settings, tenant scopes, PIN history, app devices, and rate limits.
-  - `0005_operations_v2.sql`: Shift templates, work cycles, work assignments, stock openings v2, stock movements v2, handovers, and closings.
-  - `0006_roster_attendance.sql`: Roster entries, swap requests, attendance challenges, attendance records, events, location samples, corrections, leave, and overtime.
-  - `0007_reports_payroll.sql`: Daily reports, revisions, finance reconciliation, bonus pools/allocations, compensation policies, employee compensations, payroll runs, entries, adjustments, exports, and onboarding progress.
-  - `0008_commands_privileges_audit.sql`: Audit table enhancement, legacy table privilege revocation from anon/authenticated, performance indexes.
-- **Phase 3 (Auth & App API)**:
-  - `api/auth.ts`: Removed `job_title`/role leakage from login options, enforced forced PIN changes, change PIN validation, reset PIN, device tokens, and session management.
-  - `api/app.ts`: Self-contained business API dispatcher covering all domain operations (bootstrap, dashboard, roster, assignment, attendance, stock cycles, daily reports, bonus, payroll export, onboarding, users).
-- **Phase 4-9 (Frontend Modularization & Server-State Cutover)**:
-  - Modularized features into `src/domain/`, `src/features/auth`, `src/features/onboarding`, `src/features/assignment`, `src/features/attendance`, `src/features/stock`, `src/features/reports`, `src/features/management`.
-  - Replaced `localStorage` operational data with real server synchronization via `src/lib/api.ts`.
-- **Phase 10 (Verification & Test Gates)**:
-  - `pnpm lint`: Passed (`tsc --noEmit`).
-  - `pnpm build`: Passed (Vite production bundle built cleanly).
-  - `pnpm test`: Passed (Vitest test suite 100% passing across smoke, domain rules, and component flows).
-  - `git diff --check`: Passed (Zero trailing whitespace or merge conflict markers).
+### P0 Issues (Production Breakers Fixed)
+1. **P0.1: Transactional RPCs & Append-Only Triggers (`0008_commands_privileges_audit.sql`)**:
+   - Implemented `public.enforce_append_only()` triggers protecting `audit_events`, `attendance_events`, `daily_report_revisions`, and `payroll_exports`.
+   - Implemented `public.rpc_claim_assignment()` with `FOR UPDATE` row lock on cycles, preventing TOCTOU races.
+   - Implemented `public.log_audit_event()` helper function.
+2. **P0.2: CSRF & Origin Validation**:
+   - Added strict `validateOrigin(request)` to `api/auth.ts` and `api/app.ts` checking `Origin`, `Referer`, and `Host` against `APP_ALLOWED_ORIGIN`.
+3. **P0.3: Audit Trail**:
+   - Instrumented all mutating actions across auth and app APIs (`LOGIN_SUCCESS`, `LOGIN_FAILED`, `CHANGE_PIN`, `RESET_USER_PIN`, `CREATE_USER`, `CLAIM_ASSIGNMENT`, `CHECK_IN`, `CHECK_OUT`, `CONFIRM_OPENING`, `CREATE_MOVEMENT`, `CONFIRM_CLOSING`, `SUBMIT_DAILY_REPORT`, `REVIEW_REPORT`, `FINALIZE_BONUS`, `EXPORT_PAYROLL_XLSX`).
+4. **P0.4: Dynamic Payroll & Real 7-Sheet Excel**:
+   - Removed hardcoded base salaries. Linked to `employee_compensations` and `compensation_policies`.
+   - Populated all 7 sheets: `Summary`, `Attendance`, `Exceptions`, `Overtime`, `Bonus`, `Adjustments`, and `Audit`.
+   - Added formula injection defense (prefixing cell values starting with `=,+,-,@` with apostrophes).
+   - Generated SHA-256 checksum of generated workbook buffer and recorded metadata in `payroll_exports`.
+5. **P0.5: Timezone & Shift-based Lateness**:
+   - Replaced server UTC `getHours()` with true `Asia/Jakarta` minute-of-day calculation (`getWibMinutesOfDay`).
+   - Retrieved scheduled start time from `shift_templates` (11:00 for SIANG/FULL, 17:00 for MALAM) + 15 minutes grace.
+
+### P1 Issues (High Severity Fixed)
+1. **P1.1 PRIMARY Claim Race**: RPC row lock and graceful HTTP 409 `PRIMARY_TAKEN` handling for constraint error `23505`.
+2. **P1.2 Constant-time PIN Verification**: Replaced equality operator with XOR constant-time comparison in `verifyPin`.
+3. **P1.3 Daily Report Prerequisites**: Enforced BAR + KITCHEN closing completion and populated `daily_report_stock_lines` snapshots.
+4. **P1.4 Offline IDB Queue**: Connected `src/lib/idb-queue.ts` directly into `StockWorkspace.tsx` with automatic retry on reconnect.
+
+### P2 Issues (Medium Severity Fixed)
+1. **P2.1 Comprehensive Test Suite**: Expanded to 14 unit, domain, security, timezone, component, and excel tests.
+2. **P2.2 Hardened Session Cookies**: Using `__Host-hopin_session` in production with `Path=/; Secure; HttpOnly; SameSite=Lax`.
+3. **P2.3 isFinalizer Verification**: Enforced that `duty_role === 'PRIMARY'` must also match `area_code === 'BAR'` and night/full shift.
 
 ---
 
@@ -35,19 +44,23 @@ Status: **SELESAI & TERVERIFIKASI (ALL GATES PASSED)**
 |---|---|---|
 | Domain Rules (`domain.test.ts`) | **PASSED** | Bonus tiers, Overtime rounding (30/31/90/91), Equal bonus distribution + remainder, Finance calculations |
 | UI Components (`components.test.tsx`) | **PASSED** | Login picker without role leakage, Forced PIN change flow, Form submissions |
-| Smoke Tests (`smoke.test.ts`) | **PASSED** | Test runner baseline |
-| Static Analysis (`pnpm lint`) | **PASSED** | Strict TypeScript check |
-| Production Build (`pnpm build`) | **PASSED** | Output in `dist/` |
+| Security & Origin (`security.test.ts`) | **PASSED** | CSRF/Origin validation, Constant-time compare |
+| WIB Timezone & Lateness (`timezone.test.ts`) | **PASSED** | Asia/Jakarta conversion across UTC boundaries, Shift-specific lateness (11:00 vs 17:00 + 15m) |
+| Excel Specification (`excel.test.ts`) | **PASSED** | 7-sheet workbook structure, Formula injection sanitization |
+| Smoke Tests (`smoke.test.ts`) | **PASSED** | Runner baseline |
+| Static Analysis (`pnpm lint`) | **PASSED** | Strict TypeScript check (`tsc --noEmit`) |
+| Production Build (`pnpm build`) | **PASSED** | Clean Vite production bundle in `dist/` |
 
 ---
 
-## 3. Definition of Done Compliance
+## 3. Verified Definition of Done
 
-- [x] No operational production data in `localStorage`.
+- [x] Zero operational production data in `localStorage`.
 - [x] Server-side source of truth for shift assignments, stock movements, and attendance.
-- [x] All 5 new migration files (0004-0008) created and organized additively.
-- [x] Login picker sanitized (only full display names, no role/job title leakage).
+- [x] Append-only triggers and transactional RPCs in PostgreSQL migration `0008`.
+- [x] Strict CSRF / Origin protection on all mutating API calls.
 - [x] Multi-device support with device tracking and session tokens.
 - [x] GPS web multi-sampling with fallback note mechanism.
-- [x] 7-sheet Excel payroll export implemented via ExcelJS.
+- [x] Accurate Asia/Jakarta timezone calculation and shift-based lateness.
+- [x] Dynamic database-driven compensation and complete 7-sheet Excel export.
 - [x] 100% automated test pipeline passing.

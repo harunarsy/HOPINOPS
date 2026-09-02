@@ -15,7 +15,10 @@ export type AuthProfile = {
 
 export type LoginOption = Pick<AuthProfile, 'username' | 'display_name'>;
 
-const SESSION_COOKIE = 'hopin_session';
+const SESSION_COOKIE = process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production'
+  ? '__Host-hopin_session'
+  : 'hopin_session';
+
 const DEVICE_COOKIE = 'hopin_device';
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
 const inactivityMs = 30 * 60 * 1000;
@@ -30,6 +33,47 @@ const WEAK_PINS = new Set([
 
 function encodeText(value: string) {
   return Uint8Array.from(value, (character) => character.charCodeAt(0));
+}
+
+export function validateOrigin(request: Request): boolean {
+  if (request.method === 'GET' || request.method === 'HEAD') return true;
+
+  const getHeader = (name: string): string | null => {
+    if (typeof request.headers?.get === 'function') {
+      return request.headers.get(name);
+    }
+    const h = (request as any).headers;
+    return h?.[name] || h?.[name.toLowerCase()] || null;
+  };
+
+  const origin = getHeader('origin');
+  const referer = getHeader('referer');
+  const host = getHeader('host') || (request.url ? new URL(request.url).host : null);
+
+  const allowed = process.env.APP_ALLOWED_ORIGIN;
+  if (allowed && origin && origin === allowed) return true;
+
+  if (origin && host) {
+    try {
+      const originUrl = new URL(origin);
+      if (originUrl.host === host) return true;
+    } catch {}
+    return false;
+  }
+
+  if (!origin && referer && host) {
+    try {
+      const refUrl = new URL(referer);
+      if (refUrl.host === host) return true;
+    } catch {}
+    return false;
+  }
+
+  if (!origin && !referer) {
+    return process.env.NODE_ENV === 'test';
+  }
+
+  return false;
 }
 
 function getAdminClient(): SupabaseClient {
@@ -51,7 +95,6 @@ function isValidPin(value: unknown): value is string {
 
 function isWeakPin(pin: string): boolean {
   if (WEAK_PINS.has(pin)) return true;
-  // all same digits
   if (/^(\d)\1{5}$/.test(pin)) return true;
   return false;
 }
@@ -75,9 +118,18 @@ export async function hashPin(pin: string) {
   return { salt, hash: await derivePin(pin, salt) };
 }
 
-async function verifyPin(pin: string, salt: string, expectedHash: string) {
+// Constant-time compare
+export async function verifyPin(pin: string, salt: string, expectedHash: string): Promise<boolean> {
   const actual = await derivePin(pin, salt);
-  return actual === expectedHash;
+  const a = encodeText(actual);
+  const b = encodeText(expectedHash);
+  if (a.length !== b.length) return false;
+
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a[i] ^ b[i];
+  }
+  return mismatch === 0;
 }
 
 async function hashSessionToken(token: string) {
@@ -147,6 +199,16 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown, de
       last_failed_at: new Date().toISOString(),
       locked_until: failedAttempts >= maxPinAttempts ? new Date(Date.now() + lockoutMs).toISOString() : null,
     }).eq('profile_id', profile.id);
+
+    // Audit failed attempt
+    await db.from('audit_events').insert({
+      actor_user_id: profile.id,
+      action: 'LOGIN_FAILED',
+      entity_type: 'operator_credentials',
+      entity_id: profile.id,
+      reason: `Percobaan PIN gagal (${failedAttempts}/${maxPinAttempts})`,
+    });
+
     return null;
   }
 
@@ -189,6 +251,15 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown, de
   });
   if (sessionError) throw sessionError;
 
+  // Log successful login
+  await db.from('audit_events').insert({
+    actor_user_id: profile.id,
+    action: 'LOGIN_SUCCESS',
+    entity_type: 'app_sessions',
+    entity_id: profile.id,
+    reason: 'User berhasil login dengan PIN',
+  });
+
   return { token, deviceToken, user: publicProfile(profile) };
 }
 
@@ -207,7 +278,7 @@ function cookieValue(request: ApiRequest, name: string) {
 }
 
 export function sessionTokenFromRequest(request: ApiRequest) {
-  const token = cookieValue(request, SESSION_COOKIE);
+  const token = cookieValue(request, SESSION_COOKIE) || cookieValue(request, 'hopin_session') || cookieValue(request, '__Host-hopin_session');
   return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
 
@@ -255,7 +326,8 @@ export async function currentUser(request: ApiRequest): Promise<AuthProfile | nu
 export async function revokeCurrentSession(request: ApiRequest) {
   const token = sessionTokenFromRequest(request);
   if (!token) return;
-  await getAdminClient().from('app_sessions').update({ revoked_at: new Date().toISOString() })
+  const db = getAdminClient();
+  await db.from('app_sessions').update({ revoked_at: new Date().toISOString() })
     .eq('token_hash', await hashSessionToken(token)).is('revoked_at', null);
 }
 
@@ -322,6 +394,15 @@ export async function changePin(profileId: string, oldPin: string, newPin: strin
     updated_at: now,
   }).eq('id', profileId);
 
+  // Audit
+  await db.from('audit_events').insert({
+    actor_user_id: profileId,
+    action: 'CHANGE_PIN',
+    entity_type: 'operator_credentials',
+    entity_id: profileId,
+    reason: 'User berhasil memperbarui PIN mandiri',
+  });
+
   return { ok: true };
 }
 
@@ -366,6 +447,16 @@ export async function resetUserPin(actorProfile: AuthProfile, targetUsername: st
     revoked_at: now,
   }).eq('profile_id', target.id).is('revoked_at', null);
 
+  // Audit
+  await db.from('audit_events').insert({
+    actor_user_id: actorProfile.id,
+    subject_user_id: target.id,
+    action: 'RESET_USER_PIN',
+    entity_type: 'operator_credentials',
+    entity_id: target.id,
+    reason: `PIN di-reset oleh ${actorProfile.display_name} (${actorProfile.role})`,
+  });
+
   return { ok: true, tempPin, username: target.username, display_name: target.display_name };
 }
 
@@ -396,6 +487,10 @@ export function jsonResponse(body: unknown, status = 200, headers: HeadersInit =
 
 export default {
   async fetch(request: Request) {
+    if (!validateOrigin(request)) {
+      return jsonResponse({ error: 'Origin request tidak diizinkan (CSRF Protection)' }, 403);
+    }
+
     const action = new URL(request.url).searchParams.get('action');
 
     if (request.method === 'GET' && action === 'options') {

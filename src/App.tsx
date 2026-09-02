@@ -238,9 +238,13 @@ export default function App() {
 
   // 9. DAILY REPORTS VIEW
   if (showReportsView) {
+    const isBarFinalizer = activeAssignment?.duty_role === 'PRIMARY' &&
+      activeAssignment?.work_cycles?.area_code === 'BAR' &&
+      (activeAssignment?.work_cycles?.shift_code === 'MALAM' || activeAssignment?.work_cycles?.shift_code === 'FULL');
+
     return (
       <ReportsView
-        isFinalizer={activeAssignment?.duty_role === 'PRIMARY' && (activeAssignment?.work_cycles?.shift_code === 'MALAM' || activeAssignment?.work_cycles?.shift_code === 'FULL')}
+        isFinalizer={isBarFinalizer || currentUser.role === 'OWNER' || currentUser.role === 'SUPERVISOR'}
         workDate={workDate}
         onRefresh={loadBootstrap}
         onBack={() => setShowReportsView(false)}
