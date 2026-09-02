@@ -18,17 +18,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getLoginOptions() {
-  const body = await request<{ options: LoginOption[] }>('/api/auth/options');
+  const body = await request<{ options: LoginOption[] }>('/api/auth?action=options');
   return body.options;
 }
 
 export async function getCurrentUser() {
-  const body = await request<{ user: AuthUser | null }>('/api/auth/me');
+  const body = await request<{ user: AuthUser | null }>('/api/auth?action=me');
   return body.user;
 }
 
 export async function login(username: string, pin: string) {
-  const body = await request<{ user: AuthUser }>('/api/auth/login', {
+  const body = await request<{ user: AuthUser }>('/api/auth?action=login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, pin }),
@@ -37,5 +37,5 @@ export async function login(username: string, pin: string) {
 }
 
 export async function logout() {
-  await request<{ ok: true }>('/api/auth/logout', { method: 'POST' });
+  await request<{ ok: true }>('/api/auth?action=logout', { method: 'POST' });
 }

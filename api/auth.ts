@@ -234,3 +234,57 @@ export function jsonResponse(body: unknown, status = 200, headers: HeadersInit =
     headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers },
   });
 }
+
+export default {
+  async fetch(request: Request) {
+    const action = new URL(request.url).searchParams.get('action');
+
+    if (request.method === 'GET' && action === 'options') {
+      try {
+        return jsonResponse({ options: await listLoginOptions() });
+      } catch (error) {
+        console.error('Unable to load login options', error);
+        return jsonResponse({ error: 'Authentication service is not configured.' }, 503);
+      }
+    }
+
+    if (request.method === 'GET' && action === 'me') {
+      try {
+        return jsonResponse({ user: await currentUser(request) });
+      } catch (error) {
+        console.error('Unable to load current user', error);
+        return jsonResponse({ error: 'Authentication service is not configured.' }, 503);
+      }
+    }
+
+    if (request.method === 'POST' && action === 'login') {
+      let body: { username?: unknown; pin?: unknown } = {};
+      try {
+        const parsed = await request.json();
+        if (parsed && typeof parsed === 'object') body = parsed as { username?: unknown; pin?: unknown };
+      } catch {
+        return jsonResponse({ error: 'Request body tidak valid.' }, 400);
+      }
+
+      try {
+        const result = await loginWithPin(body.username, body.pin);
+        if (!result) return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401);
+        return jsonResponse({ user: result.user }, 200, { 'Set-Cookie': sessionCookie(result.token) });
+      } catch (error) {
+        console.error('Unable to login', error);
+        return jsonResponse({ error: 'Authentication service is not configured.' }, 503);
+      }
+    }
+
+    if (request.method === 'POST' && action === 'logout') {
+      try {
+        await revokeCurrentSession(request);
+      } catch (error) {
+        console.error('Unable to logout', error);
+      }
+      return jsonResponse({ ok: true }, 200, { 'Set-Cookie': clearedSessionCookie() });
+    }
+
+    return jsonResponse({ error: 'Not found' }, 404);
+  },
+};
