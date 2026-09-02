@@ -10,17 +10,21 @@
 - Added environment variable documentation without storing secrets.
 - Linked the local CLI to the HOPIN Supabase project.
 - Applied migration `0001_initial_schema.sql` to the remote database.
+- Defined separate finance/progress access for investor and owner roles in migration `0002`.
+- Applied migration `0002_role_scopes.sql` to the remote database.
 
 ## Current state
 
 - Supabase project exists, is linked locally, and migration `0001` is applied.
 - RLS is enabled for all application tables by the migration.
+- `0002` is applied remotely; no Auth users have been created yet.
 - The application still reads and writes `localStorage`.
 - No Supabase credentials are stored in this repository.
 
 ## Next
 
 - Decide operator authentication as email/password or another Supabase Auth flow.
+- Confirm initial user records and create Auth users without sharing PINs.
 - Wire auth, assignment, opening, movement, closing, and report commands to Supabase.
 - Add Vercel environment variables and verify the deployed flow.
 
