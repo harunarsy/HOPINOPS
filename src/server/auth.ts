@@ -1,5 +1,3 @@
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export type ApiRequest = {
@@ -22,7 +20,8 @@ const sessionLifetimeMs = 12 * 60 * 60 * 1000;
 const inactivityMs = 30 * 60 * 1000;
 const lockoutMs = 15 * 60 * 1000;
 const maxPinAttempts = 5;
-const scrypt = promisify(scryptCallback);
+const pinIterations = 310_000;
+const encoder = new TextEncoder();
 
 function getAdminClient(): SupabaseClient {
   const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
@@ -42,23 +41,32 @@ function isValidPin(value: unknown): value is string {
 }
 
 async function derivePin(pin: string, salt: string) {
-  const derived = await scrypt(pin, salt, 64);
-  return Buffer.from(derived as Buffer).toString('base64');
+  const key = await crypto.subtle.importKey('raw', encoder.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const derived = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: pinIterations, hash: 'SHA-256' }, key, 512);
+  return btoa(String.fromCharCode(...new Uint8Array(derived)));
+}
+
+function randomHex(byteLength: number) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export async function hashPin(pin: string) {
-  const salt = randomBytes(16).toString('base64');
+  const saltBytes = new Uint8Array(16);
+  crypto.getRandomValues(saltBytes);
+  const salt = btoa(String.fromCharCode(...saltBytes));
   return { salt, hash: await derivePin(pin, salt) };
 }
 
 async function verifyPin(pin: string, salt: string, expectedHash: string) {
-  const actual = Buffer.from(await derivePin(pin, salt), 'base64');
-  const expected = Buffer.from(expectedHash, 'base64');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  const actual = await derivePin(pin, salt);
+  return actual === expectedHash;
 }
 
-function hashSessionToken(token: string) {
-  return createHash('sha256').update(token).digest('hex');
+async function hashSessionToken(token: string) {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function publicProfile(profile: AuthProfile): AuthProfile {
@@ -122,7 +130,7 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown) {
     return null;
   }
 
-  const token = randomBytes(32).toString('hex');
+  const token = randomHex(32);
   const now = new Date();
   const { error: resetError } = await db.from('operator_credentials').update({
     failed_attempts: 0,
@@ -132,7 +140,7 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown) {
 
   const { error: sessionError } = await db.from('app_sessions').insert({
     profile_id: profile.id,
-    token_hash: hashSessionToken(token),
+    token_hash: await hashSessionToken(token),
     created_at: now.toISOString(),
     last_seen_at: now.toISOString(),
     expires_at: new Date(now.getTime() + sessionLifetimeMs).toISOString(),
@@ -169,7 +177,7 @@ export async function currentUser(request: ApiRequest): Promise<AuthProfile | nu
   const { data: session, error: sessionError } = await db
     .from('app_sessions')
     .select('id, profile_id, expires_at, last_seen_at, revoked_at')
-    .eq('token_hash', hashSessionToken(token))
+    .eq('token_hash', await hashSessionToken(token))
     .is('revoked_at', null)
     .maybeSingle();
   if (sessionError) throw sessionError;
@@ -200,7 +208,7 @@ export async function revokeCurrentSession(request: ApiRequest) {
   const token = sessionTokenFromRequest(request);
   if (!token) return;
   await getAdminClient().from('app_sessions').update({ revoked_at: new Date().toISOString() })
-    .eq('token_hash', hashSessionToken(token)).is('revoked_at', null);
+    .eq('token_hash', await hashSessionToken(token)).is('revoked_at', null);
 }
 
 function cookieFlags() {

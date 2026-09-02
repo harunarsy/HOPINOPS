@@ -1,11 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
-import { randomBytes, randomUUID, scrypt as scryptCallback } from 'node:crypto';
-import { promisify } from 'node:util';
+import { randomBytes, randomUUID, webcrypto } from 'node:crypto';
 import readline from 'node:readline/promises';
 import process from 'node:process';
 
-const scrypt = promisify(scryptCallback);
 const roles = ['OPERATOR', 'SUPERVISOR', 'ADMIN', 'INVESTOR', 'OWNER'];
+const pinIterations = 310_000;
+const encoder = new TextEncoder();
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 1) {
   const key = process.argv[index];
@@ -72,7 +72,8 @@ function askPin(label) {
 
 async function hashPin(pin) {
   const salt = randomBytes(16).toString('base64');
-  const derived = await scrypt(pin, salt, 64);
+  const key = await webcrypto.subtle.importKey('raw', encoder.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const derived = await webcrypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: pinIterations, hash: 'SHA-256' }, key, 512);
   return { salt, hash: Buffer.from(derived).toString('base64') };
 }
 
