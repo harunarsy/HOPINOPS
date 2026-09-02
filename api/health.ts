@@ -1,5 +1,7 @@
+import { jsonResponse } from '../src/server/auth';
+
 export default {
   fetch() {
-    return new Response('ok');
+    return jsonResponse({ ok: true });
   },
 };
