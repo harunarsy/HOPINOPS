@@ -85,7 +85,8 @@ const initialData: AppData = {
 };
 
 const storageKey = 'hopin-stock-demo-v04';
-const assignmentStorageKey = 'hopin-assignment-demo-v01';
+const assignmentStorageKey = 'hopin-assignment-demo-v02';
+const legacyAssignmentStorageKey = 'hopin-assignment-demo-v01';
 const leaseKey = 'hopin-stock-local-lease-v02';
 const inactivityMs = 30 * 60 * 1000;
 const fmt = (value: number) => new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 }).format(value);
@@ -137,13 +138,23 @@ function loadData(): AppData {
   }
 }
 
-function loadAssignment(name: string): Assignment | null {
+function loadAssignment(username: string, name: string): Assignment | null {
   try {
-    const saved = JSON.parse(localStorage.getItem(assignmentStorageKey) || 'null') as Assignment | null;
-    return saved?.name === name.trim() && saved.workDate === workDateKey() ? saved : null;
+    const saved = JSON.parse(localStorage.getItem(assignmentStorageKey) || '{}') as Record<string, Assignment>;
+    const assignment = saved[username];
+    if (assignment?.name === name.trim() && assignment.workDate === workDateKey()) return assignment;
+    const legacy = JSON.parse(localStorage.getItem(legacyAssignmentStorageKey) || 'null') as Assignment | null;
+    return legacy?.name === name.trim() && legacy.workDate === workDateKey() ? legacy : null;
   } catch {
     return null;
   }
+}
+
+function saveAssignment(username: string, assignment: Assignment) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(assignmentStorageKey) || '{}') as Record<string, Assignment>;
+    localStorage.setItem(assignmentStorageKey, JSON.stringify({ ...saved, [username]: assignment }));
+  } catch { /* local assignment is only a demo convenience */ }
 }
 
 function App() {
@@ -314,7 +325,7 @@ function App() {
       const user = await auth.login(username, pin);
       const displayName = user.display_name.toUpperCase() || username.toUpperCase();
       try { localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: displayName, activeAt: Date.now() })); } catch { /* local lease is only a demo convenience */ }
-      const savedAssignment = loadAssignment(displayName);
+      const savedAssignment = loadAssignment(username, displayName);
       setAssignment(savedAssignment);
       if (savedAssignment) {
         setArea(savedAssignment.area);
@@ -341,7 +352,7 @@ function App() {
     const counts = existing?.counts ?? Object.fromEntries(sourceItems.map((item) => [item.id, item.closing]));
     const record: OpeningRecord = existing ?? { reference, counts, reasons: {}, notes: {} };
     const nextAssignment: Assignment = { id, workDate, shift: selectedShift, area: selectedArea, name: name.trim(), confirmedAt: new Date().toISOString() };
-    try { localStorage.setItem(assignmentStorageKey, JSON.stringify(nextAssignment)); } catch { /* local assignment is only a demo convenience */ }
+    saveAssignment(username, nextAssignment);
     setData((previous) => ({
       ...previous,
       openings: { ...previous.openings, [id]: record },
