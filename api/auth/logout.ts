@@ -2,7 +2,7 @@ import {
   clearedSessionCookie,
   jsonResponse,
   revokeCurrentSession,
-} from '../../src/server/auth';
+} from '../_lib/auth';
 
 export default {
   async fetch(request: Request) {

@@ -1,4 +1,4 @@
-import { currentUser, jsonResponse } from '../../src/server/auth';
+import { currentUser, jsonResponse } from '../_lib/auth';
 
 export default {
   async fetch(request: Request) {

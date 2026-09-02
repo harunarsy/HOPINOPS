@@ -1,4 +1,4 @@
-import { jsonResponse, listLoginOptions } from '../../src/server/auth';
+import { jsonResponse, listLoginOptions } from '../_lib/auth';
 
 export default {
   async fetch() {
