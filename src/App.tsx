@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { supabase, supabaseConfigured } from './lib/supabase';
+import * as auth from './lib/auth';
+import type { LoginOption } from './lib/auth';
 
 type Area = 'BAR' | 'KITCHEN';
 type Tab = 'overview' | 'opening' | 'movement' | 'closing' | 'reports';
@@ -31,8 +32,6 @@ type Movement = {
   id: string; type: 'Masuk' | 'Keluar'; itemId: string; item: string;
   qty: number; unit: string; category: string; occurredAt: string;
 };
-
-type LoginOption = { username: string; display_name: string; job_title: string | null };
 
 type AppData = {
   items: Record<Area, Item[]>;
@@ -105,7 +104,6 @@ const movementCategoryLabel = (category: string) => ({
 }[category] ?? category);
 const workDateKey = (date = new Date()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 const assignmentId = (workDate: string, shift: ShiftType, area: Area) => `${workDate}:${shift}:${area}`;
-const authEmailFor = (username: string) => `${username.toLowerCase()}@hopin.local`;
 const shiftLabel = (shift: ShiftType) => shiftOptions[shift].label;
 const areaLabel = (area: Area) => area === 'BAR' ? 'Bar' : 'Kitchen';
 const initialsOf = (value: string) => {
@@ -156,6 +154,7 @@ function App() {
   const [loginError, setLoginError] = useState('');
   const [loginOptions, setLoginOptions] = useState<LoginOption[]>([]);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [selectedShift, setSelectedShift] = useState<ShiftType>('SIANG');
   const [selectedArea, setSelectedArea] = useState<Area>('BAR');
@@ -214,45 +213,29 @@ function App() {
   });
 
   useEffect(() => {
-    const client = supabase;
-    if (!client) {
-      setAuthLoading(false);
-      return;
-    }
     let mounted = true;
     const loadAuth = async () => {
-      const [{ data: sessionData }, { data: options, error }] = await Promise.all([
-        client.auth.getSession(),
-        client.rpc('get_login_options'),
-      ]);
-      if (!mounted) return;
-      if (error) setLoginError('Daftar user belum bisa dimuat. Periksa migration Supabase.');
-      setLoginOptions((options ?? []) as LoginOption[]);
-      const session = sessionData.session;
-      if (session) {
-        const sessionUsername = session.user.user_metadata?.username ?? session.user.email?.split('@')[0] ?? '';
-        setUsername(sessionUsername.toLowerCase());
-        setName(String(session.user.user_metadata?.display_name ?? sessionUsername).toUpperCase());
-        setLoggedIn(true);
+      try {
+        const [options, currentUser] = await Promise.all([auth.getLoginOptions(), auth.getCurrentUser()]);
+        if (!mounted) return;
+        setLoginOptions(options);
+        if (currentUser) {
+          setUsername(currentUser.username);
+          setName(currentUser.display_name.toUpperCase());
+          setLoggedIn(true);
+        }
+      } catch {
+        if (mounted) {
+          setAuthUnavailable(true);
+          setLoginError('Login belum tersedia. Periksa konfigurasi server Supabase.');
+        }
+      } finally {
+        if (mounted) setAuthLoading(false);
       }
-      setAuthLoading(false);
     };
     void loadAuth();
-    const { data: authState } = client.auth.onAuthStateChange((_event, session) => {
-      if (!mounted) return;
-      if (!session) {
-        setLoggedIn(false);
-        setAssignment(null);
-        return;
-      }
-      const sessionUsername = session.user.user_metadata?.username ?? session.user.email?.split('@')[0] ?? '';
-      setUsername(sessionUsername.toLowerCase());
-      setName(String(session.user.user_metadata?.display_name ?? sessionUsername).toUpperCase());
-      setLoggedIn(true);
-    });
     return () => {
       mounted = false;
-      authState.subscription.unsubscribe();
     };
   }, []);
 
@@ -292,7 +275,12 @@ function App() {
     };
     const activityEvents: (keyof WindowEventMap)[] = ['pointerdown', 'keydown', 'touchstart'];
     activityEvents.forEach((event) => window.addEventListener(event, refreshLease, { passive: true }));
-    const heartbeat = window.setInterval(refreshLease, 30_000);
+    const heartbeat = window.setInterval(() => {
+      refreshLease();
+      void auth.getCurrentUser().then((currentUser) => {
+        if (!currentUser) void handleLogout();
+      }).catch(() => { void handleLogout(); });
+    }, 30_000);
     refreshLease();
     return () => {
       activityEvents.forEach((event) => window.removeEventListener(event, refreshLease));
@@ -309,9 +297,9 @@ function App() {
 
   async function handleLogin() {
     setLoginError('');
-    if (!supabaseConfigured || !supabase) { setLoginError('Supabase belum dikonfigurasi. Tambahkan environment variables dulu.'); return; }
+    if (authUnavailable) { setLoginError('Login belum tersedia. Periksa konfigurasi server Supabase.'); return; }
     if (!username) { setLoginError('Pilih nama user dulu.'); return; }
-    if (pin.length < 6) { setLoginError('PIN harus terdiri dari minimal 6 digit.'); return; }
+    if (pin.length !== 6) { setLoginError('PIN harus terdiri dari 6 digit.'); return; }
     try {
       const lease = JSON.parse(localStorage.getItem(leaseKey) || 'null') as { tabId: string; activeAt: number } | null;
       if (lease && lease.tabId !== tabId.current && Date.now() - lease.activeAt < inactivityMs) {
@@ -320,25 +308,25 @@ function App() {
       }
     } catch { /* local lease is only a demo convenience */ }
     setAuthLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: authEmailFor(username), password: pin });
-    if (error) {
-      setAuthLoading(false);
+    try {
+      const user = await auth.login(username, pin);
+      const displayName = user.display_name.toUpperCase() || username.toUpperCase();
+      try { localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: displayName, activeAt: Date.now() })); } catch { /* local lease is only a demo convenience */ }
+      const savedAssignment = loadAssignment(displayName);
+      setAssignment(savedAssignment);
+      if (savedAssignment) {
+        setArea(savedAssignment.area);
+        setTab('overview');
+      }
+      setName(displayName);
+      setPin('');
+      setLoggedIn(true);
+    } catch {
       setLoginError('Nama user atau PIN salah.');
       return;
+    } finally {
+      setAuthLoading(false);
     }
-    const selected = loginOptions.find((option) => option.username === username);
-    const displayName = selected?.display_name ?? username.toUpperCase();
-    try { localStorage.setItem(leaseKey, JSON.stringify({ tabId: tabId.current, name: displayName, activeAt: Date.now() })); } catch { /* local lease is only a demo convenience */ }
-    const savedAssignment = loadAssignment(displayName);
-    setAssignment(savedAssignment);
-    if (savedAssignment) {
-      setArea(savedAssignment.area);
-      setTab('overview');
-    }
-    setName(displayName);
-    setPin('');
-    setAuthLoading(false);
-    setLoggedIn(true);
   }
 
   function confirmAssignment() {
@@ -364,7 +352,7 @@ function App() {
   }
 
   async function handleLogout() {
-    try { await supabase?.auth.signOut(); } catch { /* return to login even if auth is unavailable */ }
+    try { await auth.logout(); } catch { /* return to login even if auth is unavailable */ }
     try {
       const lease = JSON.parse(localStorage.getItem(leaseKey) || 'null') as { tabId: string } | null;
       if (lease?.tabId === tabId.current) localStorage.removeItem(leaseKey);
@@ -497,7 +485,7 @@ function App() {
     } catch { showToast('Browser tidak mengizinkan salin otomatis. Salin dari contoh pesan.'); }
   }
 
-  if (!loggedIn) return <Login username={username} setUsername={setUsername} pin={pin} setPin={setPin} options={loginOptions} loading={authLoading} configured={supabaseConfigured} error={loginError} onLogin={handleLogin} />;
+  if (!loggedIn) return <Login username={username} setUsername={setUsername} pin={pin} setPin={setPin} options={loginOptions} loading={authLoading} unavailable={authUnavailable} error={loginError} onLogin={handleLogin} />;
   if (!assignment) return <AssignmentPicker name={name} selectedShift={selectedShift} setSelectedShift={setSelectedShift} selectedArea={selectedArea} setSelectedArea={setSelectedArea} confirmOpen={assignmentConfirmOpen} setConfirmOpen={setAssignmentConfirmOpen} onConfirm={confirmAssignment} />;
 
   return (
@@ -657,9 +645,9 @@ function PinInput({ value, onChange, disabled, revealed }: { value: string; onCh
   return <div className="pin-inputs" role="group" aria-label="PIN 6 digit">{Array.from({ length: pinLength }, (_, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} type={revealed ? 'text' : 'password'} inputMode="numeric" pattern="[0-9]*" maxLength={1} value={value[index] ?? ''} onChange={(event) => handleChange(index, event.target.value)} onKeyDown={(event) => handleKeyDown(index, event)} onPaste={handlePaste} onFocus={(event) => event.currentTarget.select()} disabled={disabled} aria-label={`Digit PIN ${index + 1} dari ${pinLength}`} placeholder=" " />)}</div>;
 }
 
-function Login({ username, setUsername, pin, setPin, options, loading, configured, error, onLogin }: { username: string; setUsername: (value: string) => void; pin: string; setPin: (value: string) => void; options: LoginOption[]; loading: boolean; configured: boolean; error: string; onLogin: () => void | Promise<void> }) {
+function Login({ username, setUsername, pin, setPin, options, loading, unavailable, error, onLogin }: { username: string; setUsername: (value: string) => void; pin: string; setPin: (value: string) => void; options: LoginOption[]; loading: boolean; unavailable: boolean; error: string; onLogin: () => void | Promise<void> }) {
   const [showPin, setShowPin] = useState(false);
-  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · {configured ? 'LOGIN USER' : 'KONFIGURASI DIPERLUKAN'}</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); void onLogin(); }}><div className="login-field"><label htmlFor="user-picker">Nama user</label><UserPicker value={username} options={options} disabled={loading || !configured} onChange={setUsername} /></div><div className="login-field"><span className="field-label" id="pin-label">PIN 6 digit</span><div className="pin-entry"><PinInput value={pin} onChange={setPin} disabled={loading || !configured} revealed={showPin} /><button className="pin-toggle" type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></div></div>{error && <p className="form-error" role="alert">{error}</p>}{configured && options.length === 0 && <p className="form-error" role="status">Belum ada user aktif di Supabase.</p>}<button className="primary-button" type="submit" disabled={loading || !configured || !username || pin.length < 6}>{loading ? 'Memuat...' : 'Masuk ke aplikasi'} <span>→</span></button></form><p className="demo-hint">Login memakai user terdaftar · PIN 6 digit · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
+  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · {unavailable ? 'KONFIGURASI DIPERLUKAN' : 'LOGIN USER'}</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); void onLogin(); }}><div className="login-field"><label htmlFor="user-picker">Nama user</label><UserPicker value={username} options={options} disabled={loading || unavailable} onChange={setUsername} /></div><div className="login-field"><span className="field-label" id="pin-label">PIN 6 digit</span><div className="pin-entry"><PinInput value={pin} onChange={setPin} disabled={loading || unavailable} revealed={showPin} /><button className="pin-toggle" type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></div></div>{error && <p className="form-error" role="alert">{error}</p>}{!unavailable && options.length === 0 && !loading && <p className="form-error" role="status">Belum ada user aktif di Supabase.</p>}<button className="primary-button" type="submit" disabled={loading || unavailable || !username || pin.length !== 6}>{loading ? 'Memuat...' : 'Masuk ke aplikasi'} <span>→</span></button></form><p className="demo-hint">Login memakai user terdaftar · PIN 6 digit · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
 }
 
 function Overview({ area, shift, stats, items, submitted, openingConfirmed, onTab }: { area: Area; shift: ShiftType; stats: { total: number; filled: number; low: number; empty: number; variance: number }; items: Item[]; submitted: boolean; openingConfirmed: boolean; onTab: (tab: Tab) => void }) {

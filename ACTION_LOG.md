@@ -13,23 +13,29 @@
 - Defined separate finance/progress access for investor and owner roles in migration `0002`.
 - Applied migration `0002_role_scopes.sql` to the remote database.
 - Replaced the native login select with an accessible user picker and six-digit PIN input.
+- Added custom username + six-digit PIN credentials and server sessions in migration `0003`.
+- Applied migration `0003_custom_auth.sql` to the remote database.
+- Added Vercel auth endpoints with server-only Supabase service-role access and HttpOnly cookies.
+- Switched the frontend login from Supabase Auth to the custom auth API.
+- Added interactive `pnpm provision:user` without accepting PINs as command-line arguments.
 
 ## Current state
 
-- Supabase project exists, is linked locally, and migration `0001` is applied.
+- Supabase project exists, is linked locally, and migrations `0001`-`0003` are applied.
 - RLS is enabled for all application tables by the migration.
-- `0002` is applied remotely; no Auth users have been created yet.
+- `0003` removes the app profile dependency on `auth.users`; no Supabase Auth users are required.
+- No custom operator profiles or PINs have been provisioned yet.
 - The application still reads and writes `localStorage`.
 - No Supabase credentials are stored in this repository.
-- Auth UI changes are local until the final UI commit is pushed.
+- The custom auth code is local until pushed and requires `SUPABASE_SERVICE_ROLE_KEY` in Vercel.
 
 ## Next
 
-- Decide operator authentication as email/password or another Supabase Auth flow.
-- Confirm initial user records and create Auth users without sharing PINs.
+- Configure the server-only Supabase service-role variable in Vercel.
+- Provision initial custom users without sharing PINs.
 - Wire auth, assignment, opening, movement, closing, and report commands to Supabase.
-- Add Vercel environment variables and verify the deployed flow.
+- Add Vercel environment variables and verify the deployed auth flow.
 
 ## Not committed
 
-- No commit or push was made by this session.
+- Custom auth changes are not committed or pushed yet.
