@@ -12,6 +12,7 @@
 - Applied migration `0001_initial_schema.sql` to the remote database.
 - Defined separate finance/progress access for investor and owner roles in migration `0002`.
 - Applied migration `0002_role_scopes.sql` to the remote database.
+- Replaced the native login select with an accessible user picker and six-digit PIN input.
 
 ## Current state
 
@@ -20,6 +21,7 @@
 - `0002` is applied remotely; no Auth users have been created yet.
 - The application still reads and writes `localStorage`.
 - No Supabase credentials are stored in this repository.
+- Auth UI changes are local until the final UI commit is pushed.
 
 ## Next
 

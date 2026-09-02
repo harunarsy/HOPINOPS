@@ -532,9 +532,134 @@ function AssignmentConfirm({ shift, area, onCancel, onConfirm }: { shift: ShiftT
   return <div className="modal-backdrop" role="presentation"><div className="modal assignment-confirm" role="dialog" aria-modal="true" aria-labelledby="assignment-confirm-title"><div className="modal-head"><div><p className="eyebrow">KONFIRMASI PENUGASAN</p><h2 id="assignment-confirm-title">Pastikan pilihan Anda.</h2></div></div><p className="muted">Anda akan masuk ke <strong>{shiftLabel(shift)}</strong>, area <strong>{areaLabel(area)}</strong>, tanggal <strong>{wibDate()}</strong>.</p><div className="assignment-warning"><strong>Setelah dimulai, shift dan area tidak dapat diganti dari akun ini.</strong><span>Logout tidak menghapus penugasan. Jika salah, hubungi supervisor untuk reset.</span></div><div className="modal-actions"><button className="outline-button" onClick={onCancel}>Kembali</button><button className="primary-button" onClick={onConfirm}>Mulai shift <span>→</span></button></div></div></div>;
 }
 
+function UserPicker({ value, options, disabled, onChange }: { value: string; options: LoginOption[]; disabled: boolean; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.username === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!wrapperRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutside);
+    window.requestAnimationFrame(() => listRef.current?.focus());
+    return () => document.removeEventListener('pointerdown', closeOnOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    listRef.current?.querySelector<HTMLElement>(`[data-option-index="${activeIndex}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex, open]);
+
+  function choose(option: LoginOption) {
+    onChange(option.username);
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }
+
+  function openPicker(nextIndex = options.findIndex((option) => option.username === value)) {
+    setActiveIndex(nextIndex >= 0 ? nextIndex : 0);
+    setOpen(true);
+  }
+
+  function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      openPicker();
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openPicker(options.findIndex((option) => option.username === value));
+    }
+  }
+
+  function handleListKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((index) => Math.min(index + 1, options.length - 1));
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((index) => Math.max(index - 1, 0));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setActiveIndex(Math.max(options.length - 1, 0));
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const option = options[activeIndex];
+      if (option) choose(option);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+  }
+
+  return <div className="user-picker" ref={wrapperRef}><button id="user-picker" ref={triggerRef} type="button" className={`user-picker-trigger${open ? ' is-open' : ''}`} aria-haspopup="listbox" aria-expanded={open} disabled={disabled || options.length === 0} onClick={() => open ? setOpen(false) : openPicker()} onKeyDown={handleTriggerKeyDown}><span className="picker-avatar">{selected ? initialsOf(selected.display_name) : '—'}</span><span className="picker-copy">{selected ? <><strong className="picker-name">{selected.display_name}</strong><small className="picker-role">{selected.job_title ?? 'User HOPIN'}</small></> : <strong className="picker-placeholder">{options.length === 0 ? 'Belum ada user aktif' : 'Pilih user...'}</strong>}</span><span className="picker-chevron" aria-hidden="true" /></button>{open && options.length > 0 && <div ref={listRef} className="user-picker-menu" role="listbox" tabIndex={-1} aria-label="Daftar user HOPIN" aria-activedescendant={`user-option-${options[activeIndex]?.username ?? ''}`} onKeyDown={handleListKeyDown}>{options.map((option, index) => <button id={`user-option-${option.username}`} key={option.username} type="button" role="option" aria-selected={option.username === value} tabIndex={-1} data-option-index={index} className={`user-picker-option${option.username === value ? ' is-selected' : ''}${index === activeIndex ? ' is-active' : ''}`} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(option)}><span className="picker-option-avatar">{initialsOf(option.display_name)}</span><span className="picker-copy"><strong className="picker-name">{option.display_name}</strong><small className="picker-role">{option.job_title ?? 'User HOPIN'}</small></span><span className="picker-check" aria-hidden="true" /></button>)}</div>}</div>;
+}
+
+function PinInput({ value, onChange, disabled, revealed }: { value: string; onChange: (value: string) => void; disabled: boolean; revealed: boolean }) {
+  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const pinLength = 6;
+
+  function updateDigit(index: number, digit: string) {
+    const digits = value.padEnd(pinLength, ' ').split('');
+    digits[index] = digit || ' ';
+    onChange(digits.join('').replace(/\s+$/, ''));
+  }
+
+  function handleChange(index: number, rawValue: string) {
+    const digits = rawValue.replace(/\D/g, '');
+    if (!digits) {
+      updateDigit(index, '');
+      return;
+    }
+    const next = value.padEnd(pinLength, ' ').split('');
+    digits.slice(0, pinLength - index).split('').forEach((digit, offset) => { next[index + offset] = digit; });
+    onChange(next.join('').replace(/\s+$/, ''));
+    inputRefs.current[Math.min(index + digits.length, pinLength - 1)]?.focus();
+  }
+
+  function handleKeyDown(index: number, event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      if (value[index]) updateDigit(index, '');
+      else if (index > 0) { updateDigit(index - 1, ''); inputRefs.current[index - 1]?.focus(); }
+    } else if (event.key === 'Delete') {
+      event.preventDefault();
+      updateDigit(index, '');
+    } else if (event.key === 'ArrowLeft' && index > 0) {
+      event.preventDefault();
+      inputRefs.current[index - 1]?.focus();
+    } else if (event.key === 'ArrowRight' && index < pinLength - 1) {
+      event.preventDefault();
+      inputRefs.current[index + 1]?.focus();
+    }
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLInputElement>) {
+    event.preventDefault();
+    const digits = event.clipboardData.getData('text').replace(/\D/g, '').slice(0, pinLength);
+    if (!digits) return;
+    onChange(digits);
+    inputRefs.current[Math.min(digits.length, pinLength - 1)]?.focus();
+  }
+
+  return <div className="pin-inputs" role="group" aria-label="PIN 6 digit">{Array.from({ length: pinLength }, (_, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} type={revealed ? 'text' : 'password'} inputMode="numeric" pattern="[0-9]*" maxLength={1} value={value[index] ?? ''} onChange={(event) => handleChange(index, event.target.value)} onKeyDown={(event) => handleKeyDown(index, event)} onPaste={handlePaste} onFocus={(event) => event.currentTarget.select()} disabled={disabled} aria-label={`Digit PIN ${index + 1} dari ${pinLength}`} placeholder=" " />)}</div>;
+}
+
 function Login({ username, setUsername, pin, setPin, options, loading, configured, error, onLogin }: { username: string; setUsername: (value: string) => void; pin: string; setPin: (value: string) => void; options: LoginOption[]; loading: boolean; configured: boolean; error: string; onLogin: () => void | Promise<void> }) {
   const [showPin, setShowPin] = useState(false);
-  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · {configured ? 'LOGIN USER' : 'KONFIGURASI DIPERLUKAN'}</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); void onLogin(); }}><label>Nama user<select autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading || !configured}><option value="">Pilih user...</option>{options.map((option) => <option key={option.username} value={option.username}>{option.display_name}{option.job_title ? ` · ${option.job_title}` : ''}</option>)}</select></label><label>PIN<span className="password-field"><input type={showPin ? 'text' : 'password'} autoComplete="current-password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="••••••" disabled={loading || !configured} /><button type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></span></label>{error && <p className="form-error" role="alert">{error}</p>}{configured && options.length === 0 && <p className="form-error" role="status">Belum ada user aktif di Supabase.</p>}<button className="primary-button" type="submit" disabled={loading || !configured || !username || pin.length < 6}>{loading ? 'Memuat...' : 'Masuk ke aplikasi'} <span>→</span></button></form><p className="demo-hint">Login memakai user terdaftar · PIN 6 digit · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
+  return <div className="login-page"><div className="login-panel"><div className="login-brand"><div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div></div><div className="login-copy"><p className="eyebrow">STOK HARI INI · {configured ? 'LOGIN USER' : 'KONFIGURASI DIPERLUKAN'}</p><h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1><p>Catat stok Bar dan Kitchen di satu tempat. Draf tersimpan otomatis saat halaman dimuat ulang.</p></div><form noValidate onSubmit={(event) => { event.preventDefault(); void onLogin(); }}><div className="login-field"><label htmlFor="user-picker">Nama user</label><UserPicker value={username} options={options} disabled={loading || !configured} onChange={setUsername} /></div><div className="login-field"><span className="field-label" id="pin-label">PIN 6 digit</span><div className="pin-entry"><PinInput value={pin} onChange={setPin} disabled={loading || !configured} revealed={showPin} /><button className="pin-toggle" type="button" onClick={() => setShowPin((shown) => !shown)} aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}>{showPin ? 'Sembunyikan' : 'Tampilkan'}</button></div></div>{error && <p className="form-error" role="alert">{error}</p>}{configured && options.length === 0 && <p className="form-error" role="status">Belum ada user aktif di Supabase.</p>}<button className="primary-button" type="submit" disabled={loading || !configured || !username || pin.length < 6}>{loading ? 'Memuat...' : 'Masuk ke aplikasi'} <span>→</span></button></form><p className="demo-hint">Login memakai user terdaftar · PIN 6 digit · logout otomatis setelah 30 menit tanpa aktivitas</p></div><div className="login-aside"><div className="aside-stamp">OPS<br /><small>STOCK<br />V0.3</small></div><p className="eyebrow">OPERASIONAL HARI INI</p><h2>Semua stok tercatat.<br />Perubahan terakhir<br /><em>tetap tersimpan.</em></h2><div className="aside-line" /><p>Jam mengikuti WIB<br />dan diperbarui setiap detik.</p></div></div>;
 }
 
 function Overview({ area, shift, stats, items, submitted, openingConfirmed, onTab }: { area: Area; shift: ShiftType; stats: { total: number; filled: number; low: number; empty: number; variance: number }; items: Item[]; submitted: boolean; openingConfirmed: boolean; onTab: (tab: Tab) => void }) {

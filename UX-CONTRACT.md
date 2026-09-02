@@ -2,13 +2,13 @@
 
 ## Scope and trust boundary
 
-This is a local-only operational prototype seeded from the v0.2 evidence. It has no backend, server timestamp, real cross-device authentication, IndexedDB queue, or production security. UI language must say `demo lokal` or `tersimpan di perangkat` where it matters and must not imply server persistence.
+This is a local-only operational prototype seeded from the v0.2 evidence with Supabase Auth for user identity. Operational records still have no backend write path, server timestamp, real cross-device workflow sync, IndexedDB queue, or production audit security. UI language must say `demo lokal` or `tersimpan di perangkat` where it matters and must not imply server persistence.
 
 ## Workflow contract
 
 | Operation | Trigger | Pending | Success | Recovery |
 | --- | --- | --- | --- | --- |
-| Login demo | Submit sign-in form | Assignment selection | Workspace opens after shift/area confirmation | Inline form stays usable |
+| Login user | Select user + submit PIN | Assignment selection | Workspace opens after shift/area confirmation | Inline form stays usable |
 | Assignment | Shift + area confirmation | Confirmation dialog | Assignment locked for the date | Supervisor reset required in production |
 | Confirm opening | Complete all physical counts | Missing values/reasons | Opening snapshot locked | Fix values/reasons |
 | Edit closing | Numeric input | Immediate local state | LocalStorage updated by React effect | Refresh restores draft |
@@ -58,6 +58,6 @@ All actions are native buttons, all fields have labels, status uses text + shape
 
 - Seed item list is mock data from the supplied specification evidence.
 - Opening is an editable, required count for every item until confirmed. Real server-side assignment locking and supervisor review are not implemented.
-- Login is demo-only with PIN `1234`, one active browser-tab lease, and 30-minute inactivity logout. True single-device enforcement still requires a backend.
+- Login uses Supabase Auth with a selected username and 6-digit PIN, plus a local browser-tab lease and 30-minute inactivity logout. True single-device enforcement still requires a backend.
 - Network sync is simulated by browser connectivity signals; no server replay or idempotency exists.
 - Real session lease, audit trail, PDF, and supervisor approval/reopen require backend implementation.

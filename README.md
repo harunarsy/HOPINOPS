@@ -9,7 +9,7 @@ pnpm install
 pnpm dev
 ```
 
-Buka `http://localhost:3000`. Login demo memakai nama bebas dan PIN `1234`.
+Buka `http://localhost:3000`. Login memakai user terdaftar di Supabase dan PIN 6 digit.
 
 ## Container
 
@@ -37,4 +37,4 @@ Migration ini baru fondasi database. UI saat ini masih memakai `localStorage` sa
 
 ## Prototype boundaries
 
-Demo ini menyimpan item, assignment, opening, movement, closing, dan status laporan ke `localStorage`. Assignment shift dan area dikunci untuk tanggal berjalan setelah dikonfirmasi; Opening wajib dikonfirmasi sebelum Perubahan stok, sedangkan Closing hanya tersedia untuk shift malam/full. Input dapat pulih setelah refresh dan tetap dapat dipakai saat offline pada perangkat yang sama. Login, single-session lease, lock assignment, dan timestamp masih berasal dari browser lokal—belum merupakan autentikasi atau audit server produksi. Sinkronisasi lintas perangkat, dashboard supervisor, PDF resmi, serta konflik multi-user tetap membutuhkan backend. Detail asumsi ada di `UX-CONTRACT.md`.
+Demo ini menyimpan item, assignment, opening, movement, closing, dan status laporan ke `localStorage`. Assignment shift dan area dikunci untuk tanggal berjalan setelah dikonfirmasi; Opening wajib dikonfirmasi sebelum Perubahan stok, sedangkan Closing hanya tersedia untuk shift malam/full. Input dapat pulih setelah refresh dan tetap dapat dipakai saat offline pada perangkat yang sama. Login dan daftar user memakai Supabase Auth, tetapi data operasional, single-session lease, lock assignment, dan timestamp workflow masih berasal dari browser lokal—belum merupakan audit server produksi. Sinkronisasi lintas perangkat, dashboard supervisor, PDF resmi, serta konflik multi-user tetap membutuhkan backend. Detail asumsi ada di `UX-CONTRACT.md`.
