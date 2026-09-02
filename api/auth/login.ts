@@ -2,7 +2,7 @@ import {
   jsonResponse,
   loginWithPin,
   sessionCookie,
-} from '../auth-shared';
+} from '../auth-shared.ts';
 
 export default {
   async fetch(request: Request) {

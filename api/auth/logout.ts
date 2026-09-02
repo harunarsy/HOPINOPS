@@ -2,7 +2,7 @@ import {
   clearedSessionCookie,
   jsonResponse,
   revokeCurrentSession,
-} from '../auth-shared';
+} from '../auth-shared.ts';
 
 export default {
   async fetch(request: Request) {

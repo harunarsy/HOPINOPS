@@ -1,4 +1,4 @@
-import { currentUser, jsonResponse } from '../auth-shared';
+import { currentUser, jsonResponse } from '../auth-shared.ts';
 
 export default {
   async fetch(request: Request) {

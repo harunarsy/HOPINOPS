@@ -1,4 +1,4 @@
-import { jsonResponse, listLoginOptions } from '../auth-shared';
+import { jsonResponse, listLoginOptions } from '../auth-shared.ts';
 
 export default {
   async fetch() {
