@@ -150,6 +150,7 @@ function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
+  const [role, setRole] = useState('');
   const [pin, setPin] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginOptions, setLoginOptions] = useState<LoginOption[]>([]);
@@ -222,6 +223,7 @@ function App() {
         if (currentUser) {
           setUsername(currentUser.username);
           setName(currentUser.display_name.toUpperCase());
+          setRole(currentUser.role);
           setLoggedIn(true);
         }
       } catch {
@@ -319,6 +321,7 @@ function App() {
         setTab('overview');
       }
       setName(displayName);
+      setRole(user.role);
       setPin('');
       setLoggedIn(true);
     } catch {
@@ -360,6 +363,7 @@ function App() {
     setLoggedIn(false);
     setAssignment(null);
     setUsername('');
+    setRole('');
     setPin('');
   }
 
@@ -486,13 +490,15 @@ function App() {
   }
 
   if (!loggedIn) return <Login username={username} setUsername={setUsername} pin={pin} setPin={setPin} options={loginOptions} loading={authLoading} unavailable={authUnavailable} error={loginError} onLogin={handleLogin} />;
-  if (!assignment) return <AssignmentPicker name={name} selectedShift={selectedShift} setSelectedShift={setSelectedShift} selectedArea={selectedArea} setSelectedArea={setSelectedArea} confirmOpen={assignmentConfirmOpen} setConfirmOpen={setAssignmentConfirmOpen} onConfirm={confirmAssignment} />;
+  const dashboardAccess = role === 'OWNER' || role === 'INVESTOR' || role === 'ADMIN';
+  if (!assignment && dashboardAccess) return <ManagementDashboard name={name} role={role} data={data} online={online} clock={clock} syncLabel={syncLabel} onLogout={handleLogout} />;
+  if (!assignment) return <AssignmentPicker name={name} selectedShift={selectedShift} setSelectedShift={setSelectedShift} selectedArea={selectedArea} setSelectedArea={setSelectedArea} confirmOpen={assignmentConfirmOpen} setConfirmOpen={setAssignmentConfirmOpen} onConfirm={confirmAssignment} onLogout={handleLogout} />;
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><span><strong>HOPIN</strong><small>CAFE OPERATIONS</small></span></div>
-        <div className="topbar-right"><div className={`connection ${online ? 'is-online' : 'is-offline'}`}><span className="dot" />{online ? 'Terhubung' : 'Offline'}</div><div className="clock"><span className="clock-date">{wibDate(clock)}</span><strong>{wibTime(clock)} <i>WIB</i></strong></div><button className="avatar" onClick={handleLogout} aria-label="Keluar dari aplikasi" title="Keluar">{initialsOf(name)}</button></div>
+        <div className="topbar-right"><div className={`connection ${online ? 'is-online' : 'is-offline'}`}><span className="dot" />{online ? 'Terhubung' : 'Offline'}</div><div className="clock"><span className="clock-date">{wibDate(clock)}</span><strong>{wibTime(clock)} <i>WIB</i></strong></div><button className="logout-button" onClick={handleLogout}><span className="avatar">{initialsOf(name)}</span><span>Keluar</span></button></div>
       </header>
       {saveError && <div className="save-error" role="alert">{saveError}</div>}
       <main className="workspace">
@@ -512,8 +518,17 @@ function App() {
   );
 }
 
-function AssignmentPicker({ name, selectedShift, setSelectedShift, selectedArea, setSelectedArea, confirmOpen, setConfirmOpen, onConfirm }: { name: string; selectedShift: ShiftType; setSelectedShift: (value: ShiftType) => void; selectedArea: Area; setSelectedArea: (value: Area) => void; confirmOpen: boolean; setConfirmOpen: (value: boolean) => void; onConfirm: () => void }) {
-  return <div className="assignment-page"><section className="assignment-card"><p className="eyebrow">PENUGASAN HARI INI</p><h1>Mulai dengan pilihan yang tepat.</h1><p className="muted">Pilih shift dan area kerja. Pilihan ini akan terkunci setelah Anda mulai.</p><div className="assignment-group"><span className="assignment-label">Shift</span><div className="assignment-options">{(Object.keys(shiftOptions) as ShiftType[]).map((value) => <button key={value} className={selectedShift === value ? 'selected' : ''} aria-pressed={selectedShift === value} onClick={() => setSelectedShift(value)}><strong>{shiftOptions[value].label}</strong><small>{shiftOptions[value].hours}</small></button>)}</div></div><div className="assignment-group"><span className="assignment-label">Area kerja</span><div className="assignment-options area-options">{(['BAR', 'KITCHEN'] as Area[]).map((value) => <button key={value} className={selectedArea === value ? 'selected' : ''} aria-pressed={selectedArea === value} onClick={() => setSelectedArea(value)}><strong>{areaLabel(value)}</strong><small>{value === 'BAR' ? 'Kasir dan stok bar' : 'Stok bahan dan kitchen'}</small></button>)}</div></div><div className="assignment-summary"><span>Penugasan Anda</span><strong>{shiftLabel(selectedShift)} · {areaLabel(selectedArea)}</strong><small>{wibDate()} · {shiftOptions[selectedShift].hours}</small></div><button className="primary-button assignment-start" onClick={() => setConfirmOpen(true)}>Lanjutkan <span>→</span></button>{confirmOpen && <AssignmentConfirm shift={selectedShift} area={selectedArea} onCancel={() => setConfirmOpen(false)} onConfirm={onConfirm} />}</section></div>;
+function ManagementDashboard({ name, role, data, online, clock, syncLabel, onLogout }: { name: string; role: string; data: AppData; online: boolean; clock: Date; syncLabel: string; onLogout: () => void | Promise<void> }) {
+  const items = [...data.items.BAR, ...data.items.KITCHEN];
+  const filled = items.filter((item) => item.closing !== null).length;
+  const critical = items.filter((item) => ['Hampir habis', 'Habis'].includes(statusOf(item))).length;
+  const submitted = Object.values(data.reports).filter((report) => report.status === 'SENT' || report.status === 'APPROVED').length;
+  const isInvestor = role === 'INVESTOR';
+  return <div className="app-shell management-shell"><header className="topbar"><div className="brand"><span><strong>HOPIN</strong><small>CAFE OPERATIONS</small></span></div><div className="topbar-right"><div className={`connection ${online ? 'is-online' : 'is-offline'}`}><span className="dot" />{online ? 'Terhubung' : 'Offline'}</div><div className="clock"><span className="clock-date">{wibDate(clock)}</span><strong>{wibTime(clock)} <i>WIB</i></strong></div><button className="logout-button" onClick={onLogout}><span className="avatar">{initialsOf(name)}</span><span>Keluar</span></button></div></header><main className="workspace"><section className="welcome"><div><p className="eyebrow">DASHBOARD {isInvestor ? 'INVESTOR' : 'MANAJEMEN'}</p><h1>Halo, {name}.</h1><p className="muted">{isInvestor ? 'Pantau ringkasan operasional dan progres outlet tanpa mengisi penugasan shift.' : 'Ruang kendali HOPIN untuk memantau operasional outlet.'}</p></div><div className="save-state"><span className="save-icon">↻</span><span><strong>Tersimpan otomatis di perangkat</strong><small>{syncLabel}</small></span></div></section><section className="metric-row"><Metric label="Item terpantau" value={`${filled}/${items.length}`} hint="Ringkasan stok" tone="good" /><Metric label="Perlu dicek" value={String(critical)} hint="Bar dan Kitchen" tone="warn" /><Metric label="Closing terkirim" value={String(submitted)} hint="Hari ini" tone="neutral" /><Metric label="Mode akses" value={isInvestor ? 'Baca' : 'Penuh'} hint={isInvestor ? 'Investor' : 'Owner'} tone="good" /></section><section className="section-card dashboard-card"><div className="section-heading"><div><p className="eyebrow">MONITOR OUTLET</p><h2>Ringkasan operasional</h2></div><span className="tag neutral">{wibDate()}</span></div><div className="dashboard-area-list">{(['BAR', 'KITCHEN'] as Area[]).map((areaCode) => { const areaItems = data.items[areaCode]; const areaCritical = areaItems.filter((item) => ['Hampir habis', 'Habis'].includes(statusOf(item))).length; return <div className="dashboard-area-card" key={areaCode}><div><span className="area-symbol">{areaCode === 'BAR' ? '◒' : '⌁'}</span><strong>{areaLabel(areaCode)}</strong></div><span>{areaItems.length} item · {areaCritical} perlu dicek</span><small>{isInvestor ? 'Akses baca ringkasan' : 'Pantauan dashboard'}</small></div>; })}</div><div className="dashboard-note"><strong>Penugasan shift tidak diperlukan untuk akun ini.</strong><span>Akun operasional tetap akan memilih shift dan area sebelum mulai bekerja.</span></div></section></main><footer className="footer"><span>v0.3 · Dashboard manajemen · 1 outlet</span><span>{isInvestor ? 'Akses baca saja' : 'Akses owner'}</span></footer></div>;
+}
+
+function AssignmentPicker({ name, selectedShift, setSelectedShift, selectedArea, setSelectedArea, confirmOpen, setConfirmOpen, onConfirm, onLogout }: { name: string; selectedShift: ShiftType; setSelectedShift: (value: ShiftType) => void; selectedArea: Area; setSelectedArea: (value: Area) => void; confirmOpen: boolean; setConfirmOpen: (value: boolean) => void; onConfirm: () => void; onLogout: () => void | Promise<void> }) {
+  return <div className="assignment-page"><section className="assignment-card"><div className="assignment-head"><div><p className="eyebrow">PENUGASAN HARI INI</p><span className="assignment-user">{name}</span></div><button className="assignment-logout" onClick={onLogout}>Keluar</button></div><h1>Mulai dengan pilihan yang tepat.</h1><p className="muted">Pilih shift dan area kerja. Pilihan ini akan terkunci setelah Anda mulai.</p><div className="assignment-group"><span className="assignment-label">Shift</span><div className="assignment-options">{(Object.keys(shiftOptions) as ShiftType[]).map((value) => <button key={value} className={selectedShift === value ? 'selected' : ''} aria-pressed={selectedShift === value} onClick={() => setSelectedShift(value)}><strong>{shiftOptions[value].label}</strong><small>{shiftOptions[value].hours}</small></button>)}</div></div><div className="assignment-group"><span className="assignment-label">Area kerja</span><div className="assignment-options area-options">{(['BAR', 'KITCHEN'] as Area[]).map((value) => <button key={value} className={selectedArea === value ? 'selected' : ''} aria-pressed={selectedArea === value} onClick={() => setSelectedArea(value)}><strong>{areaLabel(value)}</strong><small>{value === 'BAR' ? 'Kasir dan stok bar' : 'Stok bahan dan kitchen'}</small></button>)}</div></div><div className="assignment-summary"><span>Penugasan Anda</span><strong>{shiftLabel(selectedShift)} · {areaLabel(selectedArea)}</strong><small>{wibDate()} · {shiftOptions[selectedShift].hours}</small></div><button className="primary-button assignment-start" onClick={() => setConfirmOpen(true)}>Lanjutkan <span>→</span></button>{confirmOpen && <AssignmentConfirm shift={selectedShift} area={selectedArea} onCancel={() => setConfirmOpen(false)} onConfirm={onConfirm} />}</section></div>;
 }
 
 function AssignmentConfirm({ shift, area, onCancel, onConfirm }: { shift: ShiftType; area: Area; onCancel: () => void; onConfirm: () => void }) {
