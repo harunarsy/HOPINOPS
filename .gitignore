@@ -7,3 +7,4 @@ dist/
 !.env.example
 premium-ui.json
 premium-audit.json
+.vercel

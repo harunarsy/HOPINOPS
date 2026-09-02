@@ -9,18 +9,24 @@ export type AuthProfile = {
   id: string;
   username: string;
   display_name: string;
-  job_title: string;
   role: string;
+  force_pin_change?: boolean;
 };
 
-export type LoginOption = Pick<AuthProfile, 'username' | 'display_name' | 'job_title'>;
+export type LoginOption = Pick<AuthProfile, 'username' | 'display_name'>;
 
 const SESSION_COOKIE = 'hopin_session';
+const DEVICE_COOKIE = 'hopin_device';
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
 const inactivityMs = 30 * 60 * 1000;
 const lockoutMs = 15 * 60 * 1000;
 const maxPinAttempts = 5;
 const pinIterations = 310_000;
+
+const WEAK_PINS = new Set([
+  '000000', '111111', '222222', '333333', '444444', '555555', '666666', '777777', '888888', '999999',
+  '123456', '654321', '123123', '654654', '012345', '543210', '112233', '121212'
+]);
 
 function encodeText(value: string) {
   return Uint8Array.from(value, (character) => character.charCodeAt(0));
@@ -41,6 +47,13 @@ function normalizeUsername(value: unknown) {
 
 function isValidPin(value: unknown): value is string {
   return typeof value === 'string' && /^\d{6}$/.test(value);
+}
+
+function isWeakPin(pin: string): boolean {
+  if (WEAK_PINS.has(pin)) return true;
+  // all same digits
+  if (/^(\d)\1{5}$/.test(pin)) return true;
+  return false;
 }
 
 async function derivePin(pin: string, salt: string) {
@@ -72,39 +85,41 @@ async function hashSessionToken(token: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function publicProfile(profile: AuthProfile): AuthProfile {
+function publicProfile(profile: any): AuthProfile {
   return {
     id: profile.id,
     username: profile.username,
     display_name: profile.display_name,
-    job_title: profile.job_title,
     role: profile.role,
+    force_pin_change: Boolean(profile.force_pin_change),
   };
 }
 
 export async function listLoginOptions(): Promise<LoginOption[]> {
   const { data, error } = await getAdminClient()
     .from('profiles')
-    .select('username, display_name, job_title')
+    .select('username, display_name')
     .eq('active', true)
+    .is('deactivated_at', null)
     .not('username', 'is', null)
     .order('display_name');
   if (error) throw error;
   return (data ?? []) as LoginOption[];
 }
 
-async function getActiveProfile(username: string): Promise<AuthProfile | null> {
+async function getActiveProfile(username: string): Promise<any | null> {
   const { data, error } = await getAdminClient()
     .from('profiles')
-    .select('id, username, display_name, job_title, role, active')
+    .select('id, username, display_name, role, active, force_pin_change, deactivated_at')
     .eq('username', username)
     .eq('active', true)
+    .is('deactivated_at', null)
     .maybeSingle();
   if (error) throw error;
-  return data ? (data as AuthProfile) : null;
+  return data;
 }
 
-export async function loginWithPin(usernameInput: unknown, pinInput: unknown) {
+export async function loginWithPin(usernameInput: unknown, pinInput: unknown, deviceTokenInput?: string) {
   const username = normalizeUsername(usernameInput);
   if (!username || !isValidPin(pinInput)) return null;
 
@@ -120,43 +135,67 @@ export async function loginWithPin(usernameInput: unknown, pinInput: unknown) {
   if (credentialError) throw credentialError;
   if (!credential) return null;
 
-  if (credential.locked_until && new Date(credential.locked_until).getTime() > Date.now()) return null;
+  if (credential.locked_until && new Date(credential.locked_until).getTime() > Date.now()) {
+    return { locked: true, user: null, token: null };
+  }
 
   const valid = await verifyPin(pinInput, credential.pin_salt, credential.pin_hash);
   if (!valid) {
     const failedAttempts = Number(credential.failed_attempts ?? 0) + 1;
-    const { error: failureError } = await db.from('operator_credentials').update({
+    await db.from('operator_credentials').update({
       failed_attempts: failedAttempts,
+      last_failed_at: new Date().toISOString(),
       locked_until: failedAttempts >= maxPinAttempts ? new Date(Date.now() + lockoutMs).toISOString() : null,
     }).eq('profile_id', profile.id);
-    if (failureError) throw failureError;
     return null;
   }
 
   const token = randomHex(32);
   const now = new Date();
-  const { error: resetError } = await db.from('operator_credentials').update({
+  await db.from('operator_credentials').update({
     failed_attempts: 0,
     locked_until: null,
   }).eq('profile_id', profile.id);
-  if (resetError) throw resetError;
+
+  let deviceId: string | null = null;
+  let deviceToken = deviceTokenInput;
+  if (!deviceToken) {
+    deviceToken = randomHex(32);
+  }
+
+  const deviceHash = await hashSessionToken(deviceToken);
+  const { data: existingDevice } = await db.from('app_devices').select('id').eq('device_token_hash', deviceHash).maybeSingle();
+  if (existingDevice) {
+    deviceId = existingDevice.id;
+    await db.from('app_devices').update({ last_seen_at: now.toISOString() }).eq('id', deviceId);
+  } else {
+    const { data: newDevice } = await db.from('app_devices').insert({
+      profile_id: profile.id,
+      device_token_hash: deviceHash,
+      first_seen_at: now.toISOString(),
+      last_seen_at: now.toISOString(),
+    }).select('id').single();
+    if (newDevice) deviceId = newDevice.id;
+  }
 
   const { error: sessionError } = await db.from('app_sessions').insert({
     profile_id: profile.id,
     token_hash: await hashSessionToken(token),
+    device_id: deviceId,
     created_at: now.toISOString(),
     last_seen_at: now.toISOString(),
     expires_at: new Date(now.getTime() + sessionLifetimeMs).toISOString(),
+    absolute_expires_at: new Date(now.getTime() + sessionLifetimeMs).toISOString(),
   });
   if (sessionError) throw sessionError;
 
-  return { token, user: publicProfile(profile) };
+  return { token, deviceToken, user: publicProfile(profile) };
 }
 
 function cookieValue(request: ApiRequest, name: string) {
   const webHeaders = request.headers as Headers;
   const nodeHeaders = request.headers as Record<string, string | string[] | undefined>;
-  const header = typeof webHeaders.get === 'function' ? webHeaders.get('cookie') : nodeHeaders.cookie;
+  const header = typeof webHeaders?.get === 'function' ? webHeaders.get('cookie') : nodeHeaders?.cookie;
   const cookieHeader = Array.isArray(header) ? header.join(';') : header;
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(';')) {
@@ -169,6 +208,11 @@ function cookieValue(request: ApiRequest, name: string) {
 
 export function sessionTokenFromRequest(request: ApiRequest) {
   const token = cookieValue(request, SESSION_COOKIE);
+  return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
+}
+
+export function deviceTokenFromRequest(request: ApiRequest) {
+  const token = cookieValue(request, DEVICE_COOKIE);
   return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
 
@@ -196,15 +240,16 @@ export async function currentUser(request: ApiRequest): Promise<AuthProfile | nu
 
   const { data: profile, error: profileError } = await db
     .from('profiles')
-    .select('id, username, display_name, job_title, role, active')
+    .select('id, username, display_name, role, active, force_pin_change, deactivated_at')
     .eq('id', session.profile_id)
     .eq('active', true)
+    .is('deactivated_at', null)
     .maybeSingle();
   if (profileError) throw profileError;
   if (!profile) return null;
 
   await db.from('app_sessions').update({ last_seen_at: new Date(now).toISOString() }).eq('id', session.id);
-  return publicProfile(profile as AuthProfile);
+  return publicProfile(profile);
 }
 
 export async function revokeCurrentSession(request: ApiRequest) {
@@ -212,6 +257,116 @@ export async function revokeCurrentSession(request: ApiRequest) {
   if (!token) return;
   await getAdminClient().from('app_sessions').update({ revoked_at: new Date().toISOString() })
     .eq('token_hash', await hashSessionToken(token)).is('revoked_at', null);
+}
+
+export async function changePin(profileId: string, oldPin: string, newPin: string) {
+  if (!isValidPin(oldPin) || !isValidPin(newPin)) {
+    throw new Error('PIN harus 6 digit angka.');
+  }
+  if (oldPin === newPin) {
+    throw new Error('PIN baru tidak boleh sama dengan PIN lama.');
+  }
+  if (isWeakPin(newPin)) {
+    throw new Error('PIN terlalu mudah ditebak. Gunakan kombinasi angka lain.');
+  }
+
+  const db = getAdminClient();
+  const { data: credential } = await db
+    .from('operator_credentials')
+    .select('pin_salt, pin_hash, pin_version')
+    .eq('profile_id', profileId)
+    .single();
+  if (!credential) throw new Error('Kredensial tidak ditemukan.');
+
+  const validOld = await verifyPin(oldPin, credential.pin_salt, credential.pin_hash);
+  if (!validOld) throw new Error('PIN lama salah.');
+
+  // Check pin history
+  const { data: history } = await db
+    .from('pin_history')
+    .select('pin_salt, pin_hash')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: false })
+    .limit(3);
+
+  if (history) {
+    for (const h of history) {
+      if (await verifyPin(newPin, h.pin_salt, h.pin_hash)) {
+        throw new Error('PIN baru pernah digunakan sebelumnya.');
+      }
+    }
+  }
+
+  // Save old to history
+  await db.from('pin_history').insert({
+    profile_id: profileId,
+    pin_salt: credential.pin_salt,
+    pin_hash: credential.pin_hash,
+  });
+
+  // Hash new pin
+  const { salt: newSalt, hash: newHash } = await hashPin(newPin);
+  const now = new Date().toISOString();
+
+  await db.from('operator_credentials').update({
+    pin_salt: newSalt,
+    pin_hash: newHash,
+    pin_changed_at: now,
+    pin_version: (credential.pin_version ?? 1) + 1,
+    failed_attempts: 0,
+    locked_until: null,
+  }).eq('profile_id', profileId);
+
+  await db.from('profiles').update({
+    force_pin_change: false,
+    updated_at: now,
+  }).eq('id', profileId);
+
+  return { ok: true };
+}
+
+export async function resetUserPin(actorProfile: AuthProfile, targetUsername: string) {
+  const db = getAdminClient();
+  const { data: target } = await db
+    .from('profiles')
+    .select('id, username, display_name, role')
+    .eq('username', targetUsername)
+    .eq('active', true)
+    .single();
+  if (!target) throw new Error('User target tidak ditemukan.');
+
+  if (actorProfile.role === 'SUPERVISOR') {
+    if (target.role !== 'OPERATOR') {
+      throw new Error('Supervisor hanya boleh mereset PIN Operator.');
+    }
+  } else if (actorProfile.role !== 'OWNER') {
+    throw new Error('Tidak memiliki akses mereset PIN.');
+  }
+
+  // Generate random 6-digit temp PIN
+  const tempPin = Math.floor(100000 + Math.random() * 900000).toString();
+  const { salt, hash } = await hashPin(tempPin);
+  const now = new Date().toISOString();
+
+  await db.from('operator_credentials').update({
+    pin_salt: salt,
+    pin_hash: hash,
+    pin_changed_at: now,
+    failed_attempts: 0,
+    locked_until: null,
+  }).eq('profile_id', target.id);
+
+  await db.from('profiles').update({
+    force_pin_change: true,
+    updated_at: now,
+  }).eq('id', target.id);
+
+  // Revoke all existing sessions for target user
+  await db.from('app_sessions').update({
+    revoked_at: now,
+  }).eq('profile_id', target.id).is('revoked_at', null);
+
+  return { ok: true, tempPin, username: target.username, display_name: target.display_name };
 }
 
 function cookieFlags() {
@@ -224,6 +379,10 @@ export function sessionCookie(token: string) {
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionLifetimeMs / 1000}${cookieFlags()}`;
 }
 
+export function deviceCookie(token: string) {
+  return `${DEVICE_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 24 * 60 * 60}${cookieFlags()}`;
+}
+
 export function clearedSessionCookie() {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieFlags()}`;
 }
@@ -231,7 +390,7 @@ export function clearedSessionCookie() {
 export function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers },
   });
 }
 
@@ -250,7 +409,8 @@ export default {
 
     if (request.method === 'GET' && action === 'me') {
       try {
-        return jsonResponse({ user: await currentUser(request) });
+        const user = await currentUser(request);
+        return jsonResponse({ user });
       } catch (error) {
         console.error('Unable to load current user', error);
         return jsonResponse({ error: 'Authentication service is not configured.' }, 503);
@@ -260,19 +420,55 @@ export default {
     if (request.method === 'POST' && action === 'login') {
       let body: { username?: unknown; pin?: unknown } = {};
       try {
-        const parsed = await request.json();
-        if (parsed && typeof parsed === 'object') body = parsed as { username?: unknown; pin?: unknown };
+        body = (await request.json()) as any;
       } catch {
         return jsonResponse({ error: 'Request body tidak valid.' }, 400);
       }
 
       try {
-        const result = await loginWithPin(body.username, body.pin);
+        const devToken = deviceTokenFromRequest(request) ?? undefined;
+        const result = await loginWithPin(body.username, body.pin, devToken);
         if (!result) return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401);
-        return jsonResponse({ user: result.user }, 200, { 'Set-Cookie': sessionCookie(result.token) });
+        if (result.locked) return jsonResponse({ error: 'Akun terkunci karena 5 kali percobaan gagal. Coba lagi dalam 15 menit.' }, 423);
+
+        const responseHeaders: Record<string, string> = {
+          'Set-Cookie': sessionCookie(result.token!),
+        };
+        return jsonResponse({ user: result.user }, 200, responseHeaders);
       } catch (error) {
         console.error('Unable to login', error);
         return jsonResponse({ error: 'Authentication service is not configured.' }, 503);
+      }
+    }
+
+    if (request.method === 'POST' && action === 'changePin') {
+      const user = await currentUser(request);
+      if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+      try {
+        const body = (await request.json()) as { oldPin?: string; newPin?: string; confirmPin?: string };
+        if (!body.oldPin || !body.newPin) return jsonResponse({ error: 'PIN lama dan PIN baru wajib diisi.' }, 400);
+        if (body.confirmPin && body.newPin !== body.confirmPin) {
+          return jsonResponse({ error: 'Konfirmasi PIN tidak cocok.' }, 400);
+        }
+        await changePin(user.id, body.oldPin, body.newPin);
+        return jsonResponse({ ok: true, message: 'PIN berhasil diperbarui.' });
+      } catch (err: any) {
+        return jsonResponse({ error: err.message || 'Gagal mengubah PIN' }, 400);
+      }
+    }
+
+    if (request.method === 'POST' && action === 'resetPin') {
+      const user = await currentUser(request);
+      if (!user) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+      try {
+        const body = (await request.json()) as { username?: string };
+        if (!body.username) return jsonResponse({ error: 'Username target wajib diisi.' }, 400);
+        const res = await resetUserPin(user, body.username);
+        return jsonResponse(res);
+      } catch (err: any) {
+        return jsonResponse({ error: err.message || 'Gagal mereset PIN' }, 403);
       }
     }
 
