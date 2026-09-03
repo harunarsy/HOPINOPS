@@ -86,37 +86,90 @@ export function Login({ options, onLogin, loading, error }: Props) {
           </div>
 
           <div className="login-field">
-            <label htmlFor="pin-input">PIN 6 digit</label>
-            <div className="pin-entry" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input
-                id="pin-input"
-                ref={pinInputRef}
-                type={showPin ? 'text' : 'password'}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={6}
-                value={pin}
-                onChange={handlePinChange}
-                placeholder="••••••"
-                disabled={loading}
-                style={{
-                  fontSize: '24px',
-                  letterSpacing: '8px',
-                  textAlign: 'center',
-                  padding: '10px 14px',
-                  borderRadius: '10px',
-                  border: '1px solid #cddcd4',
-                  width: '100%',
-                  fontFamily: 'monospace',
-                }}
-              />
+            <label htmlFor="pin-input-0">PIN 6 digit</label>
+            <div
+              className="pin-box-wrap"
+              style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '6px' }}
+              onClick={() => {
+                const idx = Math.min(pin.length, 5);
+                const el = document.getElementById(`pin-input-${idx}`);
+                el?.focus();
+              }}
+            >
+              {[0, 1, 2, 3, 4, 5].map((idx) => {
+                const digit = pin[idx] || '';
+                return (
+                  <input
+                    key={idx}
+                    id={`pin-input-${idx}`}
+                    type={showPin ? 'text' : 'password'}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={1}
+                    value={digit}
+                    disabled={loading}
+                    placeholder={idx === 0 && !pin ? '•' : ''}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '');
+                      if (!val) {
+                        // clear current digit
+                        const newPin = pin.slice(0, idx) + pin.slice(idx + 1);
+                        setPin(newPin);
+                        return;
+                      }
+                      const char = val[val.length - 1];
+                      const newPinArr = pin.split('');
+                      newPinArr[idx] = char;
+                      const nextPin = newPinArr.join('').slice(0, 6);
+                      setPin(nextPin);
+                      if (idx < 5) {
+                        const nextEl = document.getElementById(`pin-input-${idx + 1}`);
+                        nextEl?.focus();
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Backspace') {
+                        if (!digit && idx > 0) {
+                          const prevEl = document.getElementById(`pin-input-${idx - 1}`);
+                          prevEl?.focus();
+                        }
+                      }
+                    }}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+                      if (pasted) {
+                        setPin(pasted);
+                        const targetIdx = Math.min(pasted.length, 5);
+                        document.getElementById(`pin-input-${targetIdx}`)?.focus();
+                      }
+                    }}
+                    style={{
+                      width: '46px',
+                      height: '54px',
+                      textAlign: 'center',
+                      fontSize: '22px',
+                      fontWeight: 700,
+                      fontFamily: 'monospace',
+                      borderRadius: '10px',
+                      border: `1.5px solid ${digit ? '#1e5b48' : '#cddcd4'}`,
+                      background: digit ? '#f0f7f4' : '#fff',
+                      color: '#123d32',
+                      outline: 'none',
+                      transition: 'border-color 0.15s, background 0.15s',
+                    }}
+                  />
+                );
+              })}
+            </div>
+            <div style={{ textAlign: 'right', marginTop: '6px' }}>
               <button
                 type="button"
                 className="pin-toggle"
                 onClick={() => setShowPin(!showPin)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '13px', color: '#4a6b5d' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#4a6b5d' }}
               >
-                {showPin ? 'Sembunyikan' : 'Lihat'}
+                {showPin ? 'Sembunyikan PIN' : 'Lihat PIN'}
               </button>
             </div>
           </div>

@@ -35,8 +35,14 @@ describe('UI Component Flow Tests', () => {
     await userEvent.click(screen.getByText('Harun Al Rasyid'));
 
     // Fill PIN
-    const pinInput = screen.getByPlaceholderText('••••••');
-    await userEvent.type(pinInput, '123456');
+    const firstDigit = document.getElementById('pin-input-0') as HTMLInputElement;
+    expect(firstDigit).toBeDefined();
+    await userEvent.type(firstDigit, '1');
+    await userEvent.type(document.getElementById('pin-input-1') as HTMLInputElement, '2');
+    await userEvent.type(document.getElementById('pin-input-2') as HTMLInputElement, '3');
+    await userEvent.type(document.getElementById('pin-input-3') as HTMLInputElement, '4');
+    await userEvent.type(document.getElementById('pin-input-4') as HTMLInputElement, '5');
+    await userEvent.type(document.getElementById('pin-input-5') as HTMLInputElement, '6');
 
     // Submit
     const submitBtn = screen.getByRole('button', { name: /masuk ke sistem/i });
