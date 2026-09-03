@@ -22,8 +22,6 @@ const SESSION_COOKIE = process.env.VERCEL_ENV === 'production' || process.env.NO
 const DEVICE_COOKIE = 'hopin_device';
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
 const inactivityMs = 30 * 60 * 1000;
-const lockoutMs = 15 * 60 * 1000;
-const maxPinAttempts = 5;
 const pinIterations = 310_000;
 
 const WEAK_PINS = new Set([
@@ -137,6 +135,48 @@ async function hashSessionToken(token: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+type AuthScope = 'credential' | 'ip' | 'device';
+type AuthLimitResult = { attempts: number; blocked: boolean; blocked_until: string | null };
+
+async function authScopeKeys(username: string, clientIp: string, deviceToken: string) {
+  const pepper = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!pepper) throw new Error('Server Supabase environment is not configured.');
+
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(pepper),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const values: Array<[AuthScope, string]> = [
+    ['credential', username || 'invalid-credential'],
+    ['ip', clientIp || 'unknown'],
+    ['device', deviceToken],
+  ];
+
+  return Promise.all(values.map(async ([scope, value]) => {
+    const digest = await crypto.subtle.sign('HMAC', key, encoder.encode(`${scope}\0${value}`));
+    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${scope}:${hash}`;
+  }));
+}
+
+async function runAuthLimitRpc(
+  db: SupabaseClient,
+  rpc: 'rpc_check_auth_limits' | 'rpc_record_auth_failure' | 'rpc_reset_auth_failures',
+  profileId: string | null,
+  scopeKeys: string[],
+): Promise<AuthLimitResult> {
+  const { data, error } = await db.rpc(rpc, {
+    p_profile_id: profileId,
+    p_scope_keys: scopeKeys,
+  });
+  if (error) throw error;
+  return data as AuthLimitResult;
+}
+
 function publicProfile(profile: any): AuthProfile {
   return {
     id: profile.id,
@@ -171,60 +211,52 @@ async function getActiveProfile(username: string): Promise<any | null> {
   return data;
 }
 
-export async function loginWithPin(usernameInput: unknown, pinInput: unknown, deviceTokenInput?: string) {
+export async function loginWithPin(
+  usernameInput: unknown,
+  pinInput: unknown,
+  deviceTokenInput?: string,
+  clientIp = 'unknown',
+) {
   const username = normalizeUsername(usernameInput);
-  if (!username || !isValidPin(pinInput)) return null;
-
   const db = getAdminClient();
-  const profile = await getActiveProfile(username);
-  if (!profile) return null;
+  const deviceToken = deviceTokenInput && /^[a-f0-9]{64}$/.test(deviceTokenInput)
+    ? deviceTokenInput
+    : randomHex(32);
+  const [profile, scopeKeys] = await Promise.all([
+    username ? getActiveProfile(username) : Promise.resolve(null),
+    authScopeKeys(username, clientIp, deviceToken),
+  ]);
+  const profileId = profile?.id ?? null;
+  const limits = await runAuthLimitRpc(db, 'rpc_check_auth_limits', profileId, scopeKeys);
+  if (limits.blocked) return { locked: true, user: null, token: null };
+
+  if (!username || !isValidPin(pinInput) || !profile) {
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profileId, scopeKeys);
+    return null;
+  }
 
   const { data: credential, error: credentialError } = await db
     .from('operator_credentials')
-    .select('pin_salt, pin_hash, failed_attempts, locked_until')
+    .select('pin_salt, pin_hash')
     .eq('profile_id', profile.id)
     .maybeSingle();
   if (credentialError) throw credentialError;
-  if (!credential) return null;
-
-  if (credential.locked_until && new Date(credential.locked_until).getTime() > Date.now()) {
-    return { locked: true, user: null, token: null };
+  if (!credential) {
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, scopeKeys);
+    return null;
   }
 
   const valid = await verifyPin(pinInput, credential.pin_salt, credential.pin_hash);
   if (!valid) {
-    const failedAttempts = Number(credential.failed_attempts ?? 0) + 1;
-    await db.from('operator_credentials').update({
-      failed_attempts: failedAttempts,
-      last_failed_at: new Date().toISOString(),
-      locked_until: failedAttempts >= maxPinAttempts ? new Date(Date.now() + lockoutMs).toISOString() : null,
-    }).eq('profile_id', profile.id);
-
-    // Audit failed attempt
-    await db.from('audit_events').insert({
-      actor_user_id: profile.id,
-      action: 'LOGIN_FAILED',
-      entity_type: 'operator_credentials',
-      entity_id: profile.id,
-      reason: `Percobaan PIN gagal (${failedAttempts}/${maxPinAttempts})`,
-    });
-
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, scopeKeys);
     return null;
   }
 
   const token = randomHex(32);
   const now = new Date();
-  await db.from('operator_credentials').update({
-    failed_attempts: 0,
-    locked_until: null,
-  }).eq('profile_id', profile.id);
+  await runAuthLimitRpc(db, 'rpc_reset_auth_failures', profile.id, scopeKeys);
 
   let deviceId: string | null = null;
-  let deviceToken = deviceTokenInput;
-  if (!deviceToken) {
-    deviceToken = randomHex(32);
-  }
-
   const deviceHash = await hashSessionToken(deviceToken);
   const { data: existingDevice } = await db.from('app_devices').select('id').eq('device_token_hash', deviceHash).maybeSingle();
   if (existingDevice) {
@@ -287,6 +319,14 @@ export function deviceTokenFromRequest(request: ApiRequest) {
   return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
 
+function clientIpFromRequest(request: Request) {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  return forwardedFor?.split(',')[0]?.trim()
+    || request.headers.get('x-real-ip')?.trim()
+    || request.headers.get('cf-connecting-ip')?.trim()
+    || 'unknown';
+}
+
 export async function currentUser(request: ApiRequest): Promise<AuthProfile | null> {
   const token = sessionTokenFromRequest(request);
   if (!token) return null;
@@ -331,7 +371,7 @@ export async function revokeCurrentSession(request: ApiRequest) {
     .eq('token_hash', await hashSessionToken(token)).is('revoked_at', null);
 }
 
-export async function changePin(profileId: string, oldPin: string, newPin: string) {
+export async function changePin(request: ApiRequest, profileId: string, oldPin: string, newPin: string) {
   if (!isValidPin(oldPin) || !isValidPin(newPin)) {
     throw new Error('PIN harus 6 digit angka.');
   }
@@ -343,23 +383,47 @@ export async function changePin(profileId: string, oldPin: string, newPin: strin
   }
 
   const db = getAdminClient();
-  const { data: credential } = await db
+  const token = sessionTokenFromRequest(request);
+  if (!token) throw new Error('Session aktif tidak ditemukan. Silakan login kembali.');
+
+  const [{ data: session, error: sessionError }, { data: scopes, error: scopeError }] = await Promise.all([
+    db.from('app_sessions')
+      .select('id')
+      .eq('token_hash', await hashSessionToken(token))
+      .eq('profile_id', profileId)
+      .is('revoked_at', null)
+      .maybeSingle(),
+    db.from('profile_outlet_scopes')
+      .select('outlet_id, outlets!inner(active)')
+      .eq('profile_id', profileId)
+      .eq('active', true)
+      .eq('outlets.active', true)
+      .limit(2),
+  ]);
+  if (sessionError) throw sessionError;
+  if (scopeError) throw scopeError;
+  if (!session) throw new Error('Session aktif tidak ditemukan. Silakan login kembali.');
+  if (scopes?.length !== 1) throw new Error('Akun harus memiliki tepat satu scope outlet aktif.');
+
+  const { data: credential, error: credentialError } = await db
     .from('operator_credentials')
     .select('pin_salt, pin_hash, pin_version')
     .eq('profile_id', profileId)
     .single();
+  if (credentialError) throw credentialError;
   if (!credential) throw new Error('Kredensial tidak ditemukan.');
 
   const validOld = await verifyPin(oldPin, credential.pin_salt, credential.pin_hash);
   if (!validOld) throw new Error('PIN lama salah.');
 
   // Check pin history
-  const { data: history } = await db
+  const { data: history, error: historyError } = await db
     .from('pin_history')
     .select('pin_salt, pin_hash')
     .eq('profile_id', profileId)
     .order('created_at', { ascending: false })
     .limit(3);
+  if (historyError) throw historyError;
 
   if (history) {
     for (const h of history) {
@@ -369,95 +433,91 @@ export async function changePin(profileId: string, oldPin: string, newPin: strin
     }
   }
 
-  // Save old to history
-  await db.from('pin_history').insert({
-    profile_id: profileId,
-    pin_salt: credential.pin_salt,
-    pin_hash: credential.pin_hash,
-  });
-
-  // Hash new pin
   const { salt: newSalt, hash: newHash } = await hashPin(newPin);
-  const now = new Date().toISOString();
-
-  await db.from('operator_credentials').update({
-    pin_salt: newSalt,
-    pin_hash: newHash,
-    pin_changed_at: now,
-    pin_version: (credential.pin_version ?? 1) + 1,
-    failed_attempts: 0,
-    locked_until: null,
-  }).eq('profile_id', profileId);
-
-  await db.from('profiles').update({
-    force_pin_change: false,
-    updated_at: now,
-  }).eq('id', profileId);
-
-  // Audit
-  await db.from('audit_events').insert({
-    actor_user_id: profileId,
-    action: 'CHANGE_PIN',
-    entity_type: 'operator_credentials',
-    entity_id: profileId,
-    reason: 'User berhasil memperbarui PIN mandiri',
+  const { error } = await db.rpc('rpc_change_pin', {
+    p_actor_id: profileId,
+    p_outlet_id: scopes[0].outlet_id,
+    p_current_session_id: session.id,
+    p_expected_pin_version: credential.pin_version,
+    p_new_pin_salt: newSalt,
+    p_new_pin_hash: newHash,
+    p_revoke_all_sessions: false,
   });
+  if (error?.code === '40001' || /VERSION_CONFLICT/.test(error?.message ?? '')) {
+    throw new Error('PIN telah berubah di sesi lain. Silakan login kembali.');
+  }
+  if (error) throw error;
 
   return { ok: true };
 }
 
-export async function resetUserPin(actorProfile: AuthProfile, targetUsername: string) {
+export async function resetUserPin(actorProfile: AuthProfile, targetUsernameInput: string) {
+  if (actorProfile.role !== 'OWNER') throw new Error('Hanya Owner yang boleh mereset PIN.');
+
+  const targetUsername = normalizeUsername(targetUsernameInput);
+  if (!targetUsername) throw new Error('Username target wajib diisi.');
+
   const db = getAdminClient();
-  const { data: target } = await db
+  const { data: scopes, error: scopeError } = await db
+    .from('profile_outlet_scopes')
+    .select('outlet_id, outlets!inner(active)')
+    .eq('profile_id', actorProfile.id)
+    .eq('active', true)
+    .eq('outlets.active', true)
+    .limit(2);
+  if (scopeError) throw scopeError;
+  if (scopes?.length !== 1) throw new Error('Akun harus memiliki tepat satu scope outlet aktif.');
+
+  const { data: target, error: targetError } = await db
     .from('profiles')
-    .select('id, username, display_name, role')
+    .select('id, username, role, operator_credentials!inner(pin_version), profile_outlet_scopes!inner(outlet_id, active)')
     .eq('username', targetUsername)
     .eq('active', true)
-    .single();
-  if (!target) throw new Error('User target tidak ditemukan.');
-
-  if (actorProfile.role === 'SUPERVISOR') {
-    if (target.role !== 'OPERATOR') {
-      throw new Error('Supervisor hanya boleh mereset PIN Operator.');
-    }
-  } else if (actorProfile.role !== 'OWNER') {
-    throw new Error('Tidak memiliki akses mereset PIN.');
+    .is('deactivated_at', null)
+    .eq('profile_outlet_scopes.outlet_id', scopes[0].outlet_id)
+    .eq('profile_outlet_scopes.active', true)
+    .maybeSingle();
+  if (targetError) throw targetError;
+  if (!target) throw new Error('User target aktif pada outlet ini tidak ditemukan.');
+  if (target.id === actorProfile.id || target.role === 'OWNER') {
+    throw new Error('Reset PIN diri sendiri atau Owner lain tidak diizinkan.');
   }
 
-  // Generate random 6-digit temp PIN
-  const tempPin = Math.floor(100000 + Math.random() * 900000).toString();
+  const credential = Array.isArray(target.operator_credentials)
+    ? target.operator_credentials[0]
+    : target.operator_credentials;
+  if (!credential?.pin_version) throw new Error('Kredensial target tidak ditemukan.');
+
+  let tempPin = '';
+  while (!tempPin) {
+    const random = new Uint32Array(1);
+    crypto.getRandomValues(random);
+    if (random[0] >= Math.floor(0x1_0000_0000 / 900000) * 900000) continue;
+    const candidate = (100000 + (random[0] % 900000)).toString();
+    if (!isWeakPin(candidate)) tempPin = candidate;
+  }
+
   const { salt, hash } = await hashPin(tempPin);
-  const now = new Date().toISOString();
-
-  await db.from('operator_credentials').update({
-    pin_salt: salt,
-    pin_hash: hash,
-    pin_changed_at: now,
-    failed_attempts: 0,
-    locked_until: null,
-  }).eq('profile_id', target.id);
-
-  await db.from('profiles').update({
-    force_pin_change: true,
-    updated_at: now,
-  }).eq('id', target.id);
-
-  // Revoke all existing sessions for target user
-  await db.from('app_sessions').update({
-    revoked_at: now,
-  }).eq('profile_id', target.id).is('revoked_at', null);
-
-  // Audit
-  await db.from('audit_events').insert({
-    actor_user_id: actorProfile.id,
-    subject_user_id: target.id,
-    action: 'RESET_USER_PIN',
-    entity_type: 'operator_credentials',
-    entity_id: target.id,
-    reason: `PIN di-reset oleh ${actorProfile.display_name} (${actorProfile.role})`,
+  const { data, error } = await db.rpc('rpc_reset_pin', {
+    p_actor_id: actorProfile.id,
+    p_outlet_id: scopes[0].outlet_id,
+    p_target_username: targetUsername,
+    p_new_pin_salt: salt,
+    p_new_pin_hash: hash,
+    p_expected_pin_version: credential.pin_version,
   });
+  if (error?.code === '40001' || /VERSION_CONFLICT/.test(error?.message ?? '')) {
+    throw new Error('VERSION_CONFLICT: PIN target telah berubah. Muat ulang lalu coba lagi.');
+  }
+  if (error) throw error;
+  if (!data?.username || !data?.display_name) throw new Error('Respons reset PIN tidak valid.');
 
-  return { ok: true, tempPin, username: target.username, display_name: target.display_name };
+  return {
+    ok: true,
+    tempPin,
+    username: data.username,
+    display_name: data.display_name,
+  };
 }
 
 function cookieFlags() {
@@ -479,9 +539,12 @@ export function clearedSessionCookie() {
 }
 
 export function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}) {
+  const responseHeaders = new Headers(headers);
+  if (!responseHeaders.has('Content-Type')) responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
+  if (!responseHeaders.has('Cache-Control')) responseHeaders.set('Cache-Control', 'no-store');
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers },
+    headers: responseHeaders,
   });
 }
 
@@ -521,14 +584,15 @@ export default {
       }
 
       try {
-        const devToken = deviceTokenFromRequest(request) ?? undefined;
-        const result = await loginWithPin(body.username, body.pin, devToken);
-        if (!result) return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401);
-        if (result.locked) return jsonResponse({ error: 'Akun terkunci karena 5 kali percobaan gagal. Coba lagi dalam 15 menit.' }, 423);
+        const devToken = deviceTokenFromRequest(request) ?? randomHex(32);
+        const result = await loginWithPin(body.username, body.pin, devToken, clientIpFromRequest(request));
+        const responseHeaders = new Headers();
+        responseHeaders.append('Set-Cookie', deviceCookie(devToken));
+        if (!result || result.locked) {
+          return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401, responseHeaders);
+        }
 
-        const responseHeaders: Record<string, string> = {
-          'Set-Cookie': sessionCookie(result.token!),
-        };
+        responseHeaders.append('Set-Cookie', sessionCookie(result.token!));
         return jsonResponse({ user: result.user }, 200, responseHeaders);
       } catch (error) {
         console.error('Unable to login', error);
@@ -546,7 +610,7 @@ export default {
         if (body.confirmPin && body.newPin !== body.confirmPin) {
           return jsonResponse({ error: 'Konfirmasi PIN tidak cocok.' }, 400);
         }
-        await changePin(user.id, body.oldPin, body.newPin);
+        await changePin(request, user.id, body.oldPin, body.newPin);
         return jsonResponse({ ok: true, message: 'PIN berhasil diperbarui.' });
       } catch (err: any) {
         return jsonResponse({ error: err.message || 'Gagal mengubah PIN' }, 400);
@@ -563,7 +627,8 @@ export default {
         const res = await resetUserPin(user, body.username);
         return jsonResponse(res);
       } catch (err: any) {
-        return jsonResponse({ error: err.message || 'Gagal mereset PIN' }, 403);
+        const conflict = /VERSION_CONFLICT/.test(err?.message ?? '');
+        return jsonResponse({ error: err.message || 'Gagal mereset PIN' }, conflict ? 409 : 403);
       }
     }
 

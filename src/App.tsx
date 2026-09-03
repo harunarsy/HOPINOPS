@@ -17,6 +17,7 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
 
   // Bootstrap data
+  const [outletId, setOutletId] = useState('');
   const [items, setItems] = useState<Item[]>([]);
   const [activeAssignment, setActiveAssignment] = useState<any>(null);
   const [activeAttendance, setActiveAttendance] = useState<any>(null);
@@ -34,6 +35,7 @@ export default function App() {
     try {
       const data = await api.bootstrap();
       setCurrentUser(data.user);
+      setOutletId(data.outlet?.id || '');
       setItems(data.items || []);
       setActiveAssignment(data.activeAssignment || null);
       setActiveAttendance(data.activeAttendance || null);
@@ -91,6 +93,7 @@ export default function App() {
       await api.logout();
     } catch {}
     setCurrentUser(null);
+    setOutletId('');
     setActiveAssignment(null);
     setActiveAttendance(null);
     setCycleData(null);
@@ -255,6 +258,16 @@ export default function App() {
   // 10. ACTIVE STOCK WORKSPACE
   const currentAreaItems = items.filter((it) => it.area_code === activeAssignment.work_cycles?.area_code);
 
+  if (!outletId) {
+    return (
+      <div className="login-page">
+        <div className="login-panel" style={{ textAlign: 'center', padding: '40px' }}>
+          <strong>Data outlet belum tersedia. Muat ulang setelah koneksi pulih.</strong>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -272,6 +285,8 @@ export default function App() {
       </header>
 
       <StockWorkspace
+        profileId={currentUser.id}
+        outletId={outletId}
         cycleId={activeAssignment.cycle_id}
         area={activeAssignment.work_cycles?.area_code}
         shift={activeAssignment.work_cycles?.shift_code}

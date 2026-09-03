@@ -18,6 +18,17 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
   const [usersList, setUsersList] = useState<any[]>([]);
   const [toast, setToast] = useState('');
 
+  // Payroll state
+  const [payrollPeriod, setPayrollPeriod] = useState(wibDate().slice(0, 7));
+  const [payrollRun, setPayrollRun] = useState<any | null>(null);
+  const [payrollEntries, setPayrollEntries] = useState<any[]>([]);
+  const [payrollLoading, setPayrollLoading] = useState(false);
+  const [paymentRef, setPaymentRef] = useState('');
+  const [paymentReason, setPaymentReason] = useState('');
+  const [voidReason, setVoidReason] = useState('');
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [showVoidModal, setShowVoidModal] = useState(false);
+
   const isInvestor = user.role === 'INVESTOR';
   const isOwner = user.role === 'OWNER';
 
@@ -39,6 +50,9 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
           const u = await api.listUsers();
           setUsersList(u);
         }
+        if (tab === 'payroll') {
+          await loadPayroll(payrollPeriod);
+        }
       }
     } catch (e: any) {
       showToast(e.message || 'Gagal memuat data manajemen');
@@ -47,31 +61,122 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
     }
   };
 
+  const loadPayroll = async (period: string) => {
+    setPayrollLoading(true);
+    try {
+      const { run, entries } = await api.getPayrollRun(period);
+      setPayrollRun(run);
+      setPayrollEntries(entries || []);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal memuat data payroll');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
+  const handlePreviewPayroll = async () => {
+    setPayrollLoading(true);
+    try {
+      const res = await api.previewPayroll(payrollPeriod, payrollRun?.version);
+      showToast(`Draft Payroll berhasil dihitung (${res.entry_count} karyawan).`);
+      await loadPayroll(payrollPeriod);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal preview payroll');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
+  const handleReviewPayroll = async () => {
+    if (!payrollRun) return;
+    setPayrollLoading(true);
+    try {
+      await api.reviewPayroll(payrollRun.id, payrollRun.version);
+      showToast('Payroll berhasil ditandai REVIEWED.');
+      await loadPayroll(payrollPeriod);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal review payroll');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
+  const handleFinalizePayroll = async () => {
+    if (!payrollRun) return;
+    if (!confirm('Finalisasi payroll akan mengunci seluruh entri dan data gaji secara permanen. Lanjutkan?')) return;
+    setPayrollLoading(true);
+    try {
+      await api.finalizePayroll(payrollRun.id, payrollRun.version);
+      showToast('Payroll berhasil di-FINALISASI.');
+      await loadPayroll(payrollPeriod);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal finalisasi payroll');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
+  const handleMarkPaid = async () => {
+    if (!payrollRun || !paymentRef.trim() || !paymentReason.trim()) {
+      showToast('Referensi dan alasan pembayaran wajib diisi.');
+      return;
+    }
+    setPayrollLoading(true);
+    try {
+      await api.markPayrollPaid(payrollRun.id, payrollRun.version, paymentRef.trim(), paymentReason.trim());
+      showToast('Payroll berhasil ditandai PAID.');
+      setShowPayModal(false);
+      setPaymentRef('');
+      setPaymentReason('');
+      await loadPayroll(payrollPeriod);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal menandai payroll dibayar');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
+  const handleVoidPayroll = async () => {
+    if (!payrollRun || !voidReason.trim()) {
+      showToast('Alasan pembatalan (VOID) wajib diisi.');
+      return;
+    }
+    if (!confirm('Pembatalan akan meng-VOID payroll ini dan membuat draft pengganti baru. Lanjutkan?')) return;
+    setPayrollLoading(true);
+    try {
+      await api.voidPayroll(payrollRun.id, payrollRun.version, voidReason.trim());
+      showToast('Payroll telah di-VOID dan draft pengganti dibuat.');
+      setShowVoidModal(false);
+      setVoidReason('');
+      await loadPayroll(payrollPeriod);
+    } catch (e: any) {
+      showToast(e.message || 'Gagal membatalkan payroll');
+    } finally {
+      setPayrollLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadData();
   }, [tab]);
 
   const handleExportPayroll = async () => {
-    setLoading(true);
+    if (!payrollRun) {
+      showToast('Belum ada payroll run untuk periode ini.');
+      return;
+    }
+    if (!['REVIEWED', 'FINALIZED', 'PAID'].includes(payrollRun.status)) {
+      showToast('Payroll harus berstatus REVIEWED atau FINALIZED sebelum dapat diekspor.');
+      return;
+    }
+    setPayrollLoading(true);
     try {
-      const res = await api.exportPayrollXlsx();
-      const byteCharacters = atob(res.file_base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = res.filename;
-      a.click();
-      showToast('File Excel Payroll berhasil diunduh.');
+      const res = await api.exportPayrollXlsx(payrollRun.id, payrollRun.version);
+      showToast(`Snapshot Excel (${res.label}) berhasil dicatat: ${res.filename}`);
     } catch (e: any) {
       showToast(e.message || 'Gagal ekspor payroll');
     } finally {
-      setLoading(false);
+      setPayrollLoading(false);
     }
   };
 
@@ -212,25 +317,239 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
         {/* 3. PAYROLL & EXCEL */}
         {tab === 'payroll' && !isInvestor && (
           <div className="section-card">
-            <div className="section-heading">
+            <div className="section-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <p className="eyebrow">REKAP GAJI & BONUS OMZET</p>
-                <h2>Payroll Evidence & Ekspor</h2>
+                <h2>Payroll Evidence & Lifecycle</h2>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <label style={{ fontSize: '13px', fontWeight: 600 }}>Periode:</label>
+                <input
+                  type="month"
+                  value={payrollPeriod}
+                  onChange={(e) => {
+                    setPayrollPeriod(e.target.value);
+                    void loadPayroll(e.target.value);
+                  }}
+                  style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cddcd4', fontSize: '13px' }}
+                />
               </div>
             </div>
 
-            <p className="muted" style={{ margin: '12px 0' }}>
-              File Excel mencakup 7 sheet lengkap: Summary, Attendance, Exceptions, Overtime, Bonus, Adjustments, dan Audit log.
-            </p>
+            {/* Run Status Banner */}
+            <div style={{ margin: '16px 0', padding: '16px', background: '#f8faf9', borderRadius: '8px', border: '1px solid #e0ece6' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div>
+                  <span style={{ fontSize: '12px', color: '#6b8378', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Status Siklus:</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                    <span className={`tag ${
+                      payrollRun?.status === 'PAID' ? 'good' :
+                      payrollRun?.status === 'FINALIZED' ? 'good' :
+                      payrollRun?.status === 'REVIEWED' ? 'neutral' :
+                      payrollRun?.status === 'DRAFT' ? 'warn' : 'neutral'
+                    }`} style={{ fontSize: '13px', fontWeight: 700 }}>
+                      {payrollRun?.status || 'BELUM DIBUAT'}
+                    </span>
+                    {payrollRun && (
+                      <span style={{ fontSize: '12px', color: '#6b8378' }}>
+                        (Versi {payrollRun.version} • {payrollEntries.length} Karyawan)
+                      </span>
+                    )}
+                  </div>
+                </div>
 
-            <button
-              className="primary-button"
-              onClick={handleExportPayroll}
-              disabled={loading}
-              style={{ marginTop: '12px' }}
-            >
-              {loading ? 'Membuat Spreadsheet...' : '📥 Ekspor Laporan Payroll (.xlsx)'}
-            </button>
+                {/* Lifecycle Action Buttons */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {/* Generate / Rebuild Draft */}
+                  {(!payrollRun || payrollRun.status === 'DRAFT') && (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={handlePreviewPayroll}
+                      disabled={payrollLoading}
+                      style={{ fontSize: '12px', padding: '6px 12px' }}
+                    >
+                      {payrollLoading ? 'Menghitung...' : payrollRun ? '🔄 Hitung Ulang Draft' : '➕ Buat Draft Payroll'}
+                    </button>
+                  )}
+
+                  {/* Move Draft to Reviewed */}
+                  {payrollRun?.status === 'DRAFT' && (
+                    <button
+                      type="button"
+                      className="outline-button"
+                      onClick={handleReviewPayroll}
+                      disabled={payrollLoading}
+                      style={{ fontSize: '12px', padding: '6px 12px', borderColor: '#2563eb', color: '#2563eb' }}
+                    >
+                      ✓ Setujui Review
+                    </button>
+                  )}
+
+                  {/* Owner Finalize */}
+                  {isOwner && payrollRun?.status === 'REVIEWED' && (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={handleFinalizePayroll}
+                      disabled={payrollLoading}
+                      style={{ fontSize: '12px', padding: '6px 12px', background: '#059669' }}
+                    >
+                      🔒 Finalisasi (Owner)
+                    </button>
+                  )}
+
+                  {/* Owner Mark Paid */}
+                  {isOwner && payrollRun?.status === 'FINALIZED' && (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => setShowPayModal(true)}
+                      disabled={payrollLoading}
+                      style={{ fontSize: '12px', padding: '6px 12px', background: '#0d9488' }}
+                    >
+                      💵 Tandai Lunas (PAID)
+                    </button>
+                  )}
+
+                  {/* Owner Void */}
+                  {isOwner && payrollRun && ['REVIEWED', 'FINALIZED', 'PAID'].includes(payrollRun.status) && (
+                    <button
+                      type="button"
+                      className="outline-button"
+                      onClick={() => setShowVoidModal(true)}
+                      disabled={payrollLoading}
+                      style={{ fontSize: '12px', padding: '6px 12px', borderColor: '#dc2626', color: '#dc2626' }}
+                    >
+                      ✕ Batalkan (VOID)
+                    </button>
+                  )}
+
+                  {/* Export XLSX */}
+                  <button
+                    type="button"
+                    className="outline-button"
+                    onClick={handleExportPayroll}
+                    disabled={payrollLoading || !payrollRun || !['REVIEWED', 'FINALIZED', 'PAID'].includes(payrollRun.status)}
+                    style={{ fontSize: '12px', padding: '6px 12px' }}
+                  >
+                    📥 Ekspor XLSX
+                  </button>
+                </div>
+              </div>
+
+              {payrollRun?.payload_checksum && (
+                <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#6b8378', fontFamily: 'monospace' }}>
+                  Checksum SHA-256: {payrollRun.payload_checksum.slice(0, 24)}...
+                </p>
+              )}
+            </div>
+
+            {/* Entries Table */}
+            {payrollEntries.length > 0 ? (
+              <div className="table-responsive" style={{ marginTop: '16px' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}>
+                      <th style={{ padding: '8px' }}>Karyawan</th>
+                      <th style={{ padding: '8px' }}>Jabatan</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Gaji Pokok</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Lembur</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Potongan</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Bonus Omzet</th>
+                      <th style={{ padding: '8px', textAlign: 'right' }}>Gaji Bruto</th>
+                      <th style={{ padding: '8px', textAlign: 'center' }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payrollEntries.map((e) => (
+                      <tr key={e.id} style={{ borderBottom: '1px solid #eef3f0' }}>
+                        <td style={{ padding: '8px', fontWeight: 600 }}>{e.profiles?.display_name}</td>
+                        <td style={{ padding: '8px', color: '#6b8378' }}>{e.profiles?.job_title || 'STAFF'}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.base_amount)}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.approved_overtime_amount)}</td>
+                        <td style={{ padding: '8px', textAlign: 'right', color: Number(e.absence_deduction) > 0 ? '#dc2626' : undefined }}>
+                          {fmtRupiah(e.absence_deduction)}
+                        </td>
+                        <td style={{ padding: '8px', textAlign: 'right', color: '#059669' }}>{fmtRupiah(e.bonus_amount)}</td>
+                        <td style={{ padding: '8px', textAlign: 'right', fontWeight: 700 }}>
+                          {fmtRupiah(payrollRun?.status === 'FINALIZED' || payrollRun?.status === 'PAID' ? e.final_gross : e.proposed_gross)}
+                        </td>
+                        <td style={{ padding: '8px', textAlign: 'center' }}>
+                          <span className={`tag ${e.status === 'APPROVED' ? 'good' : 'neutral'}`} style={{ fontSize: '11px' }}>
+                            {e.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>
+                {payrollRun ? 'Belum ada entri karyawan terdaftar pada payroll ini.' : 'Pilih periode dan klik "Buat Draft Payroll" untuk menghitung kompensasi.'}
+              </p>
+            )}
+
+            {/* Modal Mark Paid */}
+            {showPayModal && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' }}>
+                <div style={{ background: '#fff', padding: '24px', borderRadius: '12px', maxWidth: '440px', width: '100%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>Tandai Payroll Dibayar (PAID)</h3>
+                  <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
+                    Pastikan seluruh transfer telah berhasil dieksekusi sebelum mencatat bukti pembayaran.
+                  </p>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Referensi Pembayaran (Nomor Transaksi / Bukti Bank):</label>
+                  <input
+                    type="text"
+                    value={paymentRef}
+                    onChange={(e) => setPaymentRef(e.target.value)}
+                    placeholder="Contoh: BCA-TRX-20260903-8891"
+                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', marginBottom: '12px', fontSize: '13px' }}
+                  />
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Keterangan / Alasan:</label>
+                  <textarea
+                    value={paymentReason}
+                    onChange={(e) => setPaymentReason(e.target.value)}
+                    placeholder="Contoh: Pembayaran payroll via transfer batch BCA."
+                    rows={3}
+                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', marginBottom: '16px', fontSize: '13px' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                    <button type="button" className="outline-button" onClick={() => setShowPayModal(false)}>Batal</button>
+                    <button type="button" className="primary-button" onClick={handleMarkPaid} disabled={payrollLoading}>
+                      {payrollLoading ? 'Menyimpan...' : 'Simpan Status PAID'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Modal Void */}
+            {showVoidModal && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' }}>
+                <div style={{ background: '#fff', padding: '24px', borderRadius: '12px', maxWidth: '440px', width: '100%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+                  <h3 style={{ margin: '0 0 8px', color: '#dc2626' }}>Batalkan Payroll (VOID)</h3>
+                  <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
+                    Payroll saat ini akan dinonaktifkan secara permanen dan sistem akan membuat satu draft pengganti baru.
+                  </p>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Alasan Pembatalan (Wajib):</label>
+                  <textarea
+                    value={voidReason}
+                    onChange={(e) => setVoidReason(e.target.value)}
+                    placeholder="Contoh: Ada koreksi absensi susulan untuk shift malam tgl 28."
+                    rows={3}
+                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', marginBottom: '16px', fontSize: '13px' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                    <button type="button" className="outline-button" onClick={() => setShowVoidModal(false)}>Batal</button>
+                    <button type="button" className="primary-button" onClick={handleVoidPayroll} disabled={payrollLoading} style={{ background: '#dc2626' }}>
+                      {payrollLoading ? 'Membatalkan...' : 'Konfirmasi VOID'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

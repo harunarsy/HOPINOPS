@@ -8,82 +8,121 @@ type Props = {
   onCancel?: () => void;
 };
 
+type GpsSample = {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  client_sampled_at: string;
+};
+
+type LocationFailure = 'DENIED' | 'TIMEOUT' | 'UNAVAILABLE';
+
+type LocationResult = {
+  samples: GpsSample[];
+  failure?: LocationFailure;
+};
+
 export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel }: Props) {
   const [sliderPos, setSliderPos] = useState(0);
   const [status, setStatus] = useState<'IDLE' | 'LOCATING' | 'VERIFYING' | 'SUCCESS' | 'ERROR'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
   const [note, setNote] = useState('');
   const [needsNote, setNeedsNote] = useState(false);
-  const [cachedSamples, setCachedSamples] = useState<any[]>([]);
+  const locationRef = useRef<LocationResult | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
+  const inFlightRef = useRef(false);
 
   const isCheckIn = actionType === 'CHECK_IN';
 
-  const collectGpsSamples = async (): Promise<any[]> => {
+  const collectGpsSamples = async (): Promise<LocationResult> => {
     if (!navigator.geolocation) {
-      throw new Error('Geolocation tidak didukung oleh browser Anda.');
+      return { samples: [], failure: 'UNAVAILABLE' };
     }
 
     return new Promise((resolve) => {
-      const samples: any[] = [];
-      let count = 0;
+      const samples: GpsSample[] = [];
+      let settled = false;
+      let watchId: number | undefined;
 
-      const finish = () => {
-        resolve(samples);
+      const finish = (failure?: LocationFailure) => {
+        if (settled) return;
+        settled = true;
+        if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
+        clearTimeout(timeoutId);
+        resolve({ samples, failure: samples.length === 0 ? failure ?? 'UNAVAILABLE' : undefined });
       };
 
-      const timeout = setTimeout(finish, 10000); // 10s max
+      const timeoutId = window.setTimeout(() => finish('TIMEOUT'), 10000);
 
-      const id = navigator.geolocation.watchPosition(
-        (pos) => {
-          samples.push({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: Math.round(pos.coords.accuracy),
-          });
-          count++;
-          if (count >= 3 || pos.coords.accuracy <= 20) {
-            navigator.geolocation.clearWatch(id);
-            clearTimeout(timeout);
-            finish();
-          }
-        },
-        () => {
-          clearTimeout(timeout);
-          finish();
-        },
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-      );
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (samples.length >= 3) return;
+            samples.push({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy_m: Math.round(pos.coords.accuracy),
+              client_sampled_at: new Date(pos.timestamp).toISOString(),
+            });
+            if (samples.length === 3) finish();
+          },
+          (error) => {
+            const failure: LocationFailure = error.code === 1
+              ? 'DENIED'
+              : error.code === 3
+                ? 'TIMEOUT'
+                : 'UNAVAILABLE';
+            finish(failure);
+          },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        );
+      } catch {
+        finish('UNAVAILABLE');
+      }
     });
   };
 
   const performAttendance = async (providedNote?: string) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    idempotencyKeyRef.current ??= crypto.randomUUID();
     setStatus('LOCATING');
     setErrorMessage('');
 
     try {
-      let samples = cachedSamples;
-      if (samples.length === 0) {
-        samples = await collectGpsSamples();
-        setCachedSamples(samples);
+      if (!locationRef.current) {
+        locationRef.current = await collectGpsSamples();
+      }
+
+      const location = locationRef.current;
+      const submittedNote = providedNote ?? note;
+      if (location.samples.length === 0 && !submittedNote.trim()) {
+        setNeedsNote(true);
+        setStatus('IDLE');
+        setSliderPos(0);
+        setErrorMessage('Lokasi GPS tidak tersedia. Catatan alasan wajib diisi.');
+        return;
       }
 
       setStatus('VERIFYING');
 
+      const { challengeId } = await api.requestChallenge(actionType);
+      const payload = {
+        challengeId,
+        samples: location.samples,
+        note: submittedNote,
+        idempotencyKey: idempotencyKeyRef.current,
+        locationFailure: location.failure,
+        assignmentId,
+      };
+
       if (isCheckIn) {
-        const { challengeId } = await api.requestChallenge('CHECK_IN');
-        await api.checkIn({
-          challengeId,
-          samples,
-          note: providedNote || note,
-          assignmentId,
-        });
+        await api.checkIn(payload);
       } else {
-        await api.checkOut({
-          samples,
-          note: providedNote || note,
-        });
+        await api.checkOut(payload);
       }
 
+      idempotencyKeyRef.current = null;
       setStatus('SUCCESS');
       setTimeout(onSuccess, 1000);
     } catch (err: any) {
@@ -91,12 +130,26 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       if (err.message && err.message.includes('Catatan alasan wajib diisi')) {
         setNeedsNote(true);
         setStatus('IDLE');
+        setSliderPos(0);
         setErrorMessage('Lokasi GPS berada di luar cafe atau akurasi rendah. Harap masukkan catatan alasan absensi.');
       } else {
         setStatus('ERROR');
+        setSliderPos(0);
         setErrorMessage(err.message || 'Gagal melakukan absensi.');
       }
+    } finally {
+      inFlightRef.current = false;
     }
+  };
+
+  const cancelAttempt = () => {
+    locationRef.current = null;
+    idempotencyKeyRef.current = null;
+    setSliderPos(0);
+    setStatus('IDLE');
+    setNeedsNote(false);
+    setErrorMessage('');
+    onCancel?.();
   };
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -120,7 +173,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       </div>
 
       {status === 'LOCATING' && (
-        <div style={{ textAlign: 'center', padding: '20px' }}>
+        <div role="status" aria-live="polite" style={{ textAlign: 'center', padding: '20px' }}>
           <div className="spinner" style={{ margin: '0 auto 12px' }} />
           <strong>Mengukur Koordinat GPS...</strong>
           <p className="muted" style={{ fontSize: '12px' }}>Mengambil sample akurasi tinggi</p>
@@ -128,14 +181,14 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       )}
 
       {status === 'VERIFYING' && (
-        <div style={{ textAlign: 'center', padding: '20px' }}>
+        <div role="status" aria-live="polite" style={{ textAlign: 'center', padding: '20px' }}>
           <div className="spinner" style={{ margin: '0 auto 12px' }} />
           <strong>Memverifikasi ke Server...</strong>
         </div>
       )}
 
       {status === 'SUCCESS' && (
-        <div style={{ textAlign: 'center', padding: '20px', color: '#1e5b48' }}>
+        <div role="status" aria-live="polite" style={{ textAlign: 'center', padding: '20px', color: '#1e5b48' }}>
           <span style={{ fontSize: '32px' }}>✓</span>
           <br />
           <strong>Absensi Berhasil Tercatat!</strong>
@@ -167,7 +220,18 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       )}
 
       {errorMessage && (
-        <p className="form-error" style={{ marginBottom: '16px' }}>{errorMessage}</p>
+        <p role="alert" className="form-error" style={{ marginBottom: '16px' }}>{errorMessage}</p>
+      )}
+
+      {status === 'ERROR' && (
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button type="button" className="primary-button" style={{ flex: 1 }} onClick={() => void performAttendance()}>
+            Coba Lagi
+          </button>
+          <button type="button" className="outline-button" style={{ flex: 1 }} onClick={cancelAttempt}>
+            Batal
+          </button>
+        </div>
       )}
 
       {status === 'IDLE' && !needsNote && (
@@ -194,6 +258,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
             max={100}
             value={sliderPos}
             onChange={handleSliderChange}
+            aria-label={isCheckIn ? 'Geser untuk Check-In' : 'Geser untuk Check-Out'}
             style={{
               position: 'absolute',
               top: 0,
@@ -211,7 +276,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
         <button
           type="button"
           className="outline-button"
-          onClick={onCancel}
+          onClick={cancelAttempt}
           style={{ width: '100%', marginTop: '12px' }}
         >
           Batal / Kembali
