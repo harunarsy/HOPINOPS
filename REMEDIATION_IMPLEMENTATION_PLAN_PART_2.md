@@ -9,13 +9,21 @@
 - Current production migrations: `0001` through `0009`
 - Current known Git HEAD at plan time: `92b51d8`
 - Status: **PRODUCTION ACTIVE, FUNCTIONALLY INCOMPLETE, REMEDIATION REQUIRED**
-- Normative product contract: `PRODUCTION_PLAN.md`
-- Historical audit: `AUDIT_REMEDIATION_HANDOFF.md`
-- This document: executable remediation handoff for remaining work
 
 This document does not replace `PRODUCTION_PLAN.md`. It records current production reality, authorized product decisions that supersede two older rules, remaining defects, implementation sequence, acceptance criteria, and release gates.
 
 The HEAD and production observations above are a point-in-time snapshot. The next executor must re-record HEAD, migration state, deployment state, and worktree before doing any work. If they differ, update the evidence and reassess affected findings instead of assuming this snapshot is current.
+
+### Execution status note (2026-09-04)
+
+Work continues on branch `remediation/part2`. Verified so far:
+
+- Phase 0-1 done (backup + Playwright harness; `pnpm test:e2e` 10 passed).
+- Phase 2 migration `0010` and Phase 4 migration `0011` **applied from scratch and pgTAP-verified on a disposable Supabase staging project** (`ibzlxdmnuszcmdzuocwu`, link is currently pointed there). Fix: `v_scope_key` declared in `rpc_check_auth_limits`.
+- Phase 3 (opening/closing UX) and Phase 8 (7-sheet payroll XLSX) code implemented and gated (lint/test/build pass).
+- Phase 9 security headers implemented (health no-store; API nosniff/referrer; `vercel.json` CSP).
+
+Remaining: Phase 5 (extend API action inventory), Phase 6-7 (UX architecture + interactive onboarding), Phase 10 (full documentation reconciliation). Migrations `0010`/`0011` are NOT yet applied to production.
 
 ## 2. Execution Rules
 

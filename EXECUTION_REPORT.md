@@ -2,47 +2,27 @@
 
 Tanggal: 4 September 2026
 Branch: `remediation/part2`
-Status: **PHASE 0-1 VERIFIED; PHASE 2/3/4/9 CODE-IMPLEMENTED; DB MIGRATIONS 0010/0011 NOT VERIFIED (Docker absent); PRODUCTION NOT DEPLOYED**
+Status: **PHASE 0-4 & 8-9 VERIFIED/IMPLEMENTED; STAGING PROVISIONED; PRODUCTION NOT DEPLOYED; PHASE 5/6/7/10 REMAINING**
 
-## What is verified (ran gates: lint, unit, build, e2e)
-- Phase 0: production backup, migration parity (0001-0009), 1 stuck cycle inventoried, PAYROLL_EXPORT_BUCKET missing.
-- Phase 1: Playwright harness; `pnpm test:e2e` 10 passed.
-- All current code compiles/lints and unit tests 18/18; build OK; git diff --check OK.
+## Database verification (staging, not production)
+- Created disposable Supabase project `hopinops-staging` (`ibzlxdmnuszcmdzuocwu`, Singapore).
+- Applied migrations `0001`-`0011` from scratch; **17/17 pgTAP assertions passed** via psql to staging pooler (Docker unavailable locally).
+- Migration `0011` bug found & fixed: `v_scope_key` undeclared in `rpc_check_auth_limits`.
+- CLI `supabase` is currently linked to staging. Production untouched.
 
-## Phase 2 — Stock initialization & variance policy
-- Wrote `supabase/migrations/0010_stock_reference_initialization.sql`:
-  - zero-baseline initialization tables; `rpc_initialize_stock_reference`, `rpc_get_opening_reference`;
-  - `rpc_confirm_opening` + MALAM prior-closing fallback + initialization; variance category-required/notes-optional;
-  - `rpc_confirm_closing` variance category-required/notes-optional.
-- Updated pgTAP `supabase/tests/database.test.sql` (added function signatures + operational tables).
-- NOT applied; NOT `test:db`-verified (no Docker).
+## Implemented & gated (lint/test/build/e2e)
+- Phase 2: `0010` stock reference initialization + variance policy (category-required, notes-optional).
+- Phase 3: Opening/Closing UX quick actions (`Sesuai`/`0`, bulk match), `INITIAL_STOCK_COUNT`, optional notes.
+- Phase 4: `0011` server-authoritative lockout 3x/60s; login returns 429+Retry-After; frontend uses server lockout; double-submit guard.
+- Phase 8: payroll XLSX 7-sheet export (Summary, Adjustments, Exceptions, Attendance, Overtime, Bonus, Audit).
+- Phase 9: health no-store; API nosniff/referrer headers; vercel.json security headers.
 
-## Phase 3 — Opening/Closing UX
-- `StockWorkspace.tsx`: per-item `Sesuai`/`0`, bulk "samakan semua dengan patokan", `INITIAL_STOCK_COUNT` category, notes optional, blank = uncounted (no fake system default).
-- Verified via lint + build.
+## Gates
+- lint PASS, unit 18/18 PASS, build PASS, e2e 10 PASS, pgTAP 17/17 (staging), diff --check PASS.
 
-## Phase 4 — Lockout 3x/60s (server-authoritative)
-- Wrote `supabase/migrations/0011_auth_lockout_3x_60s.sql` (RPC threshold 3, lock 60s).
-- `api/auth.ts` returns 429 + Retry-After when locked; `AuthLimitResult` carries `retry_after_seconds`.
-- `src/lib/api.ts` reads `Retry-After`.
-- `src/features/auth/Login.tsx` consumes server `lockoutSeconds`; removed client-only 3x counter; added double-submit guard.
-- `src/App.tsx` holds `loginLockSeconds` countdown derived from server.
-- Migration NOT applied/NOT DB-verified.
+## Remaining
+- Phase 5 (~25 API actions), Phase 6/7 (UX shell + interactive onboarding), Phase 10 (full doc reconciliation).
+- Apply `0010`/`0011` to production only after remaining UI/API phases pass staging review.
 
-## Phase 9 — Security headers
-- `api/health.ts` no-store; `jsonResponse` (auth + app) nosniff + referrer-policy; `vercel.json` CSP/frame/permissions headers.
-- Applied at code level (deploy NOT performed).
-
-## Gates (this session)
-- lint: PASS
-- test: 18/18 PASS
-- build: PASS
-- e2e: 10 PASS
-- diff --check: PASS
-- test:db: BLOCKED (Docker absent) — pgTAP updated, ready to run
-
-## Release blockers
-1. test:db not executable locally (Docker). DB migrations 0010/0011 unverified.
-2. Staging Supabase not provisioned.
-3. Production still `92b51d8`; branch changes NOT deployed.
-4. Remaining phases (5-8, 10) not yet started.
+## Note
+- To target production again: `supabase link --project-ref naanarmoktmsumkxmjvj`.
