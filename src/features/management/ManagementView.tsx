@@ -198,6 +198,9 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
           <span><strong>HOPIN</strong><small>{isInvestor ? 'PORTAL INVESTOR' : 'MANAJEMEN OUTLET'}</small></span>
         </div>
         <div className="topbar-right">
+          <div className="avatar" title={user.display_name} style={{ display: 'grid', placeItems: 'center', fontSize: '12px', fontWeight: 700 }}>
+            {user.display_name.slice(0, 2).toUpperCase()}
+          </div>
           {onEnterOperatorMode && !isInvestor && (
             <button className="outline-button" onClick={onEnterOperatorMode} style={{ fontSize: '12px', padding: '6px 12px' }}>
               Mode Shift ➔

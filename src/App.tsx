@@ -260,6 +260,9 @@ export default function App() {
           <span><strong>HOPIN</strong><small>CAFE OPERATIONS</small></span>
         </div>
         <div className="topbar-right">
+          <div className="avatar" title={currentUser.display_name} style={{ display: 'grid', placeItems: 'center', fontSize: '12px', fontWeight: 700 }}>
+            {currentUser.display_name.slice(0, 2).toUpperCase()}
+          </div>
           <button className="outline-button" onClick={() => setShowReportsView(true)} style={{ fontSize: '12px', padding: '6px 10px' }}>
             Laporan Harian ➔
           </button>
