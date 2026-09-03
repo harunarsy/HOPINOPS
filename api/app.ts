@@ -1112,6 +1112,65 @@ export default {
           : { data: [], error: null };
         if (adjustmentsError) throw adjustmentsError;
 
+        const periodStart = `${run.period_month}-01`;
+        const periodEnd = `${run.period_month}-31`;
+        // Snapshot-derived supporting evidence for the payroll period (outlet-scoped reads).
+        // Supportive reads are best-effort: a failure must not break the export.
+        let attendance: any[] = [];
+        let bonusRows: any[] = [];
+        let auditEvents: any[] = [];
+        try {
+          const [attendanceRes, reportRes, auditRes] = await Promise.all([
+            db
+              .from('attendance_records')
+              .select('*, profiles(display_name), attendance_events(*)')
+              .eq('outlet_id', outletId)
+              .gte('work_date', periodStart)
+              .lte('work_date', periodEnd),
+            db
+              .from('daily_reports')
+              .select('id')
+              .eq('outlet_id', outletId)
+              .gte('work_date', periodStart)
+              .lte('work_date', periodEnd),
+            db
+              .from('audit_events')
+              .select('server_occurred_at, action, entity_type, entity_id, reason, profiles(display_name)')
+              .eq('outlet_id', outletId)
+              .order('server_occurred_at', { ascending: false })
+              .limit(200),
+          ]);
+          attendance = attendanceRes.data ?? [];
+          auditEvents = auditRes.data ?? [];
+          const reportIds = (reportRes.data ?? []).map((r: any) => r.id);
+          if (reportIds.length) {
+            const revisionRes = await db
+              .from('daily_report_revisions')
+              .select('id')
+              .in('report_id', reportIds);
+            const revisionIds = (revisionRes.data ?? []).map((r: any) => r.id);
+            if (revisionIds.length) {
+              const poolRes = await db
+                .from('daily_bonus_pools')
+                .select('id, report_revision_id')
+                .in('report_revision_id', revisionIds);
+              const poolIds = (poolRes.data ?? []).map((p: any) => p.id);
+              if (poolIds.length) {
+                const allocRes = await db
+                  .from('daily_bonus_allocations')
+                  .select('amount, remainder_awarded, profiles(display_name)')
+                  .in('pool_id', poolIds);
+                bonusRows = allocRes.data ?? [];
+              }
+            }
+          }
+        } catch (supportErr) {
+          console.error('Payroll export supportive data read failed (non-fatal):', supportErr);
+          attendance = [];
+          bonusRows = [];
+          auditEvents = [];
+        }
+
         const bucketName = process.env.PAYROLL_EXPORT_BUCKET;
         if (!bucketName) return errorResponse('PRIVATE_STORAGE_UNAVAILABLE', 'Bucket privat payroll belum dikonfigurasi.', 503);
         const { data: bucket, error: bucketError } = await db.storage.getBucket(bucketName);
@@ -1171,15 +1230,94 @@ export default {
           });
         });
 
-        const sEvidence = workbook.addWorksheet('Evidence');
-        sEvidence.columns = [
-          { header: 'Payroll Entry ID', key: 'entry', width: 36 },
-          { header: 'Attendance Summary', key: 'attendance', width: 80 },
+        // Exceptions sheet (late / review-required / missing-checkout in period).
+        const sExc = workbook.addWorksheet('Exceptions');
+        sExc.columns = [
+          { header: 'Tanggal WIB', key: 'date', width: 12 },
+          { header: 'Nama', key: 'name', width: 22 },
+          { header: 'Jenis', key: 'type', width: 18 },
+          { header: 'Status', key: 'status', width: 18 },
         ];
-        (entries ?? []).forEach(entry => {
-          sEvidence.addRow({
-            entry: sanitizeExcelCell(entry.id),
-            attendance: sanitizeExcelCell(JSON.stringify(entry.attendance_summary)),
+        (attendance ?? [])
+          .filter((a: any) => a.lateness_status === 'LATE' || a.status === 'REVIEW_REQUIRED' || a.status === 'MISSING_CHECKOUT')
+          .forEach((a: any) => {
+            const type = a.status === 'REVIEW_REQUIRED' ? 'Review GPS' : a.status === 'MISSING_CHECKOUT' ? 'Missing Checkout' : 'Terlambat';
+            sExc.addRow({
+              date: sanitizeExcelCell(a.work_date),
+              name: sanitizeExcelCell(a.profiles?.display_name),
+              type: sanitizeExcelCell(type),
+              status: sanitizeExcelCell(a.status),
+            });
+          });
+
+        // Attendance sheet (period-scoped, no raw GPS coordinates).
+        const sAtt = workbook.addWorksheet('Attendance');
+        sAtt.columns = [
+          { header: 'Tanggal WIB', key: 'date', width: 12 },
+          { header: 'Nama', key: 'name', width: 22 },
+          { header: 'Status', key: 'status', width: 16 },
+          { header: 'Keterlambatan', key: 'late', width: 14 },
+          { header: 'Lokasi', key: 'location', width: 12 },
+        ];
+        (attendance ?? []).forEach((a: any) => {
+          const loc = (a.attendance_events ?? [])[0]?.location_status || '';
+          sAtt.addRow({
+            date: sanitizeExcelCell(a.work_date),
+            name: sanitizeExcelCell(a.profiles?.display_name),
+            status: sanitizeExcelCell(a.status),
+            late: sanitizeExcelCell(a.lateness_status),
+            location: sanitizeExcelCell(loc),
+          });
+        });
+
+        // Overtime sheet (period attendance evidence statuses).
+        const sOt = workbook.addWorksheet('Overtime');
+        sOt.columns = [
+          { header: 'Tanggal WIB', key: 'date', width: 12 },
+          { header: 'Nama', key: 'name', width: 22 },
+          { header: 'Status', key: 'status', width: 16 },
+        ];
+        (attendance ?? []).forEach((a: any) => {
+          sOt.addRow({
+            date: sanitizeExcelCell(a.work_date),
+            name: sanitizeExcelCell(a.profiles?.display_name),
+            status: sanitizeExcelCell(a.status),
+          });
+        });
+
+        // Bonus sheet from period allocation pools (finalized amounts only).
+        const sBon = workbook.addWorksheet('Bonus');
+        sBon.columns = [
+          { header: 'Tanggal', key: 'date', width: 12 },
+          { header: 'Nama', key: 'name', width: 22 },
+          { header: 'Alokasi (Rp)', key: 'amount', width: 16 },
+          { header: 'Sisa (+1 Rp)', key: 'rem', width: 14 },
+        ];
+        (bonusRows ?? []).forEach((b: any) => {
+          sBon.addRow({
+            date: sanitizeExcelCell(run.period_month),
+            name: sanitizeExcelCell(b.profiles?.display_name),
+            amount: Number(b.amount),
+            rem: b.remainder_awarded ? 'Ya' : 'Tidak',
+          });
+        });
+
+        // Audit sheet (entity + action; no raw GPS/PIN/IP).
+        const sAud = workbook.addWorksheet('Audit');
+        sAud.columns = [
+          { header: 'Waktu', key: 'time', width: 20 },
+          { header: 'Aktor', key: 'actor', width: 22 },
+          { header: 'Aksi', key: 'action', width: 24 },
+          { header: 'Entity', key: 'entity', width: 20 },
+          { header: 'Alasan', key: 'reason', width: 30 },
+        ];
+        (auditEvents ?? []).forEach((ev: any) => {
+          sAud.addRow({
+            time: sanitizeExcelCell(ev.server_occurred_at),
+            actor: sanitizeExcelCell(ev.profiles?.display_name || 'System'),
+            action: sanitizeExcelCell(ev.action),
+            entity: sanitizeExcelCell(`${ev.entity_type}:${ev.entity_id}`),
+            reason: sanitizeExcelCell(ev.reason || ''),
           });
         });
 
@@ -1188,7 +1326,15 @@ export default {
         const label = run.status === 'REVIEWED' ? 'DRAFT' : 'FINALIZED';
         const filename = `HOPIN-PAYROLL-${run.period_month}-${label}.xlsx`;
         const filePath = `${outletId}/${run.id}/${filename}`;
-        const rowCounts = { summary: entries?.length ?? 0, adjustments: adjustments?.length ?? 0, evidence: entries?.length ?? 0 };
+        const rowCounts = {
+          summary: entries?.length ?? 0,
+          attendance: attendance?.length ?? 0,
+          overtime: attendance?.length ?? 0,
+          bonus: bonusRows?.length ?? 0,
+          adjustments: adjustments?.length ?? 0,
+          audit: auditEvents?.length ?? 0,
+          evidence: entries?.length ?? 0,
+        };
         const { error: uploadError } = await db.storage.from(bucketName).upload(filePath, buffer, {
           contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           upsert: false,
