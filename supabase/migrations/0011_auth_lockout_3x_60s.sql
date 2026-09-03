@@ -219,6 +219,7 @@ declare
   v_blocked_until timestamptz;
   v_value_attempts integer;
   v_value_blocked_until timestamptz;
+  v_scope_key text;
 begin
   if coalesce(array_length(p_scope_keys, 1), 0) not between 1 and 3
      or exists (
