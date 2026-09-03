@@ -2,55 +2,55 @@
 
 Tanggal: 4 September 2026
 Dasar: `PRODUCTION_PLAN.md`, `REMEDIATION_IMPLEMENTATION_PLAN_PART_2.md`
-Branch: `remediation/part2` (dari `main` @ `92b51d8`)
-Status: **PHASE 0 + PHASE 1 VERIFIED — PHASE 2 BELUM DIMULAI**
+Branch: `remediation/part2`
+Status: **PHASE 0-1 VERIFIED; PHASE 2/3/4/9 DIIMPLEMENTASI (kode), MIGRASI 0010/0011 BELUM DI-VERIFIKASI DB**
 
-## Phase 0 — Stabilization and Preflight: VERIFIED
+## Fase yang sudah terverifikasi penuh (lint + unit + build + e2e)
+- Phase 0: backup production, branch, preflight, tanpa mutasi production.
+- Phase 1: Playwright + E2E smoke (10 passed).
 
-- Branch remediation `remediation/part2` dibuat; tidak ada hotfix langsung ke `main`.
-- Backup production (pg_dump 17.6, koneksi pooler Supabase):
-  - `backups/production_schema_20260903.sql` (schema-only, 9.481 baris).
-  - `backups/production_data_20260903.sql` (data-only 45 tabel operasional, tanpa tabel credential).
-  - Direktori `backups/` di-gitignore; tidak akan masuk repository.
-- Migration remote & lokal identik: `0001`–`0009`. Tidak ada drift.
-- Preflight data (read-only, terdokumentasi di `backups/PHASE0_PREFLIGHT_20260903.md`):
-  - 1 cycle stuck terkonfirmasi: `4ac92535-2f18-4eee-8b96-ad51914e02a1` (2026-09-03 MALAM KITCHEN, ACTIVE) — korban `REFERENCE_NOT_FOUND`, plus assignment & attendance terkait.
-  - Row counts semua tabel operasional tercatat.
-- Environment Vercel: `PAYROLL_EXPORT_BUCKET` **belum ada** (export payroll fail-closed).
-- Security headers production: hanya HSTS; CSP/frame-ancestors/nosniff/referrer/permissions **belum ada**; `/api/health` `Cache-Control: public`.
-- Tidak ada mutasi production selama fase ini.
+## Implementasi kode tambahan (fase ini)
 
-## Phase 1 — Test Harness: VERIFIED
+### Phase 2 — Migration 0010 (BELUM dieksekusi DB)
+- File `supabase/migrations/0010_stock_reference_initialization.sql` ditulis:
+  - Tabel `stock_reference_initializations` + `stock_reference_initialization_lines` (zero-baseline, append-only).
+  - `rpc_initialize_stock_reference` (Owner/Supervisor, idempotent, zero-reference).
+  - `rpc_get_opening_reference` (server-owned reference resolution).
+  - `rpc_confirm_opening` diperbarui: MALAM fallback ke prior closing, inisialisasi, variance kategori-wajib/notes-opsional.
+  - `rpc_confirm_closing` diperbarui: variance kategori-wajib/notes-opsional.
+- pgTAP `database.test.sql` diperbarui: tambah signature `rpc_initialize_stock_reference`, `rpc_get_opening_reference`, tabel baru.
+- **Blocker: `test:db` butuh Docker → belum dieksekusi.**
 
-- `@playwright/test@1.62.1` + Chromium terpasang.
-- `playwright.config.ts`: desktop-chromium + mobile-chromium (360x800), webServer `vite preview`.
-- `pnpm test:e2e` ditambahkan ke `package.json`.
-- Vitest di-exclude dari `tests/e2e/**` (tidak saling mem-pickup).
-- E2E read-only smoke (`tests/e2e/smoke.spec.ts`) — 10 PASSED:
-  - Login page render (picker + 6 kotak PIN + tombol masuk) di desktop & mobile.
-  - Urutan fokus kotak PIN & numeric-only di desktop & mobile.
-  - `/api/app?action=bootstrap` tanpa sesi → 401 `AUTH_REQUIRED` (deployed API).
-  - Unknown action tanpa sesi → 401 (auth mendahului dispatch).
-  - Failed login generik tanpa kebocoran user existence.
-- Mutating tests (`tests/e2e/authenticated.spec.ts`) berupa guard `E2E_USERNAME/E2E_PASSWORD` + `test.fixme` untuk Phase 2+; otomatis skip tanpa kredensial staging (10 skipped).
+### Phase 3 — Opening/Closing UX (kode, terverifikasi lint/build)
+- `StockWorkspace.tsx`: tombol `Sesuai`/`0` per item, tombol bulk "semua sesuai patokan", kategori `INITIAL_STOCK_COUNT`, catatan menjadi opsional, validasi variance hanya wajib kategori.
+- `handleConfirmOpening`/`handleConfirmClosing`: hanya cek `reason_code`, catatan opsional.
 
-## Gate Terakhir (dieksekusi di branch ini)
+### Phase 4 — Lockout 3x/60s server-authoritative (kode + migration, DB belum diverifikasi)
+- Migration `0011_auth_lockout_3x_60s.sql`: RPC `rpc_record_auth_failure`/`rpc_reset_auth_failures`/`rpc_check_auth_limits` diubah ke threshold 3 & lock 60 detik.
+- `api/auth.ts`: handler login mengembalikan 429 + `Retry-After` saat terkunci; tipe `AuthLimitResult` + `retry_after_seconds`.
+- `src/lib/api.ts`: `request()` membaca header `Retry-After`.
+- `src/features/auth/Login.tsx`: lockout dari prop server (`lockoutSeconds`), hapus counter client-side, guard anti dobel submit.
+- `src/App.tsx`: state `loginLockSeconds` + countdown dari server, `handleLogin` memetakan 429.
 
-- `pnpm lint`: LULUS.
-- `pnpm test`: LULUS (18 tests, 7 files).
-- `pnpm build`: LULUS (bundle 284 kB).
-- `pnpm test:e2e`: LULUS (10 passed, 10 skipped-staging-only).
-- `git diff --check`: LULUS.
-- `pnpm test:db`: **MASIH TERBLOKIR** — Docker/Podman tidak tersedia di mesin ini (prasyarat `supabase db reset`). pgTAP harness sudah ada di `supabase/tests/database.test.sql` dan siap dijalankan begitu Docker/staging tersedia.
+### Phase 9 — Security headers (kode, terverifikasi lint/build)
+- `api/health.ts`: `Cache-Control: no-store`.
+- `api/auth.ts` & `api/app.ts` `jsonResponse`: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
+- `vercel.json`: security headers (CSP, X-Frame-Options DENY, nosniff, referrer, permissions policy).
 
-## Berikutnya (sesuai plan Part 2)
+## Gate terakhir
+- `pnpm lint` LULUS
+- `pnpm test` LULUS (18/18)
+- `pnpm build` LULUS
+- `pnpm test:e2e` LULUS (10 passed)
+- `git diff --check` LULUS
+- `pnpm test:db` MASIH TERBLOKIR (Docker)
 
-1. Phase 2: migration `0010_stock_reference_initialization.sql` (zero-reference manager-approved initialization + variance policy: kategori wajib, catatan opsional) — **jangan mulai sebelum `test:db` bisa dieksekusi** di staging/lokal.
-2. Recovery cycle stuck `4ac92535…` dilakukan lewat UI/RPC initialization setelah Phase 2 live di Preview, bukan backfill data.
-3. Phase 4: `0011_auth_device_and_lockout.sql` (3x/60 detik server-authoritative + device binding fix).
+## Blocker utama
+1. `test:db` tidak bisa dijalankan tanpa Docker/staging → migration 0010/0011 BELUM terverifikasi.
+2. Migration 0010/0011 BELUM di-push ke production.
+3. Production tetap di `92b51d8`; tidak ada deploy dari branch ini.
+4. Staging Supabase belum ada.
 
 ## Larangan
-
-- Jangan push/merge ke `main` sebelum `test:db` lulus di environment yang bisa menjalankannya.
-- Jangan menulis migration `0010` sebelum Phase 1 acceptance lengkap (termasuk `test:db`).
-- Jangan mengubah data production untuk "memperbaiki" cycle stuck secara manual.
+- Jangan merge/push ke `main` sebelum `test:db` lulus dan migration 0010/0011 terverifikasi.
+- Jangan `supabase db push` 0010/0011 ke production.

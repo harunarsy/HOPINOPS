@@ -243,6 +243,38 @@ export function StockWorkspace({
     return map;
   }, [items, openingRecord, movements]);
 
+  const markOpeningCount = (itemId: string, value: number) => {
+    if (isOpeningConfirmed) return;
+    const next = { ...openingCounts, [itemId]: value.toString() };
+    setOpeningCounts(next);
+    if (value === (itemBalances[itemId]?.opening || 0)) {
+      // matches system -> no variance -> clear stale reason/notes
+      const reasons = { ...openingReasons };
+      const notes = { ...openingNotes };
+      delete reasons[itemId];
+      delete notes[itemId];
+      setOpeningReasons(reasons);
+      setOpeningNotes(notes);
+    }
+  };
+
+  const markAllOpeningMatch = () => {
+    if (isOpeningConfirmed) return;
+    const next: Record<string, string> = {};
+    const reasons = { ...openingReasons };
+    const notes = { ...openingNotes };
+    items.forEach((it) => {
+      const ref = itemBalances[it.id]?.opening || 0;
+      next[it.id] = ref.toString();
+      delete reasons[it.id];
+      delete notes[it.id];
+    });
+    setOpeningCounts(next);
+    setOpeningReasons(reasons);
+    setOpeningNotes(notes);
+    showToast('Semua item disamakan dengan patokan sistem.');
+  };
+
   const handleConfirmOpening = async () => {
     if (!isPrimary) {
       showToast('Hanya Penanggung Jawab Utama yang dapat mengonfirmasi stok awal.');
@@ -266,10 +298,10 @@ export function StockWorkspace({
 
     const incompleteVariance = items.find((it) => {
       const hasVariance = Number(openingCounts[it.id]) !== (itemBalances[it.id]?.opening || 0);
-      return hasVariance && (!openingReasons[it.id]?.trim() || !openingNotes[it.id]?.trim());
+      return hasVariance && !openingReasons[it.id]?.trim();
     });
     if (incompleteVariance) {
-      showToast(`Alasan dan catatan selisih "${incompleteVariance.name}" wajib diisi.`);
+      showToast(`Pilih kategori alasan selisih untuk "${incompleteVariance.name}".`);
       return;
     }
 
@@ -456,10 +488,10 @@ export function StockWorkspace({
 
     const incompleteVariance = items.find((it) => {
       const hasVariance = Number(closingCounts[it.id]) !== (itemBalances[it.id]?.system || 0);
-      return hasVariance && (!closingReasons[it.id]?.trim() || !closingNotes[it.id]?.trim());
+      return hasVariance && !closingReasons[it.id]?.trim();
     });
     if (incompleteVariance) {
-      showToast(`Alasan dan catatan selisih "${incompleteVariance.name}" wajib diisi.`);
+      showToast(`Pilih kategori alasan selisih closing untuk "${incompleteVariance.name}".`);
       return;
     }
 
@@ -616,47 +648,81 @@ export function StockWorkspace({
               <h2>{isOpeningConfirmed ? 'Stok Awal Terkunci' : 'Konfirmasi Stok Awal'}</h2>
             </div>
           </div>
+
+          {!isOpeningConfirmed && (
+            <button
+              type="button"
+              className="outline-button"
+              onClick={markAllOpeningMatch}
+              disabled={loading}
+              style={{ width: '100%', marginBottom: '16px' }}
+            >
+              ✓ Saya sudah menghitung; semua hasil sesuai patokan sistem
+            </button>
+          )}
+
           <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
             {items.map((it) => {
               const refVal = itemBalances[it.id]?.opening || 0;
-              const val = openingCounts[it.id] !== undefined ? openingCounts[it.id] : refVal.toString();
+              const val = openingCounts[it.id] !== undefined ? openingCounts[it.id] : '';
               const hasDiff = Number(val) !== refVal;
+              const isBlank = val.trim() === '';
 
               return (
-                <div key={it.id} style={{ padding: '12px', background: '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
+                <div key={it.id} style={{ padding: '12px', background: isBlank ? '#fff7ed' : '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0 }}>
                       <strong>{it.name}</strong>
-                      <small style={{ display: 'block', color: '#6b8378' }}>Patokan Sistem: {fmtNumber(refVal)} {it.unit_code}</small>
+                      <small style={{ display: 'block', color: '#6b8378' }}>
+                        Patokan Sistem: {fmtNumber(refVal)} {it.unit_code}
+                      </small>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => markOpeningCount(it.id, refVal)}
+                        disabled={isOpeningConfirmed}
+                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                      >
+                        Sesuai
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => markOpeningCount(it.id, 0)}
+                        disabled={isOpeningConfirmed}
+                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                      >
+                        0
+                      </button>
                       <input
                         type="number"
                         min="0"
                         disabled={isOpeningConfirmed}
                         value={val}
+                        placeholder="Isi"
                         onChange={(e) => setOpeningCounts({ ...openingCounts, [it.id]: e.target.value })}
-                        style={{ width: '90px', padding: '6px', textAlign: 'right', borderRadius: '6px', border: '1px solid #cddcd4' }}
+                        style={{ width: '76px', padding: '6px', textAlign: 'right', borderRadius: '6px', border: '1px solid #cddcd4' }}
                       />
                       <span>{it.unit_code}</span>
                     </div>
                   </div>
 
-                  {hasDiff && !isOpeningConfirmed && (
+                  {!isBlank && hasDiff && !isOpeningConfirmed && (
                     <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #cddcd4' }}>
                       <select
                         value={openingReasons[it.id] || ''}
                         onChange={(e) => setOpeningReasons({ ...openingReasons, [it.id]: e.target.value })}
                         style={{ width: '100%', padding: '6px', borderRadius: '6px', marginBottom: '6px' }}
                       >
-                        <option value="">-- Pilih Alasan Selisih --</option>
+                        <option value="">-- Pilih Kategori Alasan Selisih (wajib) --</option>
+                        <option value="INITIAL_STOCK_COUNT">Stok Awal Baru / Inisialisasi</option>
                         <option value="COUNTING_ERROR">Salah Hitung Sebelumnya</option>
                         <option value="SPILLAGE_UNRECORDED">Tumpah / Rusak Belum Dicatat</option>
                         <option value="OTHER">Lainnya</option>
                       </select>
                       <input
                         type="text"
-                        placeholder="Catatan rincian selisih..."
+                        placeholder="Catatan tambahan (opsional)"
                         value={openingNotes[it.id] || ''}
                         onChange={(e) => setOpeningNotes({ ...openingNotes, [it.id]: e.target.value })}
                         style={{ width: '100%', padding: '6px', borderRadius: '6px', border: '1px solid #cddcd4' }}
@@ -785,7 +851,7 @@ export function StockWorkspace({
                       </select>
                       <input
                         type="text"
-                        placeholder="Catatan selisih closing..."
+                        placeholder="Catatan tambahan (opsional)"
                         value={closingNotes[it.id] || ''}
                         onChange={(e) => setClosingNotes({ ...closingNotes, [it.id]: e.target.value })}
                         style={{ width: '100%', padding: '6px', borderRadius: '6px', border: '1px solid #cddcd4' }}

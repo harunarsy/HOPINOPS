@@ -30,6 +30,10 @@ async function request<T = any>(path: string, options: RequestInit = {}): Promis
     err.code = json.error?.code || 'API_ERROR';
     err.details = json.error?.details;
     err.status = res.status;
+    const retryAfter = res.headers.get('Retry-After');
+    if (retryAfter && /^\d+$/.test(retryAfter)) {
+      err.retryAfterSeconds = Number(retryAfter);
+    }
     throw err;
   }
 

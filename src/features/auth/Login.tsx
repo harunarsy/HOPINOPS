@@ -5,73 +5,69 @@ type Props = {
   onLogin: (username: string, pin: string) => Promise<void>;
   loading: boolean;
   error: string;
+  lockoutSeconds?: number;
 };
 
-export function Login({ options, onLogin, loading, error }: Props) {
+export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: Props) {
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [failedCount, setFailedCount] = useState(0);
-  const [lockoutSeconds, setLockoutSeconds] = useState(0);
   const pinInputRef = useRef<HTMLInputElement>(null);
+  const submitInFlightRef = useRef(false);
   const prevErrorRef = useRef(error);
 
   const selectedUser = options.find((o) => o.username === username);
+  const disabled = loading || lockoutSeconds > 0;
 
-  // Countdown timer for lockout
+  // Server-authoritative lock countdown. When it expires, reset input focus.
   useEffect(() => {
-    if (lockoutSeconds <= 0) return;
-    const timer = setInterval(() => {
-      setLockoutSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          setFailedCount(0);
-          // focus back to input
-          setTimeout(() => {
-            document.getElementById('pin-input-0')?.focus();
-          }, 50);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [lockoutSeconds]);
-
-  // Catch login error -> clear PIN instantly, count failures
-  useEffect(() => {
-    if (error && error !== prevErrorRef.current) {
+    if (lockoutSeconds <= 0) {
       setPin('');
-      const nextFail = failedCount + 1;
-      setFailedCount(nextFail);
-      if (nextFail >= 3) {
-        setLockoutSeconds(60);
-      } else {
-        setTimeout(() => {
-          document.getElementById('pin-input-0')?.focus();
-        }, 50);
-      }
+      submitInFlightRef.current = false;
+      prevErrorRef.current = error;
+      setTimeout(() => {
+        document.getElementById('pin-input-0')?.focus();
+      }, 50);
+    }
+  }, [lockoutSeconds === 0]);
+
+  // Clear PIN on every fresh (non-lock) error so the operator can retype.
+  useEffect(() => {
+    if (error && error !== prevErrorRef.current && lockoutSeconds === 0) {
+      setPin('');
+      setTimeout(() => {
+        document.getElementById('pin-input-0')?.focus();
+      }, 50);
     }
     prevErrorRef.current = error;
-  }, [error, failedCount]);
+  }, [error, lockoutSeconds]);
 
-  // Auto-login when 6 digits are typed
+  // Reset the in-flight guard whenever a login attempt has fully settled (loading false).
   useEffect(() => {
-    if (pin.length === 6 && username && !loading && lockoutSeconds === 0) {
-      void onLogin(username, pin);
+    if (!loading) {
+      submitInFlightRef.current = false;
     }
-  }, [pin, username, loading, lockoutSeconds, onLogin]);
+  }, [loading]);
 
-  const handleSubmit = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!username || pin.length !== 6 || loading || lockoutSeconds > 0) return;
+  const runLogin = () => {
+    if (submitInFlightRef.current || loading || !username || pin.length !== 6 || lockoutSeconds > 0) {
+      return;
+    }
+    submitInFlightRef.current = true;
     void onLogin(username, pin);
   };
 
-  const handlePinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
-    setPin(val);
+  // Auto-submit when all six digits are entered.
+  useEffect(() => {
+    if (pin.length === 6 && username && !disabled) {
+      runLogin();
+    }
+  }, [pin, username, disabled]);
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    runLogin();
   };
 
   return (
@@ -94,7 +90,7 @@ export function Login({ options, onLogin, loading, error }: Props) {
                 type="button"
                 className={`user-picker-trigger${pickerOpen ? ' is-open' : ''}`}
                 onClick={() => setPickerOpen(!pickerOpen)}
-                disabled={loading || options.length === 0}
+                disabled={disabled || options.length === 0}
               >
                 <span className="picker-avatar">
                   {selectedUser ? selectedUser.display_name.slice(0, 2).toUpperCase() : '—'}
@@ -179,7 +175,7 @@ export function Login({ options, onLogin, loading, error }: Props) {
                     pattern="[0-9]*"
                     maxLength={1}
                     value={digit}
-                    disabled={loading || lockoutSeconds > 0}
+                    disabled={disabled}
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '');
                       if (!val) {
@@ -271,7 +267,7 @@ export function Login({ options, onLogin, loading, error }: Props) {
           <button
             className="primary-button"
             type="submit"
-            disabled={loading || !username || pin.length !== 6 || lockoutSeconds > 0}
+            disabled={disabled || !username || pin.length !== 6}
           >
             {lockoutSeconds > 0
               ? `Terkunci (${lockoutSeconds}s)`

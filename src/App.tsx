@@ -15,6 +15,7 @@ export default function App() {
   const [loginOptions, setLoginOptions] = useState<{ username: string; display_name: string }[]>([]);
   const [authLoading, setAuthLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [loginLockSeconds, setLoginLockSeconds] = useState(0);
 
   // Bootstrap data
   const [outletId, setOutletId] = useState('');
@@ -76,14 +77,30 @@ export default function App() {
     setAuthLoading(true);
     try {
       const user = await api.login(username, pin);
+      setLoginLockSeconds(0);
       setCurrentUser(user);
       await loadBootstrap();
     } catch (err: any) {
-      setLoginError(err.message || 'Nama user atau PIN salah.');
+      if (err?.status === 429) {
+        const seconds = Math.max(1, Number(err?.retryAfterSeconds) || 60);
+        setLoginLockSeconds(seconds);
+        setLoginError('Terlalu banyak percobaan PIN salah. Silakan tunggu beberapa saat.');
+      } else {
+        setLoginError(err.message || 'Nama user atau PIN salah.');
+      }
     } finally {
       setAuthLoading(false);
     }
   };
+
+  // Server-authoritative lock countdown (survives navigation state, derived from Retry-After).
+  useEffect(() => {
+    if (loginLockSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setLoginLockSeconds((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [loginLockSeconds > 0]);
 
   const handleLogout = async () => {
     try {
@@ -126,6 +143,7 @@ export default function App() {
         onLogin={handleLogin}
         loading={authLoading}
         error={loginError}
+        lockoutSeconds={loginLockSeconds}
       />
     );
   }

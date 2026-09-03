@@ -136,7 +136,12 @@ async function hashSessionToken(token: string) {
 }
 
 type AuthScope = 'credential' | 'ip' | 'device';
-type AuthLimitResult = { attempts: number; blocked: boolean; blocked_until: string | null };
+type AuthLimitResult = {
+  attempts: number;
+  blocked: boolean;
+  blocked_until: string | null;
+  retry_after_seconds: number | null;
+};
 
 async function authScopeKeys(username: string, clientIp: string, deviceToken: string) {
   const pepper = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -228,7 +233,7 @@ export async function loginWithPin(
   ]);
   const profileId = profile?.id ?? null;
   const limits = await runAuthLimitRpc(db, 'rpc_check_auth_limits', profileId, scopeKeys);
-  if (limits.blocked) return { locked: true, user: null, token: null };
+  if (limits.blocked) return { locked: true, retryAfterSeconds: limits.retry_after_seconds ?? 60, user: null, token: null };
 
   if (!username || !isValidPin(pinInput) || !profile) {
     await runAuthLimitRpc(db, 'rpc_record_auth_failure', profileId, scopeKeys);
@@ -546,6 +551,8 @@ export function jsonResponse(body: unknown, status = 200, headers: HeadersInit =
   const responseHeaders = new Headers(headers);
   if (!responseHeaders.has('Content-Type')) responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
   if (!responseHeaders.has('Cache-Control')) responseHeaders.set('Cache-Control', 'no-store');
+  if (!responseHeaders.has('X-Content-Type-Options')) responseHeaders.set('X-Content-Type-Options', 'nosniff');
+  if (!responseHeaders.has('Referrer-Policy')) responseHeaders.set('Referrer-Policy', 'no-referrer');
   return new Response(JSON.stringify(body), {
     status,
     headers: responseHeaders,
@@ -592,8 +599,17 @@ export default {
         const result = await loginWithPin(body.username, body.pin, devToken, clientIpFromRequest(request));
         const responseHeaders = new Headers();
         responseHeaders.append('Set-Cookie', deviceCookie(devToken));
-        if (!result || result.locked) {
+        if (!result) {
           return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401, responseHeaders);
+        }
+        if (result.locked) {
+          const retryAfter = Math.max(1, Number(result.retryAfterSeconds) || 60);
+          responseHeaders.append('Retry-After', String(retryAfter));
+          return jsonResponse(
+            { error: 'Terlalu banyak percobaan. Silakan coba lagi nanti.' },
+            429,
+            responseHeaders,
+          );
         }
 
         responseHeaders.append('Set-Cookie', sessionCookie(result.token!));

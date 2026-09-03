@@ -48,7 +48,9 @@ insert into required_functions values
   ('public.rpc_review_payroll(uuid,uuid,integer)'),
   ('public.rpc_finalize_payroll(uuid,uuid,integer)'),
   ('public.rpc_mark_payroll_paid(uuid,uuid,integer,text,text)'),
-  ('public.rpc_void_payroll(uuid,uuid,integer,text)');
+  ('public.rpc_void_payroll(uuid,uuid,integer,text)'),
+  ('public.rpc_initialize_stock_reference(uuid,uuid,integer,uuid,text)'),
+  ('public.rpc_get_opening_reference(uuid,uuid)');
 
 select ok(
   bool_and(to_regprocedure(signature) is not null),
@@ -104,7 +106,8 @@ insert into operational_tables values
   ('public.compensation_policies'), ('public.employee_compensations'),
   ('public.payroll_runs'), ('public.payroll_entries'),
   ('public.payroll_adjustments'), ('public.payroll_exports'),
-  ('public.onboarding_progress');
+  ('public.onboarding_progress'),
+  ('public.stock_reference_initializations'), ('public.stock_reference_initialization_lines');
 
 select ok(
   bool_and(not has_table_privilege('anon', relation, privilege)),
