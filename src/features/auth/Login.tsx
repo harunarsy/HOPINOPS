@@ -86,10 +86,35 @@ export function Login({ options, onLogin, loading, error }: Props) {
           </div>
 
           <div className="login-field">
-            <label htmlFor="pin-input-0">PIN 6 digit</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <label htmlFor="pin-input-0" style={{ margin: 0 }}>PIN 6 DIGIT</label>
+              <button
+                type="button"
+                className="pin-toggle"
+                onClick={() => setShowPin(!showPin)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: '#4a6b5d',
+                  padding: '2px 4px',
+                }}
+              >
+                {showPin ? 'Sembunyikan' : 'Lihat'}
+              </button>
+            </div>
             <div
               className="pin-box-wrap"
-              style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '6px' }}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(6, 1fr)',
+                gap: '8px',
+                width: '100%',
+                maxWidth: '340px',
+                margin: '0 auto',
+              }}
               onClick={() => {
                 const idx = Math.min(pin.length, 5);
                 const el = document.getElementById(`pin-input-${idx}`);
@@ -111,7 +136,6 @@ export function Login({ options, onLogin, loading, error }: Props) {
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '');
                       if (!val) {
-                        // clear current digit
                         const newPin = pin.slice(0, idx) + pin.slice(idx + 1);
                         setPin(newPin);
                         return;
@@ -125,6 +149,14 @@ export function Login({ options, onLogin, loading, error }: Props) {
                         const nextEl = document.getElementById(`pin-input-${idx + 1}`);
                         nextEl?.focus();
                       }
+                    }}
+                    onFocus={(e) => {
+                      e.target.style.borderColor = '#1e5b48';
+                      e.target.style.boxShadow = '0 0 0 3px rgba(30, 91, 72, 0.16)';
+                    }}
+                    onBlur={(e) => {
+                      e.target.style.borderColor = digit ? '#1e5b48' : '#cddcd4';
+                      e.target.style.boxShadow = 'none';
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Backspace') {
@@ -144,10 +176,12 @@ export function Login({ options, onLogin, loading, error }: Props) {
                       }
                     }}
                     style={{
-                      width: '46px',
-                      height: '54px',
+                      width: '100%',
+                      aspectRatio: '4 / 5',
+                      minHeight: '48px',
+                      maxHeight: '56px',
                       textAlign: 'center',
-                      fontSize: '22px',
+                      fontSize: '20px',
                       fontWeight: 700,
                       fontFamily: 'monospace',
                       borderRadius: '10px',
@@ -155,21 +189,13 @@ export function Login({ options, onLogin, loading, error }: Props) {
                       background: digit ? '#f0f7f4' : '#fff',
                       color: '#123d32',
                       outline: 'none',
-                      transition: 'border-color 0.15s, background 0.15s',
+                      boxSizing: 'border-box',
+                      padding: 0,
+                      transition: 'border-color 0.15s, box-shadow 0.15s, background 0.15s',
                     }}
                   />
                 );
               })}
-            </div>
-            <div style={{ textAlign: 'right', marginTop: '6px' }}>
-              <button
-                type="button"
-                className="pin-toggle"
-                onClick={() => setShowPin(!showPin)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#4a6b5d' }}
-              >
-                {showPin ? 'Sembunyikan PIN' : 'Lihat PIN'}
-              </button>
             </div>
           </div>
 
