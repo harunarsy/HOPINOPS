@@ -8,3 +8,9 @@ dist/
 premium-ui.json
 premium-audit.json
 .vercel
+
+# Phase 0 production backups (never commit)
+backups/
+
+test-results/
+playwright-report/
