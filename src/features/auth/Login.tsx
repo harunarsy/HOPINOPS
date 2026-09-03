@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 type Props = {
   options: { username: string; display_name: string }[];
@@ -12,13 +12,60 @@ export function Login({ options, onLogin, loading, error }: Props) {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [failedCount, setFailedCount] = useState(0);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
   const pinInputRef = useRef<HTMLInputElement>(null);
+  const prevErrorRef = useRef(error);
 
   const selectedUser = options.find((o) => o.username === username);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username || pin.length !== 6) return;
+  // Countdown timer for lockout
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setLockoutSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          setFailedCount(0);
+          // focus back to input
+          setTimeout(() => {
+            document.getElementById('pin-input-0')?.focus();
+          }, 50);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [lockoutSeconds]);
+
+  // Catch login error -> clear PIN instantly, count failures
+  useEffect(() => {
+    if (error && error !== prevErrorRef.current) {
+      setPin('');
+      const nextFail = failedCount + 1;
+      setFailedCount(nextFail);
+      if (nextFail >= 3) {
+        setLockoutSeconds(60);
+      } else {
+        setTimeout(() => {
+          document.getElementById('pin-input-0')?.focus();
+        }, 50);
+      }
+    }
+    prevErrorRef.current = error;
+  }, [error, failedCount]);
+
+  // Auto-login when 6 digits are typed
+  useEffect(() => {
+    if (pin.length === 6 && username && !loading && lockoutSeconds === 0) {
+      void onLogin(username, pin);
+    }
+  }, [pin, username, loading, lockoutSeconds, onLogin]);
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!username || pin.length !== 6 || loading || lockoutSeconds > 0) return;
     void onLogin(username, pin);
   };
 
@@ -132,7 +179,7 @@ export function Login({ options, onLogin, loading, error }: Props) {
                     pattern="[0-9]*"
                     maxLength={1}
                     value={digit}
-                    disabled={loading}
+                    disabled={loading || lockoutSeconds > 0}
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '');
                       if (!val) {
@@ -199,14 +246,38 @@ export function Login({ options, onLogin, loading, error }: Props) {
             </div>
           </div>
 
-          {error && <p className="form-error" role="alert">{error}</p>}
+          {lockoutSeconds > 0 && (
+            <div
+              style={{
+                background: '#fff1f2',
+                border: '1px solid #fecdd3',
+                color: '#be123c',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                lineHeight: '1.5',
+                marginTop: '12px',
+                textAlign: 'center',
+              }}
+            >
+              <strong>Terlalu banyak percobaan salah (3x).</strong>
+              <br />
+              Silakan tunggu <strong>{lockoutSeconds} detik</strong> sebelum mencoba kembali.
+            </div>
+          )}
+
+          {error && lockoutSeconds === 0 && <p className="form-error" role="alert">{error}</p>}
 
           <button
             className="primary-button"
             type="submit"
-            disabled={loading || !username || pin.length !== 6}
+            disabled={loading || !username || pin.length !== 6 || lockoutSeconds > 0}
           >
-            {loading ? 'Memverifikasi...' : 'Masuk ke sistem'} <span>→</span>
+            {lockoutSeconds > 0
+              ? `Terkunci (${lockoutSeconds}s)`
+              : loading
+                ? 'Memverifikasi...'
+                : 'Masuk ke sistem'} <span>→</span>
           </button>
         </form>
         <p className="demo-hint">Gunakan PIN 6 digit pribadi Anda · Sesi aman terhubung ke server</p>

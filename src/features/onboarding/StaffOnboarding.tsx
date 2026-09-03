@@ -55,10 +55,26 @@ export function StaffOnboarding({ onComplete }: Props) {
           <div><strong>HOPIN</strong><small>PANDUAN OPERATOR</small></div>
         </div>
 
-        <div className="login-copy">
-          <p className="eyebrow">LANGKAH {currentStep + 1} DARI {steps.length}</p>
-          <h2>{steps[currentStep].title}</h2>
-          <p style={{ fontSize: '15px', lineHeight: '1.5', marginTop: '12px' }}>
+        <div className="onboarding-step-card" style={{ marginTop: '20px' }}>
+          <span
+            style={{
+              display: 'inline-block',
+              background: '#e0ece6',
+              color: '#1e5b48',
+              fontSize: '11px',
+              fontWeight: 700,
+              padding: '4px 10px',
+              borderRadius: '20px',
+              letterSpacing: '0.06em',
+              marginBottom: '12px',
+            }}
+          >
+            LANGKAH {currentStep + 1} DARI {steps.length}
+          </span>
+          <h2 style={{ fontSize: '22px', color: '#123d32', margin: '0 0 10px', lineHeight: '1.25' }}>
+            {steps[currentStep].title}
+          </h2>
+          <p style={{ fontSize: '14px', lineHeight: '1.6', color: '#4a6b5d', margin: 0 }}>
             {steps[currentStep].desc}
           </p>
         </div>

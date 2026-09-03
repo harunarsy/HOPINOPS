@@ -261,7 +261,11 @@ export async function loginWithPin(
   const { data: existingDevice } = await db.from('app_devices').select('id').eq('device_token_hash', deviceHash).maybeSingle();
   if (existingDevice) {
     deviceId = existingDevice.id;
-    await db.from('app_devices').update({ last_seen_at: now.toISOString() }).eq('id', deviceId);
+    await db.from('app_devices').update({
+      profile_id: profile.id,
+      revoked_at: null,
+      last_seen_at: now.toISOString(),
+    }).eq('id', deviceId);
   } else {
     const { data: newDevice } = await db.from('app_devices').insert({
       profile_id: profile.id,

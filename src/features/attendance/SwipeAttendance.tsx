@@ -152,10 +152,41 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
     onCancel?.();
   };
 
+  const [isDragging, setIsDragging] = useState(false);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  const startDrag = (clientX: number) => {
+    if (status !== 'IDLE' || needsNote) return;
+    setIsDragging(true);
+    updateDragPosition(clientX);
+  };
+
+  const updateDragPosition = (clientX: number) => {
+    if (!trackRef.current) return;
+    const rect = trackRef.current.getBoundingClientRect();
+    const width = rect.width - 52; // subtract knob width
+    const offsetX = Math.max(0, Math.min(clientX - rect.left - 26, width));
+    const percent = Math.round((offsetX / width) * 100);
+    setSliderPos(percent);
+    if (percent >= 90 && !inFlightRef.current && status === 'IDLE') {
+      setIsDragging(false);
+      setSliderPos(100);
+      void performAttendance();
+    }
+  };
+
+  const stopDrag = () => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    if (sliderPos < 90) {
+      setSliderPos(0);
+    }
+  };
+
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value);
     setSliderPos(val);
-    if (val >= 95 && status === 'IDLE') {
+    if (val >= 90 && status === 'IDLE' && !inFlightRef.current) {
       void performAttendance();
     }
   };
@@ -235,23 +266,88 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       )}
 
       {status === 'IDLE' && !needsNote && (
-        <div style={{ position: 'relative', marginTop: '16px' }}>
+        <div
+          ref={trackRef}
+          style={{
+            position: 'relative',
+            marginTop: '16px',
+            height: '56px',
+            borderRadius: '28px',
+            background: '#e0ece6',
+            overflow: 'hidden',
+            userSelect: 'none',
+            touchAction: 'none',
+          }}
+          onPointerDown={(e) => {
+            (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+            startDrag(e.clientX);
+          }}
+          onPointerMove={(e) => {
+            if (isDragging) updateDragPosition(e.clientX);
+          }}
+          onPointerUp={stopDrag}
+          onPointerCancel={stopDrag}
+        >
+          {/* Progress fill */}
           <div
             style={{
-              height: '56px',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              bottom: 0,
+              width: `${Math.max(sliderPos, 14)}%`,
+              background: '#1e5b48',
+              opacity: 0.25,
               borderRadius: '28px',
-              background: '#e0ece6',
+              transition: isDragging ? 'none' : 'width 0.25s ease-out',
+            }}
+          />
+
+          {/* Track Text */}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               color: '#1e5b48',
-              fontWeight: 600,
+              fontWeight: 700,
               fontSize: '14px',
-              userSelect: 'none',
+              letterSpacing: '0.04em',
+              pointerEvents: 'none',
+              opacity: Math.max(0, 1 - sliderPos / 60),
+              transition: 'opacity 0.15s ease',
             }}
           >
             Geser untuk Absen ➔
           </div>
+
+          {/* Draggable Knob */}
+          <div
+            style={{
+              position: 'absolute',
+              top: '4px',
+              left: `calc(${sliderPos}% * (1 - 48px / 100%) + 4px)`,
+              width: '48px',
+              height: '48px',
+              borderRadius: '24px',
+              background: '#fff',
+              boxShadow: '0 4px 14px rgba(18, 61, 50, 0.28)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#1e5b48',
+              fontSize: '18px',
+              fontWeight: 900,
+              cursor: 'grab',
+              transition: isDragging ? 'none' : 'left 0.25s ease-out',
+            }}
+          >
+            ➔
+          </div>
+
+          {/* Hidden range input for keyboard / screen reader accessibility */}
           <input
             type="range"
             min={0}
@@ -261,12 +357,9 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
             aria-label={isCheckIn ? 'Geser untuk Check-In' : 'Geser untuk Check-Out'}
             style={{
               position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: '56px',
+              inset: 0,
               opacity: 0,
-              cursor: 'pointer',
+              pointerEvents: 'none',
             }}
           />
         </div>

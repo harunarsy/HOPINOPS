@@ -137,17 +137,36 @@ async function currentAuthContext(request: ApiRequest): Promise<AuthContext | nu
 
   let deviceId: string | null = null;
   const deviceToken = deviceTokenFromRequest(request);
-  if (session.device_id && deviceToken) {
-    const { data: device, error: deviceError } = await db
+  if (deviceToken) {
+    const devHash = await hashSessionToken(deviceToken);
+    // Find device or link it
+    const { data: device } = await db
       .from('app_devices')
-      .select('id')
-      .eq('id', session.device_id)
-      .eq('profile_id', profile.id)
-      .eq('device_token_hash', await hashSessionToken(deviceToken))
+      .select('id, profile_id')
+      .eq('device_token_hash', devHash)
       .is('revoked_at', null)
       .maybeSingle();
-    if (deviceError) throw deviceError;
-    deviceId = device?.id ?? null;
+
+    if (device) {
+      deviceId = device.id;
+      if (device.profile_id !== profile.id) {
+        await db.from('app_devices').update({ profile_id: profile.id, last_seen_at: new Date(now).toISOString() }).eq('id', deviceId);
+      }
+    } else {
+      const { data: newDev } = await db.from('app_devices').insert({
+        profile_id: profile.id,
+        device_token_hash: devHash,
+        first_seen_at: new Date(now).toISOString(),
+        last_seen_at: new Date(now).toISOString(),
+      }).select('id').maybeSingle();
+      if (newDev) deviceId = newDev.id;
+    }
+
+    if (deviceId && session.device_id !== deviceId) {
+      await db.from('app_sessions').update({ device_id: deviceId }).eq('id', session.id);
+    }
+  } else if (session.device_id) {
+    deviceId = session.device_id;
   }
 
   await db.from('app_sessions').update({ last_seen_at: new Date(now).toISOString() }).eq('id', session.id);
