@@ -29,6 +29,14 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
   const [showPayModal, setShowPayModal] = useState(false);
   const [showVoidModal, setShowVoidModal] = useState(false);
 
+  // Create user state
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [newRole, setNewRole] = useState<'OPERATOR' | 'SUPERVISOR' | 'INVESTOR' | 'OWNER'>('OPERATOR');
+  const [newJobTitle, setNewJobTitle] = useState('STAFF');
+  const [createdUserResult, setCreatedUserResult] = useState<{ username: string; initial_pin: string } | null>(null);
+
   const isInvestor = user.role === 'INVESTOR';
   const isOwner = user.role === 'OWNER';
 
@@ -559,11 +567,28 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
         {/* 4. USERS MANAGEMENT */}
         {tab === 'users' && !isInvestor && (
           <div className="section-card">
-            <div className="section-heading">
+            <div className="section-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <p className="eyebrow">MANAJEMEN PENGGUNA</p>
-                <h2>Daftar Akun & Reset PIN</h2>
+                <h2>Daftar Akun & Hak Akses</h2>
               </div>
+              {isOwner && (
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => {
+                    setNewUsername('');
+                    setNewDisplayName('');
+                    setNewRole('OPERATOR');
+                    setNewJobTitle('BARISTA');
+                    setCreatedUserResult(null);
+                    setShowCreateUserModal(true);
+                  }}
+                  style={{ fontSize: '12px', padding: '7px 14px' }}
+                >
+                  ➕ Tambah Pengguna Baru
+                </button>
+              )}
             </div>
 
             <div className="table-responsive" style={{ marginTop: '16px' }}>
@@ -589,20 +614,139 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode }: Props) {
                         {u.force_pin_change ? <span style={{ color: '#d97706' }}>Wajib Ganti</span> : 'Aktif'}
                       </td>
                       <td style={{ padding: '8px', textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          className="outline-button"
-                          onClick={() => handleResetPin(u.username)}
-                          style={{ fontSize: '11px', padding: '4px 8px' }}
-                        >
-                          Reset PIN
-                        </button>
+                        {isOwner && (
+                          <button
+                            type="button"
+                            className="outline-button"
+                            onClick={() => handleResetPin(u.username)}
+                            style={{ fontSize: '11px', padding: '4px 8px' }}
+                          >
+                            Reset PIN
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            {/* Modal Tambah User */}
+            {showCreateUserModal && (
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' }}>
+                <div style={{ background: '#fff', padding: '24px', borderRadius: '12px', maxWidth: '440px', width: '100%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+                  <h3 style={{ margin: '0 0 8px' }}>Tambah Pengguna Baru</h3>
+                  <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
+                    Pengguna baru akan otomatis mendapatkan PIN sementara 6 digit untuk login pertama kali.
+                  </p>
+
+                  {createdUserResult ? (
+                    <div style={{ padding: '16px', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0', marginBottom: '16px' }}>
+                      <p style={{ margin: '0 0 6px', color: '#166534', fontWeight: 700 }}>Akun Berhasil Dibuat!</p>
+                      <p style={{ margin: '0 0 4px', fontSize: '13px' }}><strong>Username:</strong> {createdUserResult.username}</p>
+                      <p style={{ margin: '0 0 8px', fontSize: '15px' }}>
+                        <strong>PIN Sementara:</strong> <code style={{ background: '#dcfce7', padding: '2px 8px', borderRadius: '4px', fontSize: '16px', letterSpacing: '2px' }}>{createdUserResult.initial_pin}</code>
+                      </p>
+                      <p className="muted" style={{ fontSize: '11px', color: '#15803d', margin: 0 }}>
+                        Catat dan berikan PIN ini ke operator. Pengguna akan diminta mengganti PIN saat pertama kali login.
+                      </p>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => {
+                          setShowCreateUserModal(false);
+                          setCreatedUserResult(null);
+                        }}
+                        style={{ width: '100%', marginTop: '16px', fontSize: '13px' }}
+                      >
+                        Selesai
+                      </button>
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!newUsername.trim() || !newDisplayName.trim()) {
+                          showToast('Username dan nama tampilan wajib diisi.');
+                          return;
+                        }
+                        setLoading(true);
+                        try {
+                          const res = await api.createUser({
+                            username: newUsername.trim().toLowerCase(),
+                            display_name: newDisplayName.trim(),
+                            role: newRole,
+                            job_title: newJobTitle.trim() || 'STAFF',
+                          });
+                          setCreatedUserResult({
+                            username: res.user.username,
+                            initial_pin: res.initial_pin,
+                          });
+                          await loadData();
+                        } catch (err: any) {
+                          showToast(err.message || 'Gagal membuat user baru');
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                    >
+                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Nama Lengkap Tampilan:</label>
+                      <input
+                        type="text"
+                        value={newDisplayName}
+                        onChange={(e) => setNewDisplayName(e.target.value)}
+                        placeholder="Contoh: Jezy Supervisor"
+                        required
+                        style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', marginBottom: '12px', fontSize: '13px' }}
+                      />
+
+                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Username (huruf kecil):</label>
+                      <input
+                        type="text"
+                        value={newUsername}
+                        onChange={(e) => setNewUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
+                        placeholder="Contoh: jezy"
+                        required
+                        style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', marginBottom: '12px', fontSize: '13px' }}
+                      />
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '16px' }}>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Role / Hak Akses:</label>
+                          <select
+                            value={newRole}
+                            onChange={(e) => setNewRole(e.target.value as any)}
+                            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', fontSize: '13px' }}
+                          >
+                            <option value="OPERATOR">OPERATOR</option>
+                            <option value="SUPERVISOR">SUPERVISOR</option>
+                            <option value="INVESTOR">INVESTOR</option>
+                            <option value="OWNER">OWNER</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Posisi / Jabatan:</label>
+                          <input
+                            type="text"
+                            value={newJobTitle}
+                            onChange={(e) => setNewJobTitle(e.target.value)}
+                            placeholder="Contoh: BARISTA"
+                            style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', fontSize: '13px' }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        <button type="button" className="outline-button" onClick={() => setShowCreateUserModal(false)}>Batal</button>
+                        <button type="submit" className="primary-button" disabled={loading}>
+                          {loading ? 'Membuat Akun...' : 'Simpan Pengguna'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
