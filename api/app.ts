@@ -182,7 +182,7 @@ export async function hashPin(pin: string) {
 }
 
 function getAdminClient(): SupabaseClient {
-  const url = process.env.SUPABASE_URL;
+  const url = process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !serviceRoleKey) throw new Error('Server Supabase environment is not configured.');
   return createClient(url, serviceRoleKey, {
