@@ -53,11 +53,13 @@ export const api = {
   bootstrap: () => request<any>('/api/app?action=bootstrap'),
   getDashboard: (date?: string) => request<any>(`/api/app?action=dashboard.get${date ? `&date=${date}` : ''}`),
   getInvestorReports: () => request<{ reports: any[] }>('/api/app?action=investor.reports').then(r => r.reports),
+  getSettings: () => request<any>('/api/app?action=settings.get'),
 
   // Items
   listItems: () => request<{ items: any[] }>('/api/app?action=items.list').then(r => r.items),
   createItem: (item: any) => request('/api/app?action=items.create', { method: 'POST', body: JSON.stringify(item) }),
   updateItem: (item: any) => request('/api/app?action=items.update', { method: 'POST', body: JSON.stringify(item) }),
+  archiveItem: (id: string) => request('/api/app?action=items.archive', { method: 'POST', body: JSON.stringify({ id }) }),
 
   // Roster & Swap
   listRoster: (month?: string) => request<{ roster: any[] }>(`/api/app?action=roster.list${month ? `&month=${month}` : ''}`).then(r => r.roster),
@@ -92,6 +94,7 @@ export const api = {
   reviewReport: (revision_id: string, status: 'APPROVED' | 'NEEDS_CLARIFICATION', note?: string) =>
     request('/api/app?action=report.review', { method: 'POST', body: JSON.stringify({ revision_id, status, note }) }),
   finalizeBonus: (report_revision_id: string) => request('/api/app?action=bonus.finalize', { method: 'POST', body: JSON.stringify({ report_revision_id }) }),
+  previewBonus: (date?: string) => request<any>(`/api/app?action=bonus.preview${date ? `&date=${date}` : ''}`),
 
   // Payroll Lifecycle
   getPayrollRun: (period?: string) => request<{ run: any | null; entries: any[] }>(`/api/app?action=payroll.get${period ? `&period=${period}` : ''}`),

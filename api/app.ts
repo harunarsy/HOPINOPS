@@ -561,6 +561,41 @@ export default {
         return successResponse(data);
       }
 
+      if (action === 'items.archive' && request.method === 'POST') {
+        if (user.role !== 'OWNER') return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh mengarsipkan item.', 403);
+        const body = (await request.json()) as any;
+        if (!isUuid(body.id)) return errorResponse('VALIDATION_FAILED', 'item id UUID wajib diisi.', 400);
+        const { data, error } = await db
+          .from('items')
+          .update({ active: false })
+          .eq('id', body.id)
+          .eq('active', true)
+          .select()
+          .single();
+        if (error) return errorResponse('DB_ERROR', error.message, 400);
+        if (!data) return errorResponse('NOT_FOUND', 'Item aktif tidak ditemukan.', 404);
+        await logAudit(db, {
+          actor_user_id: user.id,
+          action: 'ARCHIVE_ITEM',
+          entity_type: 'items',
+          entity_id: body.id,
+          metadata_json: { id: data.id, name: data.name },
+        });
+        return successResponse(data);
+      }
+
+      if (action === 'settings.get' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh membaca pengaturan.', 403);
+        const { data: settings, error: settingsError } = await db.from('outlet_settings').select('*').eq('outlet_id', outletId).maybeSingle();
+        if (settingsError) throw settingsError;
+        if (!settings) return errorResponse('NOT_FOUND', 'Pengaturan outlet tidak ditemukan.', 404);
+        // Mask exact coordinates for Supervisor; Owner may read full settings.
+        if (user.role === 'SUPERVISOR') {
+          return successResponse({ ...settings, latitude: undefined, longitude: undefined });
+        }
+        return successResponse(settings);
+      }
+
       // 5. ROSTER & SWAP
       if (action === 'roster.list' && request.method === 'GET') {
         const month = url.searchParams.get('month') || getWibDate().slice(0, 7);
@@ -950,6 +985,78 @@ export default {
         if (error) return rpcErrorResponse(error);
         if (!pool?.pool_id || pool.status !== 'FINAL') return invalidRpcResult();
         return successResponse({ pool });
+      }
+
+      if (action === 'bonus.preview' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh melihat pratinjau bonus.', 403);
+        }
+        const workDate = url.searchParams.get('date') || getWibDate();
+        const { data: report } = await db
+          .from('daily_reports')
+          .select('id, work_date, status, current_revision, daily_report_revisions(*, daily_report_finance(recorded_total))')
+          .eq('outlet_id', outletId)
+          .eq('work_date', workDate)
+          .eq('status', 'APPROVED')
+          .maybeSingle();
+        if (!report) return successResponse({ report: null, pool: null, blockers: [] });
+
+        const revision = (report.daily_report_revisions ?? []).find(
+          (r: any) => r.revision === report.current_revision && r.status === 'APPROVED',
+        );
+        const recordedTotal = Number(revision?.daily_report_finance?.[0]?.recorded_total || 0);
+        let tierPercent = 0;
+        if (recordedTotal >= 1200000) tierPercent = 7;
+        else if (recordedTotal >= 1000000) tierPercent = 6;
+        else if (recordedTotal >= 600000) tierPercent = 5;
+        const poolAmount = Math.floor(recordedTotal * tierPercent / 100);
+
+        const { data: participants } = await db
+          .from('work_assignments')
+          .select('profile_id, work_cycles!inner(work_date, outlet_id)')
+          .eq('work_cycles.outlet_id', outletId)
+          .eq('work_cycles.work_date', workDate)
+          .neq('status', 'RESET');
+        const participantCount = new Set((participants ?? []).map((p: any) => p.profile_id)).size;
+
+        const { data: existingPool } = await db
+          .from('daily_bonus_pools')
+          .select('id, status, pool_amount')
+          .eq('report_revision_id', revision?.id ?? '00000000-0000-0000-0000-000000000000')
+          .maybeSingle();
+
+        return successResponse({
+          report: { id: report.id, work_date: report.work_date, status: report.status },
+          preview: { recorded_total: recordedTotal, tier_percent: tierPercent, pool_amount: poolAmount, participant_count: participantCount },
+          pool: existingPool ?? null,
+          blockers: [],
+        });
+      }
+
+      if (action === 'attendance.mine' && request.method === 'GET') {
+        const from = url.searchParams.get('from') || getWibDate().slice(0, 8) + '01';
+        const { data } = await db
+          .from('attendance_records')
+          .select('id, work_date, status, lateness_status, exception_status, scheduled_start_at, scheduled_end_at, check_in_event_id, check_out_event_id')
+          .eq('profile_id', user.id)
+          .eq('outlet_id', outletId)
+          .gte('work_date', from)
+          .order('work_date', { ascending: false });
+        return successResponse({ attendance: data ?? [] });
+      }
+
+      if (action === 'report.list' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh melihat daftar laporan.', 403);
+        }
+        const from = url.searchParams.get('from') || '';
+        let q = db
+          .from('daily_reports')
+          .select('id, work_date, status, current_revision, updated_at')
+          .eq('outlet_id', outletId);
+        if (from) q = q.gte('work_date', from);
+        const { data } = await q.order('work_date', { ascending: false }).limit(60);
+        return successResponse({ reports: data ?? [] });
       }
 
       // 11. PAYROLL LIFECYCLE (PREVIEW, REVIEW, FINALIZE, PAID, VOID)
