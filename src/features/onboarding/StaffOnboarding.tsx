@@ -32,30 +32,44 @@ export function StaffOnboarding({ onComplete }: Props) {
   const [currentStep, setCurrentStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
-  const handleNext = async () => {
+  const handleNext = (e: React.MouseEvent) => {
+    e.preventDefault();
     if (currentStep < steps.length - 1) {
-      setCurrentStep(currentStep + 1);
-    } else {
-      setSubmitting(true);
-      try {
-        await api.completeOnboarding(1);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setSubmitting(false);
-        onComplete();
-      }
+      setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
     }
   };
 
+  const handlePrev = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (currentStep > 0) {
+      setCurrentStep((prev) => Math.max(prev - 1, 0));
+    }
+  };
+
+  const handleFinish = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await api.completeOnboarding(1);
+    } catch (err) {
+      console.error('Onboarding completion error:', err);
+    } finally {
+      setSubmitting(false);
+      onComplete();
+    }
+  };
+
+  const isLastStep = currentStep === steps.length - 1;
+
   return (
     <div className="login-page">
-      <div className="login-panel" style={{ maxWidth: '480px' }}>
+      <div className="login-panel" style={{ maxWidth: '480px', margin: 'auto' }}>
         <div className="login-brand">
           <div><strong>HOPIN</strong><small>PANDUAN OPERATOR</small></div>
         </div>
 
-        <div className="onboarding-step-card" style={{ marginTop: '20px' }}>
+        <div className="onboarding-step-card" style={{ marginTop: '20px', minHeight: '180px' }}>
           <span
             style={{
               display: 'inline-block',
@@ -88,6 +102,7 @@ export function StaffOnboarding({ onComplete }: Props) {
                 height: '6px',
                 borderRadius: '3px',
                 background: idx <= currentStep ? '#1e5b48' : '#e0e7e4',
+                transition: 'background 0.2s ease',
               }}
             />
           ))}
@@ -98,20 +113,32 @@ export function StaffOnboarding({ onComplete }: Props) {
             <button
               type="button"
               className="outline-button"
-              onClick={() => setCurrentStep(currentStep - 1)}
+              onClick={handlePrev}
+              disabled={submitting}
             >
-              Sebelumnya
+              ← Sebelumnya
             </button>
           ) : <div />}
 
-          <button
-            type="button"
-            className="primary-button"
-            onClick={handleNext}
-            disabled={submitting}
-          >
-            {currentStep === steps.length - 1 ? 'Mulai Bekerja →' : 'Lanjut →'}
-          </button>
+          {isLastStep ? (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleFinish}
+              disabled={submitting}
+            >
+              {submitting ? 'Menyimpan...' : 'Selesai & Mulai Bekerja →'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleNext}
+              disabled={submitting}
+            >
+              Lanjut ke Langkah {currentStep + 2} →
+            </button>
+          )}
         </div>
       </div>
     </div>
