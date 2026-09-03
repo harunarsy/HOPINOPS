@@ -13,7 +13,7 @@ import { ManagementView } from './features/management/ManagementView';
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [loginOptions, setLoginOptions] = useState<{ username: string; display_name: string }[]>([]);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
 
   // Bootstrap data
@@ -52,7 +52,6 @@ export default function App() {
   };
 
   const loadInitialAuth = async () => {
-    setAuthLoading(true);
     try {
       const [options, user] = await Promise.all([
         api.getLoginOptions().catch(() => []),
@@ -65,8 +64,6 @@ export default function App() {
       }
     } catch {
       setLoginError('Layanan autentikasi belum siap.');
-    } finally {
-      setAuthLoading(false);
     }
   };
 
@@ -121,19 +118,7 @@ export default function App() {
     }
   };
 
-  // 1. LOADING SCREEN
-  if (authLoading && !currentUser) {
-    return (
-      <div className="login-page">
-        <div className="login-panel" style={{ textAlign: 'center', padding: '40px' }}>
-          <div className="spinner" style={{ margin: '0 auto 16px' }} />
-          <strong>Memuat HOPIN Operations...</strong>
-        </div>
-      </div>
-    );
-  }
-
-  // 2. UNAUTHENTICATED -> LOGIN
+  // 1. UNAUTHENTICATED -> LOGIN
   if (!currentUser) {
     return (
       <Login

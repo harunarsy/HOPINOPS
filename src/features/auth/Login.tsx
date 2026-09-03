@@ -108,7 +108,6 @@ export function Login({ options, onLogin, loading, error }: Props) {
                     maxLength={1}
                     value={digit}
                     disabled={loading}
-                    placeholder={idx === 0 && !pin ? '•' : ''}
                     onChange={(e) => {
                       const val = e.target.value.replace(/\D/g, '');
                       if (!val) {
