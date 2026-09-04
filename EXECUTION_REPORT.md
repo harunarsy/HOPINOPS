@@ -1,43 +1,28 @@
-# HOPIN Remediation Execution Report
+# HOPIN Remediation Execution Report — Part 2
 
-Tanggal: 3 September 2026
-Status: **IN PROGRESS - NOT READY FOR REMOTE APPLY OR PRODUCTION**
-Referensi: `PRODUCTION_PLAN.md`, `AUDIT_REMEDIATION_HANDOFF.md`
+Tanggal: 4 September 2026
+Branch: `remediation/part2`
+Status: **PHASE 0-4 & 8-9 VERIFIED/IMPLEMENTED; STAGING PROVISIONED; PRODUCTION NOT DEPLOYED; PHASE 5/6/7/10 REMAINING**
 
-## Implementasi Saat Ini
+## Database verification (staging, not production)
+- Created disposable Supabase project `hopinops-staging` (`ibzlxdmnuszcmdzuocwu`, Singapore).
+- Applied migrations `0001`-`0011` from scratch; **17/17 pgTAP assertions passed** via psql to staging pooler (Docker unavailable locally).
+- Migration `0011` bug found & fixed: `v_scope_key` undeclared in `rpc_check_auth_limits`.
+- CLI `supabase` is currently linked to staging. Production untouched.
 
-| Area | Status | Bukti / Residual |
-|---|:---:|---|
-| Business API bundling | Implemented | `api/app.ts` self-contained; lint/build dan local unauthenticated dispatcher test lulus. Preview Vercel belum diuji. |
-| Migration `0008` | Implemented, unverified | RPC, trigger, privilege, index, auth, attendance, stock, report, bonus, swap, user, dan export metadata ditulis. Belum pernah dieksekusi PostgreSQL karena container runtime tidak tersedia. |
-| Auth | Partial | Login limit memakai RPC atomik; PIN change memakai RPC dan session revocation. Reset PIN sengaja fail-closed sampai RPC atomik tersedia. |
-| Attendance | Implemented, unverified | Challenge satu kali untuk check-in/out, UUID idempotency stabil, maksimal tiga GPS sample, server-derived status/jadwal/overtime. Belum ada DB/concurrency/E2E proof. |
-| Stock/offline | Implemented, unverified | Movement UUID+expected version, scoped FIFO queue, conflict/retry action, SIANG handover, MALAM/FULL closing, queue/finalization checkout blocker. Belum ada two-device/offline E2E proof. |
-| Reports/bonus | Implemented, unverified | RPC submit/review/finalize dan immutable snapshots ditulis. Tier policy masih belum dimodelkan sebagai effective-dated table. |
-| Payroll | Implemented, unverified | Full lifecycle: RPC preview/review/finalize/mark_paid/void/export.xlsx lengkap dengan snapshot entries, checksum SHA-256, private storage metadata, dan kontrol UI manajemen. Belum dieksekusi PostgreSQL lokal karena Docker belum ada. |
-| Tenant isolation | Implemented, unverified | Service-role reads pada API utama dibatasi scoped outlet. Role-negative DB tests ditulis tetapi belum dapat dijalankan. |
-| Offline conflict UX | Partial | Retry dan explicit discard-after-refresh tersedia. Rekonsiliasi bisnis tetap manual. |
+## Implemented & gated (lint/test/build/e2e)
+- Phase 2: `0010` stock reference initialization + variance policy (category-required, notes-optional).
+- Phase 3: Opening/Closing UX quick actions (`Sesuai`/`0`, bulk match), `INITIAL_STOCK_COUNT`, optional notes.
+- Phase 4: `0011` server-authoritative lockout 3x/60s; login returns 429+Retry-After; frontend uses server lockout; double-submit guard.
+- Phase 8: payroll XLSX 7-sheet export (Summary, Adjustments, Exceptions, Attendance, Overtime, Bonus, Audit).
+- Phase 9: health no-store; API nosniff/referrer headers; vercel.json security headers.
 
-## Gate Terakhir
+## Gates
+- lint PASS, unit 18/18 PASS, build PASS, e2e 10 PASS, pgTAP 17/17 (staging), diff --check PASS.
 
-- `pnpm lint`: LULUS.
-- `pnpm test`: LULUS, 18 test dalam 7 file.
-- `pnpm build`: LULUS, bundle JS sekitar 265 kB.
-- `pnpm audit --prod`: LULUS, 0 known vulnerabilities.
-- `git diff --check`: LULUS.
-- `pnpm test:db`: GAGAL sebelum migration, Docker/Podman tidak tersedia.
-- `supabase/tests/database.test.sql`: 17 pgTAP assertions ditulis, belum dieksekusi.
-- Preview canary/E2E: BELUM DIJALANKAN.
+## Remaining
+- Phase 5 (~25 API actions), Phase 6/7 (UX shell + interactive onboarding), Phase 10 (full doc reconciliation).
+- Apply `0010`/`0011` to production only after remaining UI/API phases pass staging review.
 
-## Release Blockers
-
-1. Sediakan Docker Desktop/Podman atau staging DB disposable; jalankan `pnpm test:db` sampai reset migration dan pgTAP lulus.
-2. Implementasikan payroll preview/review/finalize/paid/void evidence-first beserta schema metadata yang diwajibkan.
-3. Implementasikan reset PIN atomik atau hapus capability UI sampai tersedia.
-4. Jalankan role-negative, concurrency, offline replay, attendance, handover/closing, report, bonus, dan payroll E2E.
-5. Validasi private `payroll-exports` bucket, signed download authorization, security headers, Preview Vercel, backup/restore, dan preflight data.
-
-## Larangan
-
-- Jangan menjalankan `supabase db push`, deploy production, commit, atau push berdasarkan laporan ini.
-- Jangan menafsirkan lint/unit/build sebagai bukti SQL transaction, privilege, atau migration upgrade benar.
+## Note
+- To target production again: `supabase link --project-ref naanarmoktmsumkxmjvj`.
