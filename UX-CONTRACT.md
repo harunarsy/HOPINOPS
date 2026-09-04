@@ -1,63 +1,80 @@
-# HOPIN Stock Operations — UX Contract (Local Demo)
+# HOPIN Stock Operations — UX Contract (Produksi Server-First)
 
-## Scope and trust boundary
+Kontrak ini mencerminkan implementasi saat ini di branch `remediation/part2`: SPA React/Vite yang seluruh alurnya bersumber dari API server (`/api/*` + Supabase RPC), bukan demo localStorage. Kebenaran operasional selalu milik server; browser hanya menyimpan draft offline eksplisit.
 
-This is a local-only operational prototype seeded from the v0.2 evidence with Supabase Auth for user identity. Operational records still have no backend write path, server timestamp, real cross-device workflow sync, IndexedDB queue, or production audit security. UI language must say `demo lokal` or `tersimpan di perangkat` where it matters and must not imply server persistence.
+## 1. Batas kepercayaan
 
-## Workflow contract
+- Browser tidak memegang kredensial database dan tidak menulis langsung ke tabel Supabase.
+- Semua mutasi lewat transactional RPC: server melakukan re-authorization aktor, lock aggregate, validasi state, mutasi, dan audit dalam satu transaksi.
+- Timestamp otoritatif, versi aggregate (`expected_version`), dan idempotency (`idempotency_key`) berasal dari server.
+- `localStorage`/IndexedDB adalah convenience recovery, bukan security boundary.
 
-| Operation | Trigger | Pending | Success | Recovery |
+## 2. Status aplikasi tingkat atas
+
+`BOOTING | UNAUTHENTICATED | PIN_CHANGE_REQUIRED | ONBOARDING_REQUIRED | READY | SESSION_EXPIRED | SERVICE_UNAVAILABLE`
+
+- Bootstrap gagal **fail-closed**: aplikasi menampilkan layar pemulihan eksplisit (`Sesi berakhir` / `Layanan belum tersedia`) dengan aksi retry — tidak pernah tampil sebagai "tidak ada assignment" atau "tidak ada onboarding", dan tidak pernah fallback ke data kosong yang terlihat valid.
+
+## 3. Alur utama (server-first)
+
+| Operasi | Trigger | Pending | Sukses | Pemulihan |
 | --- | --- | --- | --- | --- |
-| Login user | Select user + submit PIN | Assignment selection | Workspace opens after shift/area confirmation | Inline form stays usable |
-| Assignment | Shift + area confirmation | Confirmation dialog | Assignment locked for the date | Supervisor reset required in production |
-| Confirm opening | Complete all physical counts | Missing values/reasons | Opening snapshot locked | Fix values/reasons |
-| Edit closing | Numeric input | Immediate local state | LocalStorage updated by React effect | Refresh restores draft |
-| Add movement | Save in modal after opening | Immediate local state | Append-only ledger row and quantity update | Re-open modal, retry |
-| Submit report | Review & submit on night/full | Gate validation | `Terkirim ke supervisor` + timestamp | Fix missing values/reasons |
-| Copy report | Copy button | Browser clipboard | Live status confirms | Text remains visible in preview |
+| Login | Pilih user + PIN 6 digit, auto-submit ke-6 digit | Request tunggal, guard dobel-submit | Bootstrap penuh dari server | Error inline tetap, form terpakai; 401 generik mengosongkan PIN |
+| Lockout PIN | 3 gagal → 60 detik (server) | Countdown dari server `Retry-After`/`blocked_until` | Reset counter hanya oleh server saat sukses | Refresh tidak menghapus lock; tidak ada counter klien |
+| Assignment | Konfirmasi shift/area | `rpc_claim_assignment` | Terkunci untuk tanggal; satu assignment per user/tanggal | Konflik versi → muat ulang state server |
+| Attendance | Check-in/check-out dengan GPS + device cookie | Challenge sekali pakai | Event tersimpan server-side, evidence geofence turunan | Tanpa device proof → wajib re-login |
+| Opening | Attestation jumlah fisik per item | `rpc_confirm_opening` | Snapshot opening terkunci, sumber patokan tercatat | Error inline per baris; retry aman (idempotency) |
+| Movement | Modal setelah opening dikonfirmasi | RPC ledger append-only | Baris ledger + stok berubah | Koreksi hanya lewat movement koreksi, bukan edit/hapus |
+| Closing | Hitungan akhir shift MALAM/FULL | `rpc_confirm_closing` | Closing terkunci + laporan | Sama seperti opening; SIANG tidak closing |
+| Laporan | Submit di review gate | Validasi server | `Terkirim ke supervisor` + timestamp server | Draft server-backed; revisi append-only |
 
-## Canonical UI Map
+## 4. Attestation jumlah fisik (opening & closing)
 
-| Capability | Canonical owner | Source of truth | Allowed variants | Verification |
-| --- | --- | --- | --- | --- |
-| Form | Native HTML + React controlled state | `src/App.tsx` login, movement, closing | Login form; number input; variance fields | Keyboard submit, labels, typecheck, browser flow |
-| Select/Listbox | Native HTML `select` | `MovementModal`, `StockRow` | Item, category, variance reason | Keyboard select and responsive browser flow |
-| Search/filter | App-owned local derived view | `Closing` | Search input; four filter chips | Clear action, `aria-pressed`, empty state |
-| Toast | App-owned live region | `showToast`, `.live-region` | Save, offline, validation, copy, submit | `role=status`, `aria-live=polite` |
-| Dialog | App-owned movement modal | `MovementModal` | Movement entry only | Initial focus, Escape, focus loop, backdrop close |
-| Scrollbar | Global CSS baseline | `src/index.css` | Page and horizontal tabs | Visible themed scrollbar |
-| Table/list | App-owned responsive cards | Opening, movement, closing views | Read-only opening rows; ledger rows; stock cards | No horizontal scroll at 320–430px |
+Jumlah sistem yang ditampilkan **tidak pernah** otomatis menjadi hitungan fisik. Setiap item punya tiga aksi eksplisit:
 
-## Data integrity contract
+- `Sesuai` — fisik sama dengan patokan server.
+- `0` — fisik nol, tanpa perlu mengetik ulang.
+- `Ubah jumlah` — input angka custom.
 
-- Bar and Kitchen are separate state branches.
-- Active items must all have a closing value before submit can succeed.
-- Status: `closing <= 0` is Habis; `closing <= low` is Hampir habis; above low is Aman.
-- Variance uses `closing - (opening + incoming - outgoing)`.
-- Assignment is one shift and area per user/date in the local demo. The selected assignment is restored after refresh and login; production must enforce this lock server-side.
-- Opening counts, variance reasons, and notes persist as the opening record. Opening must be confirmed before any movement can be recorded, and the confirmed opening is the shift's immutable snapshot.
-- Closing is available only to `MALAM` and `FULL`; `SIANG` records opening and movements while final closing is done by the night shift.
-- Closing reports are append-only in the demo. Submit records `SENT` with a timestamp and revision; supervisor review is asynchronous and must not block the next shift.
-- Movement rows are append-only in the demo UI. There is no edit/delete affordance. Corrections must be represented as a new movement category in a production backend.
-- Item, movement, assignment, opening, report status, and timestamps persist to `localStorage` under `hopin-stock-demo-v04`; this is recovery convenience, not a security boundary.
-- Every physical count and variance edit gets a client-side `updatedAt`; successful submit stores a separate client-side timestamp for its area.
+Attestation massal: `Saya Sudah Menghitung: Tandai Semua Sesuai` dengan dialog konfirmasi sebelum dieksekusi. Kosong tetap berstatus `UNCOUNTED` sampai ada aksi eksplisit.
 
-## States and feedback
+Patokan server selalu ditampilkan sumbernya (`Closing sebelumnya`, `Handover Siang hari ini`, fallback dengan peringatan, atau `belum tersedia; perlu inisialisasi Manager`). Missing reference **tidak pernah** ditampilkan sebagai `0`.
 
-- Draft shows `Autosave aktif` and a local timestamp.
-- Offline simulation follows browser online/offline events and says `tersimpan di perangkat · menunggu sinkronisasi`.
-- Submit is disabled after local `SUBMITTED` state.
-- Missing closing values route to Closing and activate the `Belum diisi` filter.
-- Assignment confirmation is an in-app dialog. No native browser alert/confirm/prompt is used.
+## 5. Variance: kategori wajib, catatan opsional
 
-## Accessibility and responsive rules
+- Selisih (`fisik ≠ patokan`) wajib punya kategori alasan: `INITIAL_STOCK_COUNT` (khusus sumber inisialisasi), `COUNTING_ERROR`, `SPILLAGE_UNRECORDED`, `WASTE_UNRECORDED`, `OVER_PORTIONING`, `OTHER`.
+- Catatan tambahan bersifat opsional (`Catatan tambahan (opsional)`) untuk semua kategori, termasuk `OTHER`.
+- Sistem tidak pernah mengisi catatan otomatis atau membuat catatan atas nama operator.
+- Tanpa selisih: kategori dan catatan tidak wajib. Database tetap menolak selisih tanpa kategori.
 
-All actions are native buttons, all fields have labels, status uses text + shape, input uses numeric keyboard hints, focus-visible styling is global, and reduced motion is respected. The 320–430px layout is single-column with a sticky submit bar; tablet/desktop uses the two-column context rail.
+## 6. Error dan feedback
 
-## Prototype assumptions / blockers
+- Error inline persisten sampai kondisinya teratasi; konflik tidak boleh hanya lewat toast.
+- Semua dialog (`role="dialog"`, `aria-modal`) untuk: movement, inisialisasi stok, bulk attest, resolusi konflik, koreksi movement — tanpa native `alert`/`confirm`/`prompt`.
+- Status teks + bentuk (bukan warna saja), `aria-live` untuk feedback singkat.
+- Submit terkunci setelah state `SUBMITTED` server; laporan append-only.
 
-- Seed item list is mock data from the supplied specification evidence.
-- Opening is an editable, required count for every item until confirmed. Real server-side assignment locking and supervisor review are not implemented.
-- Login uses Supabase Auth with a selected username and 6-digit PIN, plus a local browser-tab lease and 30-minute inactivity logout. True single-device enforcement still requires a backend.
-- Network sync is simulated by browser connectivity signals; no server replay or idempotency exists.
-- Real session lease, audit trail, PDF, and supervisor approval/reopen require backend implementation.
+## 7. Offline queue (IndexedDB)
+
+Antrian mutasi (`hopin-ops-idb-v2`) hanya untuk draft eksplisit, dipartisi per **profile / outlet / aggregate (cycle)**:
+
+- State item: `PENDING | SENDING | CONFLICT | SYNCED | FAILED`.
+- Setiap item membawa `idempotencyKey` dan `baseVersion`; pengiriman meng-hormati lease 5 menit dan backoff `nextAttemptAt`.
+- **Resolusi konflik**: versi aggregate tidak cocok → item masuk `CONFLICT`, dialog eksplisit memilih muat ulang server state atau buang draft; tidak ada auto-heal atau overwrite diam-diam.
+- Ringkasan antrian (pending/sending/conflict/failed) terlihat di workspace; item `SYNCED` dibersihkan.
+
+## 8. Portal investor (read-only)
+
+- Investor hanya melihat laporan dan detail laporan.
+- Tidak ada akses ke nama staf, attendance, GPS, roster draft, payroll, PIN, atau status session/device — di UI maupun di API (server menolak, bukan hanya menyembunyikan menu).
+- Label eksplisit `PORTAL INVESTOR (READ-ONLY)`.
+
+## 9. Aksesibilitas & responsif
+
+Semua aksi tombol native, semua field berlabel, input numerik dengan `inputmode` yang tepat, `focus-visible` global, reduced motion dihormati. Layout 320–430px satu kolom dengan sticky submit bar; tidak ada overflow horizontal; tabel besar memakai kartu responsif.
+
+## 10. Batasan yang masih terbuka
+
+- Fase 6–7 (AppShell navigasi penuh operator/manager + onboarding interaktif 8 langkah) belum selesai; navigasi saat ini masih sederhana.
+- Sebagian inventory API fase 5 masih bertambah; kontrak di atas hanya menjamin action yang sudah ada.
+- Klaim production-ready menunggu Final Release Gate di `REMEDIATION_IMPLEMENTATION_PLAN_PART_2.md`.

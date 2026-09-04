@@ -35,7 +35,7 @@ Dokumen ini adalah sumber keputusan implementasi. AI eksekutor tidak boleh meneb
 ### 1.2 Authentication
 
 - Custom username + PIN dan session server sudah berjalan di `api/auth.ts`.
-- PIN saat ini enam digit, PBKDF2-SHA256 310.000 iterasi, lock 15 menit setelah lima kegagalan.
+- PIN saat ini enam digit, PBKDF2-SHA256 310.000 iterasi; lockout kini 3 kegagalan/60 detik server-authoritative pada scope credential/IP hash/device hash (keputusan remediation part 2, menggantikan 5 kegagalan/15 menit).
 - Session saat ini maksimum 12 jam dan idle timeout 30 menit.
 - Session disimpan sebagai hash token di `app_sessions`; cookie HttpOnly sudah digunakan.
 - Login options saat ini masih mengirim `job_title`; target hanya `username` internal dan `display_name` untuk tampilan.
@@ -124,6 +124,7 @@ Dokumen ini adalah sumber keputusan implementasi. AI eksekutor tidak boleh meneb
 - Multi-device diizinkan. Setiap browser mendapat token session dan random device ID berbeda.
 - Logout hanya mencabut session aktif; logout tidak menyelesaikan assignment atau attendance.
 - Login ulang harus memulihkan assignment/attendance aktif dari server.
+- Lockout gagal-login bersifat server-authoritative: 3 kegagalan mengunci akses 60 detik, dihitung atomik pada scope credential, IP hash, dan device hash; refresh browser tidak menghapus lock. Frontend hanya menampilkan countdown dari `retry_after_seconds`/`Retry-After` server dan tidak menyimpan counter keamanan independen. Keputusan ini menggantikan aturan lama 5 kegagalan/15 menit.
 
 ### 3.3 Jadwal, Shift, dan Assignment
 
@@ -183,14 +184,15 @@ Urutan check-in wajib:
 - Satu work cycle mewakili satu outlet, work date, shift, dan area.
 - Ledger Bar dan Kitchen independen. User area Bar tidak boleh menulis data Kitchen dan sebaliknya.
 - Primary semua shift mengonfirmasi physical opening; helper dapat mengisi draft.
-- Referensi opening SIANG/FULL berasal dari closing approved terbaru area tersebut.
-- Referensi opening MALAM berasal dari handover snapshot SIANG pada work date yang sama; jika tidak ada, gunakan closing approved terbaru dan beri warning.
+- Referensi opening SIANG/FULL berasal dari closing approved terbaru area tersebut; jika tidak ada, dibutuhkan inisialisasi zero-reference yang disetujui manager.
+- Referensi opening MALAM berasal dari handover snapshot SIANG pada work date yang sama; jika tidak ada, gunakan closing approved terbaru dengan warning (`HANDOVER_MISSING_USING_PRIOR_CLOSING`); jika keduanya tidak ada, dibutuhkan inisialisasi manager.
+- First-run opening memakai inisialisasi zero-reference yang disetujui manager (OWNER/SUPERVISOR) melalui event `INITIALIZATION` immutable; baseline per item wajib nol dan dibuat server. Setelah inisialisasi, Primary/Manager tetap mengonfirmasi physical count melalui confirm opening; variance nonzero (termasuk count awal bukan nol) memakai reason category `INITIAL_STOCK_COUNT`.
 - System balance per item: `opening_confirmed + incoming - outgoing` sampai movement cutoff.
 - Movement append-only. Kesalahan dibalik/dikoreksi oleh movement baru yang menunjuk `correction_of_id`, bukan update/delete.
 - Semua movement mempunyai UUID idempotency key dan snapshot unit.
 - SIANG diselesaikan tanpa physical closing: server mengunci movement cutoff dan membuat handover snapshot system balance.
 - MALAM/FULL melakukan physical closing.
-- Closing variance adalah `physical_closing - system_balance`; variance nonzero mewajibkan reason dan note.
+- Closing variance adalah `physical_closing - system_balance`; variance nonzero mewajibkan reason category; notes tambahan bersifat opsional untuk semua category termasuk `OTHER` dan tidak pernah dibuat otomatis oleh server. Variance dengan category dan tanpa notes diterima; tanpa variance, category dan notes tidak wajib. Database tetap menolak variance tanpa category.
 - Setelah handover/closing submitted, movement sebelum cutoff tidak dapat ditambah atau diubah. Late movement menjadi correction/revision melalui manager.
 
 ### 3.7 Daily Report dan Finance
@@ -468,7 +470,7 @@ Submitted report revision, final bonus allocation, finalized payroll entry, dan 
 | Temp PIN | Login benar | `PIN_CHANGE_REQUIRED` | User |
 | `PIN_CHANGE_REQUIRED` | Change PIN valid | Authenticated | User |
 | Authenticated | Logout/expiry/reset/deactivate | Revoked | User/system/manager |
-| Active credential | 5 kegagalan atomic | Locked 15 menit | System |
+| Active credential | 3 kegagalan atomic (credential/IP/device) | Locked 60 detik | System |
 
 Semua action selain `me/logout/changePin` ditolak dengan `PIN_CHANGE_REQUIRED` selama forced change aktif.
 
@@ -512,20 +514,24 @@ Semua action selain `me/logout/changePin` ditolak dengan `PIN_CHANGE_REQUIRED` s
 
 Semua response memakai envelope pada 4.3, session cookie, same-origin, request ID, schema validation, dan `Cache-Control: no-store`. Semua POST mutasi menerima `idempotency_key`; update aggregate juga menerima `expected_version`.
 
+Status implementasi (remediation part 2): aksi bertanda **[implemented]** sudah ada di API production/branch remediation; aksi tanpa tanda masih target. Login session/device creation kini atomic melalui RPC.
+
 ### 7.1 `/api/auth?action=...`
 
 | Action | Method | Actor | Perilaku wajib |
 |---|---|---|---|
 | `options` | GET | Publik | Nama aktif saja; rate limit; tanpa job title/role |
 | `me` | GET | Session/anon | Profile publik, role, forced PIN state, session expiry |
-| `login` | POST | Publik | Atomic credential/IP/device limit; generic error; issue secure session/device cookie |
+| `login` | POST | Publik | Atomic credential/IP/device limit; generic error; issue secure session/device cookie via atomic login session RPC **[implemented]** |
 | `logout` | POST | Session | Revoke session aktif; tidak mengubah assignment/attendance |
 | `changePin` | POST | Session | Old/new/confirm, denylist/history, revoke session lain, clear force flag |
 | `resetPin` | POST | Owner/supervisor | Owner semua; supervisor OPERATOR saja; temp PIN dikembalikan sekali; revoke semua session |
 | `sessions.list` | GET | Self/owner | Device label dan last seen tanpa token/IP mentah |
 | `sessions.revoke` | POST | Self/owner | Revoke satu/all session sesuai scope |
-| `users.list` | GET | Owner; supervisor terbatas | Supervisor hanya staff operational tanpa credential data |
-| `users.create/update/deactivate` | POST | Owner | Validate unique username/role/outlet; deactivate mencabut session |
+| `users.list` | GET | Owner; supervisor terbatas | Supervisor hanya staff operational tanpa credential data **[implemented]** |
+| `users.create` | POST | Owner | Validate unique username/role/outlet **[implemented]** |
+| `users.update` | POST | Owner | Validate unique username/role/outlet **[implemented]** |
+| `users.deactivate` | POST | Owner | Deactivate mencabut session **[implemented]** |
 
 Cookie target production: `__Host-hopin_session`, `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`; host-only tanpa `Domain`. Saat cutover, revoke cookie/session format lama secara eksplisit.
 
@@ -536,24 +542,26 @@ Cookie target production: `__Host-hopin_session`, `Path=/`, `Secure`, `HttpOnly`
 | `bootstrap` | GET | Semua session | Profile, outlet, settings aman, role capabilities, active roster/assignment/attendance, onboarding state |
 | `dashboard.get` | GET | Owner/supervisor | Status cycle, queue blockers, missing checkout, GPS review, report/payroll progress |
 | `investor.reports` | GET | Investor/owner | Hanya submitted/approved projection; tidak join HR |
-| `settings.get` | GET | Owner/supervisor | Supervisor read operational; koordinat hanya owner atau masked untuk supervisor |
-| `settings.update` | POST | Owner | Validate ranges, version conflict, audit before/after tanpa raw secret |
+| `settings.get` | GET | Owner/supervisor | Supervisor read operational; koordinat hanya owner atau masked untuk supervisor **[implemented]** |
+| `settings.update` | POST | Owner | Validate ranges, version conflict, audit before/after tanpa raw secret **[implemented]** |
 | `items.list` | GET | Session | Active items sesuai role/area; investor hanya stock snapshot report |
-| `items.create/update/archive` | POST | Owner | Tidak boleh hard-delete item yang pernah dipakai |
+| `items.create` | POST | Owner | Tidak boleh hard-delete item yang pernah dipakai **[implemented]** |
+| `items.update` | POST | Owner | Tidak boleh hard-delete item yang pernah dipakai **[implemented]** |
+| `items.archive` | POST | Owner | Tidak boleh hard-delete item yang pernah dipakai **[implemented]** |
 
 ### 7.3 Roster, Swap, dan Assignment
 
 | Action | Method | Actor | Perilaku/kegagalan utama |
 |---|---|---|---|
-| `roster.list` | GET | Owner/supervisor/self | Self hanya roster sendiri; manager dapat outlet/month |
-| `roster.save` | POST | Owner/supervisor | Upsert transaction, Tuesday override reason, treatment BASE/EXTRA/MAKEUP |
-| `swap.request` | POST | Operator/supervisor | Hanya entry sendiri yang aktif; target berbeda; expiry wajib |
-| `swap.respond` | POST | Target | Accept/decline atomic; 409 jika roster target bentrok |
-| `swap.cancel` | POST | Requester | Hanya PENDING |
-| `assignment.claim` | POST | Worker | Pilih date/shift/area/duty; compare roster; primary race row lock + partial unique |
-| `assignment.active` | GET | Worker/manager | Restore server state setelah login/refresh |
-| `assignment.reset` | POST | Owner/supervisor | Reason wajib; supervisor hanya operational staff; successor/audit |
-| `assignment.complete` | POST | Assigned worker/manager | Menutup assignment pribadi setelah checkout; primary cycle completion tetap hanya melalui handover/closing |
+| `roster.list` | GET | Owner/supervisor/self | Self hanya roster sendiri; manager dapat outlet/month **[implemented]** |
+| `roster.save` | POST | Owner/supervisor | Upsert transaction, Tuesday override reason, treatment BASE/EXTRA/MAKEUP **[implemented]** |
+| `swap.request` | POST | Operator/supervisor | Hanya entry sendiri yang aktif; target berbeda; expiry wajib **[implemented]** |
+| `swap.respond` | POST | Target | Accept/decline atomic; 409 jika roster target berubah **[implemented]** |
+| `swap.cancel` | POST | Requester | Hanya PENDING **[implemented]** |
+| `assignment.claim` | POST | Worker | Pilih date/shift/area/duty; compare roster; primary race row lock + partial unique **[implemented]** |
+| `assignment.active` | GET | Worker/manager | Restore server state setelah login/refresh **[implemented]** |
+| `assignment.reset` | POST | Owner/supervisor | Reason wajib; supervisor hanya operational staff; successor/audit **[implemented]** |
+| `assignment.complete` | POST | Assigned worker/manager | Menutup assignment pribadi setelah checkout; primary cycle completion tetap hanya melalui handover/closing **[implemented]** |
 
 `assignment.claim` yang kalah race mengembalikan 409 `PRIMARY_TAKEN` dengan `can_join_as_helper: true`, tanpa membocorkan data yang tidak diperlukan.
 
@@ -561,30 +569,33 @@ Cookie target production: `__Host-hopin_session`, `Path=/`, `Secure`, `HttpOnly`
 
 | Action | Method | Actor | Perilaku/kegagalan utama |
 |---|---|---|---|
-| `attendance.challenge` | POST | Worker | Issue nonce untuk CHECK_IN/OUT terikat session/device, TTL 2 menit |
-| `attendance.checkIn` | POST | Worker | Validate challenge/samples/assignment, compute GPS risk, create event atomic |
-| `attendance.checkOut` | POST | Worker | Derive duration/overtime; normal mode cek queue, emergency mode wajib reason dan menghasilkan `PENDING_TASKS/REVIEW_REQUIRED` |
-| `attendance.mine` | GET | Self | Recap sendiri tanpa raw coordinate setelah retention |
-| `attendance.exceptions` | GET | Owner/supervisor | Filter unresolved late/GPS/missing/deviation |
-| `attendance.correction.request` | POST | Self/manager | Append proposed correction dan reason |
-| `attendance.correction.review` | POST | Owner/supervisor | No self-approval; approve/reject immutable |
-| `leave.request/cancel` | POST | Self/manager | Manager dapat input atas nama staff dengan audit |
-| `leave.review` | POST | Owner/supervisor | No self-approval; quota menghasilkan warning, bukan silent reject |
-| `overtime.list` | GET | Owner/supervisor/self | Self hanya milik sendiri |
-| `overtime.review` | POST | Owner/supervisor | No self-approval; credited hours server-calculated |
+| `attendance.challenge` | POST | Worker | Issue nonce untuk CHECK_IN/OUT terikat session/device, TTL 2 menit **[implemented]** |
+| `attendance.checkIn` | POST | Worker | Validate challenge/samples/assignment, compute GPS risk, create event atomic **[implemented]** |
+| `attendance.checkOut` | POST | Worker | Derive duration/overtime; normal mode cek queue, emergency mode wajib reason dan menghasilkan `PENDING_TASKS/REVIEW_REQUIRED` **[implemented]** |
+| `attendance.mine` | GET | Self | Recap sendiri tanpa raw coordinate setelah retention **[implemented]** |
+| `attendance.exceptions` | GET | Owner/supervisor | Filter unresolved late/GPS/missing/deviation **[implemented]** |
+| `attendance.correction.request` | POST | Self/manager | Append proposed correction dan reason **[implemented]** |
+| `attendance.correction.review` | POST | Owner/supervisor | No self-approval; approve/reject immutable **[implemented]** |
+| `leave.request` | POST | Self/manager | Manager dapat input atas nama staff dengan audit **[implemented]** |
+| `leave.cancel` | POST | Self/manager | Manager dapat input atas nama staff dengan audit **[implemented]** |
+| `leave.review` | POST | Owner/supervisor | No self-approval; quota menghasilkan warning, bukan silent reject **[implemented]** |
+| `overtime.list` | GET | Owner/supervisor/self | Self hanya milik sendiri **[implemented]** |
+| `overtime.review` | POST | Owner/supervisor | No self-approval; credited hours server-calculated **[implemented]** |
 
 ### 7.5 Stock Operations
 
 | Action | Method | Actor | Perilaku/kegagalan utama |
 |---|---|---|---|
-| `cycle.get` | GET | Assigned/manager | Snapshot cycle, opening, movements, balances, permissions, version |
-| `opening.saveDraft` | POST | Primary/helper/manager | Area-bound; version/idempotency; count nonnegative |
-| `opening.confirm` | POST | Primary/manager | Semua item lengkap; variance reason+note; immutable confirm |
-| `movement.create` | POST | Primary/helper/manager | Opening confirmed, sebelum cutoff, area item match, UUID idempotency |
-| `movement.correct` | POST | Creator/manager | Append reversal/correction, reference original, reason wajib |
-| `handover.complete` | POST | Primary SIANG/manager | Queue sync, lock cutoff, generate system snapshot transactionally |
-| `closing.saveDraft` | POST | Primary/helper/manager | MALAM/FULL; helper draft only |
-| `closing.confirm` | POST | Primary/manager | Count lengkap, variance reason+note, lock cutoff/snapshot |
+| `cycle.get` | GET | Assigned/manager | Snapshot cycle, opening, movements, balances, permissions, version **[implemented]** |
+| `opening.saveDraft` | POST | Primary/helper/manager | Area-bound; version/idempotency; count nonnegative **[implemented]** |
+| `opening.reference` | GET | Primary/helper/manager | Server memilih referensi: handover/closing/INITIALIZATION; state `AVAILABLE|INITIALIZATION_REQUIRED`; warning fallback; menggantikan display `0` ketika referensi hilang **[implemented]** |
+| `opening.initialize` | POST | Owner/supervisor | Inisialisasi zero-reference immutable untuk semua item aktif area; reason wajib; baseline wajib nol buatan server **[implemented]** |
+| `opening.confirm` | POST | Primary/manager | Semua item lengkap; variance reason category (notes opsional); referensi dipilih server; immutable confirm **[implemented]** |
+| `movement.create` | POST | Primary/helper/manager | Opening confirmed, sebelum cutoff, area item match, UUID idempotency **[implemented]** |
+| `movement.correct` | POST | Creator/manager | Append reversal/correction, reference original, reason wajib **[implemented]** |
+| `handover.complete` | POST | Primary SIANG/manager | Queue sync, lock cutoff, generate system snapshot transactionally **[implemented]** |
+| `closing.saveDraft` | POST | Primary/helper/manager | MALAM/FULL; helper draft only **[implemented]** |
+| `closing.confirm` | POST | Primary/manager | Count lengkap, variance reason category (notes opsional), lock cutoff/snapshot **[implemented]** |
 
 Duplicate idempotency dengan payload identik mengembalikan hasil asli; key sama dengan payload berbeda mengembalikan 409 `IDEMPOTENCY_CONFLICT`.
 
@@ -592,20 +603,25 @@ Duplicate idempotency dengan payload identik mengembalikan hasil asli; key sama 
 
 | Action | Method | Actor | Perilaku/kegagalan utama |
 |---|---|---|---|
-| `report.get/list` | GET | Scoped role | Projection berdasarkan role/status; investor tidak pernah draft |
-| `report.finance.save` | POST | Bar primary/manager | Simpan draft channel net; server totals; optimistic version |
-| `report.submit` | POST | Bar primary MALAM/FULL/manager | Kedua area ready, queue empty, snapshot+checksum+revision atomic |
-| `report.review` | POST | Owner/supervisor | Approve atau clarification; no self-approval untuk fallback submit milik sendiri |
-| `report.share` | GET | Scoped role | Bangun text/link; link tetap meminta login |
-| `bonus.preview` | GET | Owner/supervisor | Server tier + eligible participant; blocker attendance terlihat |
-| `bonus.finalize` | POST | Owner/supervisor | Hanya approved report dan reviewed attendance; immutable allocation |
-| `payroll.preview` | POST | Owner/supervisor | Build/rebuild DRAFT dari facts dan policy version |
+| `report.list` | GET | Scoped role | Projection berdasarkan role/status; investor tidak pernah draft **[implemented]** |
+| `report.finance.save` | POST | Bar primary/manager | Simpan draft channel net; server totals; optimistic version **[implemented]** |
+| `report.submit` | POST | Bar primary MALAM/FULL/manager | Kedua area ready, queue empty, snapshot+checksum+revision atomic **[implemented]** |
+| `report.review` | POST | Owner/supervisor | Approve atau clarification; no self-approval untuk fallback submit milik sendiri **[implemented]** |
+| `report.get` | GET | Scoped role | Projection berdasarkan role/status; investor tidak pernah draft **[implemented]** |
+| `report.share` | GET | Scoped role | Bangun text/link; link tetap meminta login **[implemented]** |
+| `bonus.preview` | GET | Owner/supervisor | Server tier + eligible participant; blocker attendance terlihat **[implemented]** |
+| `bonus.finalize` | POST | Owner/supervisor | Hanya approved report dan reviewed attendance; immutable allocation **[implemented]** |
+| `payroll.get` | GET | Owner/supervisor/self | Detail run/entry sesuai scope; staff hanya recap sendiri **[implemented]** |
+| `payroll.preview` | POST | Owner/supervisor | Build/rebuild DRAFT dari facts dan policy version **[implemented]** |
 | `payroll.entry.adjust` | POST | Owner/supervisor | Source/reason wajib; no self-approval |
-| `payroll.review` | POST | Supervisor/owner | DRAFT ke REVIEWED jika semua blocker selesai |
-| `payroll.finalize` | POST | Owner | REVIEWED ke FINALIZED, checksum immutable |
-| `payroll.markPaid/void` | POST | Owner | Reason/reference pembayaran; void membuat replacement path |
-| `payroll.export.xlsx` | POST | Owner/supervisor | Generate snapshot file, checksum, audit; finalized atau jelas berlabel DRAFT |
-| `onboarding.get/complete/replay` | GET/POST | Operator | Versioned; tutorial tidak menyentuh domain production |
+| `payroll.review` | POST | Supervisor/owner | DRAFT ke REVIEWED jika semua blocker selesai **[implemented]** |
+| `payroll.finalize` | POST | Owner | REVIEWED ke FINALIZED, checksum immutable **[implemented]** |
+| `payroll.markPaid` | POST | Owner | Reason/reference pembayaran **[implemented]** |
+| `payroll.void` | POST | Owner | Reason wajib; void membuat replacement path **[implemented]** |
+| `payroll.export.xlsx` | POST | Owner/supervisor | Generate snapshot file, checksum, audit; finalized atau jelas berlabel DRAFT **[implemented]** |
+| `onboarding.get` | GET | Operator | Versioned; tutorial tidak menyentuh domain production **[implemented]** |
+| `onboarding.complete` | POST | Operator | Versioned; tutorial tidak menyentuh domain production **[implemented]** |
+| `onboarding.replay` | POST | Operator | Versioned; tutorial tidak menyentuh domain production **[implemented]** |
 
 ## 8. Domain Algorithms
 
@@ -649,8 +665,17 @@ Do not inspect or claim detection of browser developer tools. Do not trust clien
 
 ```text
 reference(opening MALAM) = SIANG handover snapshot same date/area
+  if absent = latest prior closing + warning HANDOVER_MISSING_USING_PRIOR_CLOSING
 reference(opening SIANG or FULL) = latest approved closing before work_date/area
 if source absent = zero only with manager-approved initialization event
+  (INITIALIZATION source; every baseline_qty is exactly 0, server-generated)
+
+variance policy:
+  variance != 0 -> reason_code required, notes optional (incl. OTHER)
+  server never auto-fills notes; operator notes stored as extra evidence
+  variance == 0 -> reason_code and notes not required
+  db rejects variance with null reason_code
+  reason category INITIAL_STOCK_COUNT is valid only when source = INITIALIZATION
 
 incoming = sum(valid IN movements through cutoff)
 outgoing = sum(valid OUT movements through cutoff)
@@ -830,6 +855,8 @@ Gunakan library server-side yang terawat seperti `exceljs`. File dibuat dari pay
 
 Simpan file pada private Supabase Storage bucket `payroll-exports`. Download hanya melalui authorization API dan signed URL maksimum lima menit; bucket tidak boleh public.
 
+Catatan ops (remediation part 2): bucket private `payroll-exports` dibuat melalui migration `0013`; public object path tidak pernah diekspos.
+
 ### 11.1 Sheet `Summary`
 
 Kolom: Employee ID internal, Nama, Periode, Policy Version, Compensation Effective Date, Monthly Base, Roster BASE Days, Fulfilled Days, Sick Paid Days, Other Leave Paid Days, Alpha/Excess Days, EXTRA Days, MAKEUP Days, Approved Overtime Hours, Approved Shortage Hours, Overtime Amount, Shortage Amount, Absence Deduction, Bonus Amount, Manual Adjustment, Proposed Gross, Final Gross, Status, Reviewer, Finalized At.
@@ -900,10 +927,10 @@ Ubah scripts sehingga `pnpm test` menjalankan test nyata, bukan alias lint. Targ
 
 ### 13.2 Wajib Dites
 
-- Auth: options tanpa title/role, login generic error, attempts 4/5, concurrent failures, locked expiry, forced PIN, weak/history PIN, change/revoke, reset scope, deactivated user, multi-device.
+- Auth: options tanpa title/role, login generic error, attempts 2/3, concurrent failures, locked expiry, forced PIN, weak/history PIN, change/revoke, reset scope, deactivated user, multi-device.
 - RBAC: setiap forbidden action per role; cross-user/cross-area/cross-outlet denial; investor draft/HR denial; self-approval denial.
 - Assignment: primary simultaneous race hanya satu menang, loser 409 helper offer, duplicate retry, schedule deviation, manager reset history.
-- Stock: reference prior closing/handover, missing reference initialization, helper confirm denial, area mismatch, duplicate movement idempotency, conflicting payload, correction ledger, cutoff rejection, variance requirements.
+- Stock: reference prior closing/handover, missing reference initialization, MALAM fallback warning, helper confirm denial, area mismatch, duplicate movement idempotency, conflicting payload, correction ledger, cutoff rejection, variance requires category, variance without notes accepted, no-variance with null category accepted, no auto-generated notes.
 - Offline: ordered replay, retryable/non-retryable error, logout isolation, stale version conflict, queue blocks finalization, no localStorage fallback.
 - GPS: verified, outside, 50m boundary, poor accuracy, denied, timeout, expired/used challenge, impossible travel, duplicate/concurrent device, required note, no raw coordinate in logs.
 - Attendance: grace at 11:15/17:15, late one second later, duplicate swipe, checkout before checkin, missing checkout, append-only correction.
@@ -1180,6 +1207,8 @@ Pre-cutover reconciliation record wajib memuat migration versions, row counts, a
 
 - `/api/health`: liveness process tanpa query data.
 - `/api/readiness`: authenticated/secret-protected dependency check sederhana ke database.
+- Catatan ops (remediation part 2): `/api/readiness` diproteksi bearer secret `READINESS_SECRET` atau `CRON_SECRET`; endpoint tanpa secret tidak mengekspos status dependency.
+- Retensi: cleanup data runtime (session/challenge/rate-limit/GPS) dijalankan RPC `rpc_cleanup_runtime_data` terjadwal dan hasilnya diaudit; endpoint cron diproteksi bearer `CRON_SECRET`.
 - Structured log: timestamp, request_id, action, status code, duration, environment, error code, actor ID pseudonymous, outlet ID.
 - Jangan log body penuh, PIN, cookie, token, hash credential, raw IP, user-agent penuh, note HR, atau coordinate.
 - Metrics minimum: auth failures/lockouts, API 4xx/5xx, latency p95, primary conflicts, version conflicts, unsynced queue count, GPS status/risk, missing checkout, unresolved exceptions, report blockers, payroll blockers, cron cleanup result.
