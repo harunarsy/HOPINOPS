@@ -143,7 +143,7 @@ type AuthLimitResult = {
   retry_after_seconds: number | null;
 };
 
-async function authScopeKeys(username: string, clientIp: string, deviceToken: string) {
+async function authContextHashes(username: string, clientIp: string, deviceToken: string, userAgent: string) {
   const pepper = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!pepper) throw new Error('Server Supabase environment is not configured.');
 
@@ -155,22 +155,28 @@ async function authScopeKeys(username: string, clientIp: string, deviceToken: st
     false,
     ['sign'],
   );
-  const values: Array<[AuthScope, string]> = [
+  const scopeValues: Array<[AuthScope, string]> = [
     ['credential', username || 'invalid-credential'],
     ['ip', clientIp || 'unknown'],
     ['device', deviceToken],
   ];
+  const values: Array<[string, string]> = [...scopeValues, ['user-agent', userAgent || 'unknown']];
 
-  return Promise.all(values.map(async ([scope, value]) => {
+  const hashes = await Promise.all(values.map(async ([scope, value]) => {
     const digest = await crypto.subtle.sign('HMAC', key, encoder.encode(`${scope}\0${value}`));
-    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return `${scope}:${hash}`;
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
   }));
+
+  return {
+    scopeKeys: scopeValues.map(([scope], index) => `${scope}:${hashes[index]}`),
+    ipHash: clientIp && clientIp !== 'unknown' ? hashes[1] : null,
+    userAgentHash: userAgent ? hashes[3] : null,
+  };
 }
 
 async function runAuthLimitRpc(
   db: SupabaseClient,
-  rpc: 'rpc_check_auth_limits' | 'rpc_record_auth_failure' | 'rpc_reset_auth_failures',
+  rpc: 'rpc_check_auth_limits' | 'rpc_record_auth_failure',
   profileId: string | null,
   scopeKeys: string[],
 ): Promise<AuthLimitResult> {
@@ -221,85 +227,80 @@ export async function loginWithPin(
   pinInput: unknown,
   deviceTokenInput?: string,
   clientIp = 'unknown',
+  userAgent = '',
 ) {
   const username = normalizeUsername(usernameInput);
   const db = getAdminClient();
-  const deviceToken = deviceTokenInput && /^[a-f0-9]{64}$/.test(deviceTokenInput)
+  const antiAbuseDeviceToken = deviceTokenInput && /^[a-f0-9]{64}$/.test(deviceTokenInput)
     ? deviceTokenInput
     : randomHex(32);
-  const [profile, scopeKeys] = await Promise.all([
+  const [profile, authContext] = await Promise.all([
     username ? getActiveProfile(username) : Promise.resolve(null),
-    authScopeKeys(username, clientIp, deviceToken),
+    authContextHashes(username, clientIp, antiAbuseDeviceToken, userAgent),
   ]);
   const profileId = profile?.id ?? null;
-  const limits = await runAuthLimitRpc(db, 'rpc_check_auth_limits', profileId, scopeKeys);
+  const limits = await runAuthLimitRpc(db, 'rpc_check_auth_limits', profileId, authContext.scopeKeys);
   if (limits.blocked) return { locked: true, retryAfterSeconds: limits.retry_after_seconds ?? 60, user: null, token: null };
 
   if (!username || !isValidPin(pinInput) || !profile) {
-    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profileId, scopeKeys);
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profileId, authContext.scopeKeys);
     return null;
   }
 
   const { data: credential, error: credentialError } = await db
     .from('operator_credentials')
-    .select('pin_salt, pin_hash')
+    .select('pin_salt, pin_hash, pin_version')
     .eq('profile_id', profile.id)
     .maybeSingle();
   if (credentialError) throw credentialError;
   if (!credential) {
-    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, scopeKeys);
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, authContext.scopeKeys);
     return null;
   }
 
   const valid = await verifyPin(pinInput, credential.pin_salt, credential.pin_hash);
   if (!valid) {
-    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, scopeKeys);
+    await runAuthLimitRpc(db, 'rpc_record_auth_failure', profile.id, authContext.scopeKeys);
     return null;
   }
 
+  const { data: scopes, error: scopeError } = await db
+    .from('profile_outlet_scopes')
+    .select('outlet_id, outlets!inner(id)')
+    .eq('profile_id', profile.id)
+    .eq('active', true)
+    .eq('outlets.active', true)
+    .limit(2);
+  if (scopeError) throw scopeError;
+  if (scopes?.length !== 1) return null;
+
   const token = randomHex(32);
+  const deviceToken = randomHex(32);
   const now = new Date();
-  await runAuthLimitRpc(db, 'rpc_reset_auth_failures', profile.id, scopeKeys);
-
-  let deviceId: string | null = null;
-  const deviceHash = await hashSessionToken(deviceToken);
-  const { data: existingDevice } = await db.from('app_devices').select('id').eq('device_token_hash', deviceHash).maybeSingle();
-  if (existingDevice) {
-    deviceId = existingDevice.id;
-    await db.from('app_devices').update({
-      profile_id: profile.id,
-      revoked_at: null,
-      last_seen_at: now.toISOString(),
-    }).eq('id', deviceId);
-  } else {
-    const { data: newDevice } = await db.from('app_devices').insert({
-      profile_id: profile.id,
-      device_token_hash: deviceHash,
-      first_seen_at: now.toISOString(),
-      last_seen_at: now.toISOString(),
-    }).select('id').single();
-    if (newDevice) deviceId = newDevice.id;
+  const expiresAt = new Date(now.getTime() + sessionLifetimeMs).toISOString();
+  const [sessionTokenHash, deviceTokenHash] = await Promise.all([
+    hashSessionToken(token),
+    hashSessionToken(deviceToken),
+  ]);
+  const credentialScopeKey = authContext.scopeKeys.find((key) => key.startsWith('credential:')) ?? null;
+  const { data: issued, error: issueError } = await db.rpc('rpc_issue_login_session', {
+    p_profile_id: profile.id,
+    p_outlet_id: scopes[0].outlet_id,
+    p_expected_pin_version: credential.pin_version,
+    p_session_token_hash: sessionTokenHash,
+    p_device_token_hash: deviceTokenHash,
+    p_expires_at: expiresAt,
+    p_absolute_expires_at: expiresAt,
+    p_ip_hash: authContext.ipHash,
+    p_user_agent_hash: authContext.userAgentHash,
+    p_credential_scope_key: credentialScopeKey,
+  });
+  if (issueError?.code === '40001' || /LOGIN_ISSUANCE_REJECTED|CREDENTIAL_CHANGED/.test(issueError?.message ?? '')) return null;
+  if (issueError) throw issueError;
+  if (issued?.locked) {
+    return { locked: true, retryAfterSeconds: issued.retry_after_seconds ?? 60, user: null, token: null };
   }
-
-  const { error: sessionError } = await db.from('app_sessions').insert({
-    profile_id: profile.id,
-    token_hash: await hashSessionToken(token),
-    device_id: deviceId,
-    created_at: now.toISOString(),
-    last_seen_at: now.toISOString(),
-    expires_at: new Date(now.getTime() + sessionLifetimeMs).toISOString(),
-    absolute_expires_at: new Date(now.getTime() + sessionLifetimeMs).toISOString(),
-  });
-  if (sessionError) throw sessionError;
-
-  // Log successful login
-  await db.from('audit_events').insert({
-    actor_user_id: profile.id,
-    action: 'LOGIN_SUCCESS',
-    entity_type: 'app_sessions',
-    entity_id: profile.id,
-    reason: 'User berhasil login dengan PIN',
-  });
+  if (!issued?.session_id || !issued?.device_id) throw new Error('Invalid login session issuance response.');
 
   return { token, deviceToken, user: publicProfile(profile) };
 }
@@ -595,15 +596,22 @@ export default {
       }
 
       try {
-        const devToken = deviceTokenFromRequest(request) ?? randomHex(32);
-        const result = await loginWithPin(body.username, body.pin, devToken, clientIpFromRequest(request));
+        const antiAbuseDeviceToken = deviceTokenFromRequest(request) ?? randomHex(32);
+        const result = await loginWithPin(
+          body.username,
+          body.pin,
+          antiAbuseDeviceToken,
+          clientIpFromRequest(request),
+          request.headers.get('user-agent') ?? '',
+        );
         const responseHeaders = new Headers();
-        responseHeaders.append('Set-Cookie', deviceCookie(devToken));
         if (!result) {
+          responseHeaders.append('Set-Cookie', deviceCookie(antiAbuseDeviceToken));
           return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401, responseHeaders);
         }
         if (result.locked) {
           const retryAfter = Math.max(1, Number(result.retryAfterSeconds) || 60);
+          responseHeaders.append('Set-Cookie', deviceCookie(antiAbuseDeviceToken));
           responseHeaders.append('Retry-After', String(retryAfter));
           return jsonResponse(
             { error: 'Terlalu banyak percobaan. Silakan coba lagi nanti.' },
@@ -612,7 +620,9 @@ export default {
           );
         }
 
-        responseHeaders.append('Set-Cookie', sessionCookie(result.token!));
+        if (!result.deviceToken || !result.token) throw new Error('Invalid login result.');
+        responseHeaders.append('Set-Cookie', deviceCookie(result.deviceToken));
+        responseHeaders.append('Set-Cookie', sessionCookie(result.token));
         return jsonResponse({ user: result.user }, 200, responseHeaders);
       } catch (error) {
         console.error('Unable to login', error);

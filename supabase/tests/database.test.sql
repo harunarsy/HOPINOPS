@@ -50,7 +50,27 @@ insert into required_functions values
   ('public.rpc_mark_payroll_paid(uuid,uuid,integer,text,text)'),
   ('public.rpc_void_payroll(uuid,uuid,integer,text)'),
   ('public.rpc_initialize_stock_reference(uuid,uuid,integer,uuid,text)'),
-  ('public.rpc_get_opening_reference(uuid,uuid)');
+  ('public.rpc_get_opening_reference(uuid,uuid)'),
+  ('public.rpc_update_settings(uuid,uuid,integer,jsonb)'),
+  ('public.rpc_create_item(uuid,uuid,text,public.area_code,text,text,smallint,numeric)'),
+  ('public.rpc_update_item(uuid,uuid,text,text,text,smallint,numeric)'),
+  ('public.rpc_archive_item(uuid,uuid,text,text)'),
+  ('public.rpc_save_roster(uuid,uuid,uuid,integer,date,text,uuid,public.area_code,text,text)'),
+  ('public.rpc_complete_assignment(uuid,uuid,uuid,integer)'),
+  ('public.rpc_update_user(uuid,uuid,uuid,integer,text,public.app_role,text)'),
+  ('public.rpc_deactivate_user(uuid,uuid,uuid,integer,text)'),
+  ('public.rpc_request_attendance_correction(uuid,uuid,uuid,text,jsonb,text)'),
+  ('public.rpc_review_attendance_correction(uuid,uuid,uuid,text,text)'),
+  ('public.rpc_request_leave(uuid,uuid,uuid,date,date,text,text)'),
+  ('public.rpc_cancel_leave(uuid,uuid,uuid)'),
+  ('public.rpc_review_leave(uuid,uuid,uuid,text,text)'),
+  ('public.rpc_review_overtime(uuid,uuid,uuid,integer,text,text)'),
+  ('public.rpc_correct_stock_movement(uuid,uuid,uuid,integer,uuid,public.movement_direction,text,numeric,uuid,text)'),
+  ('public.rpc_complete_onboarding(uuid,uuid,integer)'),
+  ('public.rpc_replay_onboarding(uuid,uuid,integer)'),
+  ('public.enforce_hr_request_state()'),
+  ('public.rpc_cleanup_runtime_data()'),
+  ('public.rpc_issue_login_session(uuid,uuid,integer,text,text,timestamp with time zone,timestamp with time zone,text,text,text)');
 
 select ok(
   bool_and(to_regprocedure(signature) is not null),
