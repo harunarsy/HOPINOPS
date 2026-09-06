@@ -34,9 +34,9 @@ async function completeAllSteps(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Berikutnya' }));
 
   // Step 6: Queue & Conflict
-  await user.click(screen.getByRole('button', { name: /simulasikan offline/i }));
-  await user.click(screen.getByRole('button', { name: /sambungkan kembali/i }));
-  await user.click(screen.getByRole('button', { name: /tinjau & selesaikan/i }));
+  await user.click(screen.getByRole('button', { name: /coba tanpa internet/i }));
+  await user.click(screen.getByRole('button', { name: /sambungkan internet/i }));
+  await user.click(screen.getByRole('button', { name: /periksa catatan yang perlu diperbaiki/i }));
   await user.click(screen.getByRole('button', { name: 'Berikutnya' }));
 
   // Step 7: Check-out
@@ -104,6 +104,30 @@ describe('StaffOnboarding', () => {
     await user.clear(input);
     await user.type(input, '8');
     expect(nextBtn.disabled).toBe(false);
+  });
+
+  it('requires two taps to replay from the start and separates help from replay', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.completeOnboarding).mockResolvedValue(undefined);
+    render(<StaffOnboarding onComplete={vi.fn()} onboardingVersion={2} />);
+
+    // Choice buttons expose selected state accessibly (check + aria-pressed)
+    await user.click(screen.getByRole('button', { name: /^bar/i }));
+    const barChoice = screen.getByRole('button', { name: /^bar/i });
+    expect(barChoice.getAttribute('aria-pressed')).toBe('true');
+    expect(barChoice.textContent).toMatch(/✓/);
+
+    await completeAllSteps(user);
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('8');
+
+    // First tap only arms replay; progress is preserved
+    await user.click(screen.getByRole('button', { name: /ulangi latihan dari awal/i }));
+    expect(screen.getByRole('button', { name: /ketuk lagi untuk mengulang dari awal/i })).toBeDefined();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('8');
+
+    // Second tap resets to step 1
+    await user.click(screen.getByRole('button', { name: /ketuk lagi untuk mengulang dari awal/i }));
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('1');
   });
 
   it('stays on the final step after failure and retries without losing state', async () => {

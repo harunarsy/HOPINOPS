@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(21);
+select plan(26);
 
 create temporary table required_functions (signature text primary key) on commit drop;
 insert into required_functions values
@@ -84,6 +84,12 @@ insert into required_functions values
   ('public.rpc_review_payroll_adjustment(uuid,uuid,integer,integer,text,text,uuid)'),
   ('public.rpc_emergency_checkout(uuid,uuid,integer,uuid,text)'),
   ('public.rpc_get_payroll_export_download(uuid,uuid,integer,uuid)'),
+  ('public.rpc_operator_create_item(uuid,uuid,text,public.area_code,text,text,smallint,numeric)'),
+  ('public.rpc_operator_archive_item(uuid,uuid,text,text)'),
+  ('public.rpc_checklist_layout_get(uuid,uuid,public.area_code)'),
+  ('public.rpc_checklist_section_upsert(uuid,uuid,public.area_code,uuid,text,uuid)'),
+  ('public.rpc_checklist_item_move(uuid,uuid,public.area_code,text,uuid,integer,integer,uuid)'),
+  ('public.rpc_self_emergency_checkout(uuid,uuid,integer,uuid,text)'),
   ('public.rpc_rate_limit_public_options(text)');
 
 select ok(
@@ -312,6 +318,61 @@ select is(
   )->>'idempotent_replay')::boolean,
   true,
   'B04 Lifetime: OPERATOR receives idempotent_replay: true even with different version'
+);
+
+select throws_ok(
+  $$select public.rpc_create_item(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    'tap-item-x', 'BAR'::public.area_code, 'Tap Item', 'pcs', 2::smallint, 0::numeric
+  )$$,
+  '42501',
+  'FORBIDDEN_ROLE: Hanya Owner atau Supervisor yang dapat membuat item.',
+  'INVESTOR cannot create catalog items (B01)'
+);
+
+select throws_ok(
+  $$select public.rpc_checklist_layout_get(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    'BAR'
+  )$$,
+  '42501',
+  'FORBIDDEN_ROLE: Investor tidak memiliki jalur operasional.',
+  'INVESTOR cannot read checklist layout'
+);
+
+select throws_ok(
+  $$select public.rpc_operator_archive_item(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    'tap-item-x', 'tap reason'
+  )$$,
+  '42501',
+  'FORBIDDEN_ROLE: Jalur ini hanya untuk OPERATOR PRIMARY.',
+  'INVESTOR cannot use PRIMARY-scoped archive (B07)'
+);
+
+select throws_ok(
+  $$select public.rpc_self_emergency_checkout(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    1, 'aaaaaaaa-0000-0000-0000-000000000001', 'tap reason'
+  )$$,
+  '42501',
+  'FORBIDDEN_ROLE: Check-out darurat mandiri hanya untuk Operator.',
+  'INVESTOR cannot use self emergency checkout (B05)'
+);
+
+select throws_ok(
+  $$select public.rpc_self_emergency_checkout(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    0, 'aaaaaaaa-0000-0000-0000-000000000001', 'tap reason'
+  )$$,
+  '22023',
+  'INVALID_EMERGENCY_CHECKOUT: Version, reason, dan idempotency key wajib valid.',
+  'Self emergency checkout rejects invalid version payload (B05)'
 );
 
 select * from finish();

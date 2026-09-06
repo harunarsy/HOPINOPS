@@ -19,6 +19,7 @@ vi.mock('../lib/api', () => ({
     getOpeningReference: vi.fn(),
     getDashboard: vi.fn(),
     getStockDrafts: vi.fn(),
+    getChecklistLayout: vi.fn(),
   },
 }));
 
@@ -69,6 +70,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
       source_id: null,
       lines: [],
     });
+    vi.mocked(api.getChecklistLayout).mockResolvedValue({ version: 1, sections: [], placements: [] });
   });
 
   async function performOnboardingSteps(user: ReturnType<typeof userEvent.setup>) {
@@ -90,9 +92,9 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     await user.click(screen.getByRole('button', { name: /handover/i }));
     await user.click(screen.getByRole('button', { name: 'Berikutnya' }));
 
-    await user.click(screen.getByRole('button', { name: /simulasikan offline/i }));
-    await user.click(screen.getByRole('button', { name: /sambungkan kembali/i }));
-    await user.click(screen.getByRole('button', { name: /tinjau & selesaikan/i }));
+    await user.click(screen.getByRole('button', { name: /coba tanpa internet/i }));
+    await user.click(screen.getByRole('button', { name: /sambungkan internet/i }));
+    await user.click(screen.getByRole('button', { name: /periksa catatan yang perlu diperbaiki/i }));
     await user.click(screen.getByRole('button', { name: 'Berikutnya' }));
 
     await user.click(screen.getByRole('button', { name: /simulasikan check-out/i }));
@@ -609,6 +611,88 @@ describe('Staff Flow & Onboarding UI Regression', () => {
 
     // Investor NEVER has "Mode Shift" button
     expect(screen.queryByRole('button', { name: /mode shift/i })).toBeNull();
+  });
+
+  it('confirms logout explicitly when unsynced queue or unconfirmed counts exist (E2)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getCurrentUser).mockResolvedValue(operatorUser);
+    vi.mocked(api.bootstrap).mockResolvedValue({
+      user: operatorUser,
+      outlet: defaultOutlet,
+      settings: defaultSettings,
+      items: [{ id: 'item-1', name: 'Kopi Susu', unit_code: 'kg', active: true, area_code: 'BAR' }],
+      shifts: [],
+      onboarding: {
+        profile_id: operatorUser.id,
+        onboarding_version: 1,
+        completed_at: '2026-09-06T10:00:00Z',
+      },
+      activeAssignment: {
+        id: 'asg-1',
+        cycle_id: 'cycle-1',
+        duty_role: 'PRIMARY',
+        status: 'ACTIVE',
+        work_cycles: { area_code: 'BAR', shift_code: 'SIANG', version: 1 },
+      },
+      activeAttendance: { id: 'att-1', status: 'CHECKED_IN' },
+      workDate: '2026-09-06',
+    });
+    vi.mocked(api.getCycle).mockResolvedValue({
+      cycle: { id: 'cycle-1', area_code: 'BAR', shift_code: 'SIANG', version: 1, status: 'OPEN' },
+      movements: [],
+    });
+    vi.mocked(api.getOpeningReference).mockResolvedValue({
+      state: 'AVAILABLE',
+      warning_code: null,
+      source_type: 'INITIALIZATION',
+      source_id: 'init-1',
+      lines: [{ item_id: 'item-1', reference_qty: 5 }],
+    });
+    vi.mocked(api.logout).mockResolvedValue(undefined);
+    vi.mocked(api.getLoginOptions).mockResolvedValue([
+      { username: 'budi', display_name: 'Budi Operator' },
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /workspace bar/i })).toBeDefined();
+    });
+
+    // Open Stok Awal tab and type an unconfirmed count
+    await user.click(screen.getByRole('button', { name: 'Stok Awal' }));
+    const countInput = document.getElementById('opening-count-item-1') as HTMLInputElement;
+    expect(countInput).toBeDefined();
+    fireEvent.change(countInput, { target: { value: '5' } });
+
+    // Attempt logout -> explicit confirm dialog, NOT instant logout
+    const logoutBtns = screen.getAllByRole('button', { name: 'Keluar' });
+    await user.click(logoutBtns[0]);
+
+    const dialogTitle = await screen.findByRole('heading', { name: /tetap keluar akun/i });
+    expect(dialogTitle).toBeDefined();
+
+    // Cancel keeps the session and the typed input
+    await user.click(screen.getByRole('button', { name: 'Batal' }));
+    expect(screen.queryByRole('heading', { name: /tetap keluar akun/i })).toBeNull();
+    expect((document.getElementById('opening-count-item-1') as HTMLInputElement).value).toBe('5');
+
+    // Escape also dismisses the confirm dialog without logging out
+    await user.click(screen.getAllByRole('button', { name: 'Keluar' })[0]);
+    await screen.findByRole('heading', { name: /tetap keluar akun/i });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: /tetap keluar akun/i })).toBeNull();
+    });
+    expect(screen.getByRole('heading', { name: /workspace bar/i })).toBeDefined();
+
+    // Confirm proceeds to login
+    await user.click(screen.getAllByRole('button', { name: 'Keluar' })[0]);
+    await user.click(screen.getByRole('button', { name: /tetap keluar/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+    });
+    expect(api.logout).toHaveBeenCalled();
   });
 
   it('enforces transient PIN masking: max 1 digit visible, group blur masks immediately', async () => {

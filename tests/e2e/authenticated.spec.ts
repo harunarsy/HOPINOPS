@@ -81,14 +81,20 @@ test.describe('Authenticated staging API flows', () => {
     expect(['AVAILABLE', 'INITIALIZATION_REQUIRED']).toContain(ref.body?.data?.state);
 
     if (ref.body?.data?.state === 'INITIALIZATION_REQUIRED') {
-      // Operator cannot initialize: expect 403 from RPC
-      const initDenied = await api.post('/api/app?action=opening.initialize', {
+      // B06: PRIMARY on its own cycle MAY initialize the first baseline.
+      // 200 = created; 409 = known state race (already initialized/opened/version moved). 403/500 are failures.
+      const init = await api.post('/api/app?action=opening.initialize', {
         cycle_id: cycleId,
         expected_version: assignment?.work_cycles?.version ?? 1,
         idempotency_key: crypto.randomUUID(),
         reason: 'e2e attempt',
       });
-      expect([403, 409]).toContain(initDenied.status);
+      expect([200, 409]).toContain(init.status);
+      if (init.status === 200) {
+        expect(init.body?.data?.status).toBe('APPROVED');
+      } else {
+        expect(['INITIALIZATION_EXISTS', 'OPENING_EXISTS', 'VERSION_CONFLICT']).toContain(init.body?.error?.code);
+      }
     }
 
     // Confirm opening (counted == reference; blank never allowed)

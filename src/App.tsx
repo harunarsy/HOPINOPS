@@ -51,6 +51,9 @@ export default function App() {
   const [showReportsView, setShowReportsView] = useState(false);
   const [logoutError, setLogoutError] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
+  const [workspaceDirty, setWorkspaceDirty] = useState({ queue: 0, unconfirmed: false });
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [checkoutCompleting, setCheckoutCompleting] = useState(false);
   const [checkoutRecoveryError, setCheckoutRecoveryError] = useState('');
   const [showEmergencyCheckout, setShowEmergencyCheckout] = useState(false);
@@ -65,9 +68,15 @@ export default function App() {
   } | null>(null);
   const emergencyIdempotencyKeyRef = useRef<string | null>(null);
 
-  const loadBootstrap = async () => {
-    setAppStatus('BOOTING');
-    setBootstrapError('');
+  // E2: foreground load replaces the screen; background refresh never unmounts
+  // the workspace and reports success/failure via boolean (never throws).
+  const loadBootstrap = async (background = false): Promise<boolean> => {
+    if (!background) {
+      setAppStatus('BOOTING');
+      setBootstrapError('');
+    } else {
+      setRefreshError('');
+    }
     try {
       const data = await api.bootstrap();
       if (!data?.user || !data?.outlet?.id) {
@@ -88,11 +97,18 @@ export default function App() {
       setWorkDate(data.workDate || '');
       setCycleData(nextCycleData);
       setAssignmentError('');
-      setAppStatus('READY');
+      if (!background) setAppStatus('READY');
+      return true;
     } catch (e: any) {
       console.error('Bootstrap failed', e);
-      setBootstrapError(requestErrorMessage(e, 'Gagal memuat data operasional.'));
-      setAppStatus(isSessionError(e) ? 'SESSION_EXPIRED' : 'SERVICE_UNAVAILABLE');
+      const message = requestErrorMessage(e, 'Gagal memuat data operasional.');
+      if (!background) {
+        setBootstrapError(message);
+        setAppStatus(isSessionError(e) ? 'SESSION_EXPIRED' : 'SERVICE_UNAVAILABLE');
+      } else {
+        setRefreshError(message);
+      }
+      return false;
     }
   };
 
@@ -141,6 +157,22 @@ export default function App() {
     }
   };
 
+  // E4: Escape menutup dialog non-kritis (kecuali saat submit berjalan).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (logoutConfirmOpen) {
+        setLogoutConfirmOpen(false);
+        return;
+      }
+      if (showEmergencyCheckout && !emergencySubmitting) {
+        setShowEmergencyCheckout(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [logoutConfirmOpen, showEmergencyCheckout, emergencySubmitting]);
+
   // Server-authoritative lock countdown (survives navigation state, derived from Retry-After).
   useEffect(() => {
     if (loginLockSeconds <= 0) return;
@@ -150,14 +182,31 @@ export default function App() {
     return () => clearInterval(timer);
   }, [loginLockSeconds > 0]);
 
+  // E2: logout never silently discards work. Unsynced queue persists in this
+  // device (scoped per user/outlet, invisible to the next user); unconfirmed
+  // counts may be lost, so the user confirms explicitly. No-arg signature is
+  // deliberate: passed directly to onClick/onLogout props, a click event must
+  // never be misread as confirmation.
   const handleLogout = async () => {
     if (loggingOut) return;
+    if (workspaceDirty.queue > 0 || workspaceDirty.unconfirmed) {
+      setLogoutConfirmOpen(true);
+      return;
+    }
+    await doLogout();
+  };
+
+  const doLogout = async () => {
+    if (loggingOut) return;
+    setLogoutConfirmOpen(false);
     setLoggingOut(true);
     setLogoutError('');
     try {
       await api.logout();
       setAppStatus('READY');
       setBootstrapError('');
+      setRefreshError('');
+      setWorkspaceDirty({ queue: 0, unconfirmed: false });
       setCurrentUser(null);
       setLoginOptions([]);
       setAuthLoading(false);
@@ -252,16 +301,16 @@ export default function App() {
     setShowEmergencyCheckout(false);
   };
 
+  // B05: jalur mandiri — target diambil server dari sesi sendiri, tanpa attendance_id arbitrary.
   const handleEmergencyCheckout = async () => {
     const reason = emergencyReason.trim();
-    const attendanceId = activeAttendance?.id;
     const attendanceVersion = activeAttendance?.version;
 
     if (!reason) {
-      setEmergencyError('Alasan emergency checkout wajib diisi.');
+      setEmergencyError('Alasan check-out darurat wajib diisi.');
       return;
     }
-    if (!attendanceId || !Number.isInteger(attendanceVersion) || attendanceVersion <= 0) {
+    if (!Number.isInteger(attendanceVersion) || (attendanceVersion as number) <= 0) {
       setEmergencyError('Data atau versi attendance aktif tidak valid. Muat ulang sebelum mencoba kembali.');
       return;
     }
@@ -270,9 +319,8 @@ export default function App() {
     setEmergencyError('');
     emergencyIdempotencyKeyRef.current ??= crypto.randomUUID();
     try {
-      const result = await api.emergencyCheckout(
-        attendanceId,
-        attendanceVersion,
+      const result = await api.selfEmergencyCheckout(
+        attendanceVersion as number,
         reason,
         emergencyIdempotencyKeyRef.current,
       );
@@ -288,11 +336,14 @@ export default function App() {
       setShowEmergencyCheckout(false);
       setEmergencyReason('');
       emergencyIdempotencyKeyRef.current = null;
-      await loadBootstrap();
+      await loadBootstrap(true);
     } catch (err: any) {
+      const code = typeof err?.code === 'string' ? err.code : '';
       setEmergencyError(requestErrorMessage(
         err,
-        'Emergency checkout gagal. Anda tetap masuk; periksa kondisi attendance lalu coba kembali.',
+        /ALREADY_CHECKED_OUT|NO_OPEN_ATTENDANCE/.test(err?.message ?? '')
+          ? 'Check-out sudah tercatat. Bila assignment belum selesai, gunakan pemulihan penyelesaian assignment.'
+          : `Check-out darurat gagal (${code || 'UNKNOWN_ERROR'}). Anda tetap masuk; periksa kondisi attendance lalu coba kembali.`,
       ));
     } finally {
       setEmergencySubmitting(false);
@@ -311,17 +362,18 @@ export default function App() {
         <div className="modal-head">
           <div>
             <p className="eyebrow">JALUR PEMULIHAN</p>
-            <h2 id="emergency-checkout-title">Emergency Checkout</h2>
+            <h2 id="emergency-checkout-title">Check-out darurat</h2>
           </div>
           <button className="close-button" type="button" onClick={closeEmergencyCheckout} disabled={emergencySubmitting} aria-label="Tutup">
             ×
           </button>
         </div>
+        <p style={{ margin: '0 0 6px', fontWeight: 700 }}>Perlu pulang sebelum tugas selesai?</p>
         <p className="muted" style={{ marginBottom: '16px' }}>
-          Gunakan hanya saat antrean stok atau finalisasi menghalangi checkout normal. Attendance akan memerlukan review dan tugas stok tetap tertunda.
+          Gunakan jika Anda harus pulang tetapi tugas shift belum selesai. Waktu pulang akan dicatat dan Supervisor akan meninjau alasannya. Catatan stok dan tugas yang tertunda tetap perlu diselesaikan.
         </p>
         <label htmlFor="emergency-checkout-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700 }}>
-          Alasan (wajib)
+          Alasan check-out darurat (wajib)
         </label>
         <textarea
           id="emergency-checkout-reason"
@@ -334,13 +386,13 @@ export default function App() {
           maxLength={1000}
           rows={4}
           disabled={emergencySubmitting}
-          placeholder="Jelaskan antrean atau finalisasi yang belum dapat diselesaikan."
+          placeholder="Jelaskan mengapa Anda harus pulang sebelum tugas selesai."
           style={{ width: '100%', marginTop: '6px', padding: '10px', border: '1px solid #cddcd4', borderRadius: '8px', resize: 'vertical' }}
         />
         {emergencyError && <p className="form-error" role="alert" style={{ marginTop: '12px' }}>{emergencyError}</p>}
         <div className="modal-actions" style={{ marginTop: '16px' }}>
           <button className="outline-button" type="button" onClick={closeEmergencyCheckout} disabled={emergencySubmitting}>
-            Batal
+            Kembali
           </button>
           <button
             className="primary-button"
@@ -348,7 +400,7 @@ export default function App() {
             onClick={() => void handleEmergencyCheckout()}
             disabled={emergencySubmitting || !emergencyReason.trim()}
           >
-            {emergencySubmitting ? 'Mencatat...' : 'Catat Emergency Checkout'}
+            {emergencySubmitting ? 'Mencatat...' : 'Catat check-out darurat'}
           </button>
         </div>
       </div>
@@ -382,7 +434,7 @@ export default function App() {
         </button>
         {activeAttendance?.id && (
           <button className="outline-button" type="button" onClick={openEmergencyCheckout} disabled={checkoutCompleting}>
-            Emergency Checkout
+            Check-out darurat
           </button>
         )}
       </div>
@@ -396,10 +448,9 @@ export default function App() {
       style={{ maxWidth: '680px', margin: '20px auto', border: '2px solid #c98732', background: '#fff3db' }}
     >
       <p className="eyebrow">BUKTI PEMULIHAN</p>
-      <h2 id="emergency-receipt-title" style={{ fontSize: '22px', marginBottom: '8px' }}>Emergency checkout tercatat</h2>
+      <h2 id="emergency-receipt-title" style={{ fontSize: '22px', marginBottom: '8px' }}>Check-out tercatat. Menunggu peninjauan Supervisor.</h2>
       <p role="status" style={{ margin: '0 0 12px' }}>
-        Attendance <strong>{emergencyReceipt.attendanceStatus}</strong> dan assignment <strong>{emergencyReceipt.assignmentStatus}</strong>.
-        Anda tetap masuk untuk menindaklanjuti tugas dan review.
+        Waktu pulang tercatat dengan status <strong>{emergencyReceipt.attendanceStatus}</strong>; tugas shift <strong>{emergencyReceipt.assignmentStatus}</strong> tetap perlu diselesaikan dan ditinjau.
       </p>
       <div className="muted" style={{ fontFamily: "'DM Mono', monospace", fontSize: '10px', overflowWrap: 'anywhere' }}>
         Attendance: {emergencyReceipt.attendanceId}<br />
@@ -451,6 +502,69 @@ export default function App() {
       >
         {loggingOut ? 'Mencoba...' : 'Coba Lagi'}
       </button>
+    </div>
+  );
+
+  const refreshErrorBanner = refreshError && (
+    <div
+      role="alert"
+      style={{
+        maxWidth: '680px',
+        margin: '12px auto',
+        borderRadius: '10px',
+        border: '1px solid #f5c86e',
+        background: '#fff8e6',
+        color: '#7d5b2b',
+        padding: '10px 14px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '12px',
+        fontSize: '12px',
+      }}
+    >
+      <span><strong>Data mungkin belum terbaru:</strong> {refreshError} Layar dan ketikan Anda tetap dipertahankan.</span>
+      <button
+        type="button"
+        className="outline-button"
+        onClick={() => void loadBootstrap(true)}
+        style={{ width: 'auto', minHeight: '32px', margin: 0, padding: '4px 10px', fontSize: '11px', whiteSpace: 'nowrap' }}
+      >
+        Muat ulang
+      </button>
+    </div>
+  );
+
+  const logoutConfirmDialog = logoutConfirmOpen && (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="logout-confirm-title" style={{ maxWidth: '440px' }}>
+        <div className="modal-head">
+          <h2 id="logout-confirm-title">Tetap keluar akun?</h2>
+        </div>
+        <div style={{ fontSize: '13px', lineHeight: 1.6 }}>
+          {workspaceDirty.queue > 0 && (
+            <p>
+              Ada <strong>{workspaceDirty.queue} catatan offline</strong> yang belum tersinkron.
+              Catatan tersebut tetap tersimpan di perangkat ini dan tidak hilang saat keluar,
+              tetapi tidak terlihat oleh pengguna berikutnya sampai Anda masuk kembali dan sinkronisasi berjalan.
+            </p>
+          )}
+          {workspaceDirty.unconfirmed && (
+            <p>
+              Ada <strong>hitungan yang belum dikonfirmasi</strong>.
+              Bila draft-nya belum tersimpan di server, hitungan tersebut bisa hilang saat keluar.
+            </p>
+          )}
+        </div>
+        <div className="modal-actions" style={{ marginTop: '16px' }}>
+          <button className="outline-button" type="button" onClick={() => setLogoutConfirmOpen(false)}>
+            Batal
+          </button>
+          <button className="primary-button" type="button" onClick={() => void doLogout()} disabled={loggingOut}>
+            {loggingOut ? 'Memproses...' : 'Tetap keluar'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 
@@ -677,7 +791,7 @@ export default function App() {
           )}
           <div style={{ maxWidth: '440px', margin: '12px auto 0', textAlign: 'center' }}>
             <button className="outline-button" type="button" onClick={openEmergencyCheckout} disabled={checkoutCompleting}>
-              Checkout terhalang? Gunakan Emergency Checkout
+              Check-out terkendala? Gunakan check-out darurat
             </button>
           </div>
         </main>
@@ -693,12 +807,17 @@ export default function App() {
       (activeAssignment?.work_cycles?.shift_code === 'MALAM' || activeAssignment?.work_cycles?.shift_code === 'FULL');
 
     return (
-      <ReportsView
-        isFinalizer={isBarFinalizer || currentUser.role === 'OWNER' || currentUser.role === 'SUPERVISOR'}
-        workDate={workDate}
-        onRefresh={loadBootstrap}
-        onBack={() => setShowReportsView(false)}
-      />
+      <>
+        {logoutErrorPanel}
+        {logoutConfirmDialog}
+        {refreshErrorBanner}
+        <ReportsView
+          isFinalizer={isBarFinalizer || currentUser.role === 'OWNER' || currentUser.role === 'SUPERVISOR'}
+          workDate={workDate}
+          onRefresh={() => loadBootstrap(true)}
+          onBack={() => setShowReportsView(false)}
+        />
+      </>
     );
   }
 
@@ -718,30 +837,38 @@ export default function App() {
   return (
     <div className="app-shell">
       {logoutErrorPanel}
+      {logoutConfirmDialog}
+      {refreshErrorBanner}
       <header className="topbar">
         <div className="brand">
           <span><strong>HOPIN</strong><small>CAFE OPERATIONS</small></span>
         </div>
         <div className="topbar-right">
-          <div className="avatar" title={currentUser.display_name} style={{ display: 'grid', placeItems: 'center', fontSize: '12px', fontWeight: 700 }}>
-            {currentUser.display_name.slice(0, 2).toUpperCase()}
-          </div>
-          {isManagement && (
-            <button className="outline-button" onClick={() => setForceShiftMode(false)} disabled={Boolean(effectiveCheckoutRecoveryError)} style={{ fontSize: '11px', padding: '6px 7px' }}>
-              Kelola
-            </button>
-          )}
-          <button className="outline-button" onClick={() => setShowReportsView(true)} disabled={Boolean(effectiveCheckoutRecoveryError)} style={{ fontSize: '11px', padding: '6px 7px' }}>
-            Laporan ➔
-          </button>
-          {activeAttendance?.id && (
-            <button className="outline-button" type="button" onClick={openEmergencyCheckout} style={{ fontSize: '11px', padding: '6px 7px' }}>
-              Checkout Darurat
-            </button>
-          )}
-          <button className="logout-button" onClick={handleLogout} disabled={Boolean(effectiveCheckoutRecoveryError)}>
-            <span>Keluar</span>
-          </button>
+          <details className="account-menu">
+            <summary aria-label={`Menu akun ${currentUser.display_name}`}>
+              <span className="avatar" title={currentUser.display_name} style={{ display: 'grid', placeItems: 'center', fontSize: '12px', fontWeight: 700 }}>
+                {currentUser.display_name.slice(0, 2).toUpperCase()}
+              </span>
+            </summary>
+            <div className="account-menu-body">
+              {isManagement && (
+                <button className="outline-button" onClick={() => setForceShiftMode(false)} disabled={Boolean(effectiveCheckoutRecoveryError)} style={{ fontSize: '11px', padding: '6px 7px' }}>
+                  Kelola
+                </button>
+              )}
+              <button className="outline-button" onClick={() => setShowReportsView(true)} disabled={Boolean(effectiveCheckoutRecoveryError)} style={{ fontSize: '11px', padding: '6px 7px' }}>
+                Laporan ➔
+              </button>
+              {activeAttendance?.id && (
+                <button className="outline-button" type="button" onClick={openEmergencyCheckout} style={{ fontSize: '11px', padding: '6px 7px' }}>
+                  Check-out darurat
+                </button>
+              )}
+              <button className="logout-button" onClick={handleLogout} disabled={Boolean(effectiveCheckoutRecoveryError)}>
+                <span>Keluar</span>
+              </button>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -757,7 +884,8 @@ export default function App() {
         items={currentAreaItems}
         cycleData={cycleData}
         canManage={currentUser.role === 'OWNER' || currentUser.role === 'SUPERVISOR'}
-        onRefresh={loadBootstrap}
+        onRefresh={() => loadBootstrap(true)}
+        onDirtyChange={setWorkspaceDirty}
         onCheckOutRequest={() => setShowCheckOutModal(true)}
         onGoReports={() => setShowReportsView(true)}
       />

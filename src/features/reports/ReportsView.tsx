@@ -6,7 +6,7 @@ import { api } from '../../lib/api';
 type Props = {
   isFinalizer: boolean;
   workDate: string;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<boolean>;
   onBack: () => void;
 };
 
@@ -334,10 +334,10 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       setRefreshWarning(`Laporan sudah terkirim, tetapi detail laporan gagal diperbarui: ${messageFrom(error, 'Muat ulang laporan.')}`);
     }
 
-    try {
-      await onRefresh();
-    } catch (error) {
-      setRefreshWarning((current) => `${current ? `${current} ` : ''}Workspace gagal diperbarui: ${messageFrom(error, 'Muat ulang workspace.')}`);
+    // E2: boolean refresh — failure keeps the screen and surfaces a warning, never throws.
+    const refreshed = await onRefresh().catch(() => false);
+    if (!refreshed) {
+      setRefreshWarning((current) => `${current ? `${current} ` : ''}Workspace gagal diperbarui: data terbaru belum termuat. Muat ulang workspace.`);
     }
 
     if (isManager) {
@@ -452,6 +452,45 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         </section>
       )}
 
+      <section className="section-card" aria-labelledby="stock-summary-title" style={{ marginTop: '16px' }}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">RINGKASAN STOK AREA</p>
+            <h2 id="stock-summary-title">Stok Penutup per Area</h2>
+          </div>
+        </div>
+        {reportLoadState === 'loading' ? (
+          <p role="status" style={{ margin: '12px 0 0', color: '#547066' }}>Memuat ringkasan stok dari server...</p>
+        ) : reportLoadState === 'error' ? (
+          <p role="alert" className="form-error" style={{ margin: '12px 0 0' }}>Ringkasan stok tidak dapat dimuat: {reportLoadError}</p>
+        ) : !reportSnapshot || reportSnapshot.stock_lines.length === 0 ? (
+          <p className="muted" style={{ margin: '12px 0 0' }}>
+            Belum ada ringkasan stok tersimpan untuk tanggal ini. Ringkasan muncul setelah kedua area menyelesaikan closing dan laporan dibuat di server.
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
+            {(['BAR', 'KITCHEN'] as const).map((stockArea) => {
+              const lines = (reportSnapshot.stock_lines as { item_id: string; area_code: string; closing_qty: number; stock_status: string }[])
+                .filter((line) => line.area_code === stockArea);
+              if (lines.length === 0) return null;
+              const attention = lines.filter((line) => line.stock_status !== 'AMAN').length;
+              return (
+                <div key={stockArea} style={{ padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px' }}>
+                  <strong>{stockArea === 'BAR' ? 'Bar' : 'Kitchen'}</strong>
+                  <span className="muted"> · {lines.length} barang tercatat</span>
+                  {attention > 0 && (
+                    <span style={{ color: '#b45309', fontWeight: 700 }}> · {attention} perlu perhatian</span>
+                  )}
+                </div>
+              );
+            })}
+            <p className="muted" style={{ fontSize: '11px', margin: 0 }}>
+              Rincian mengikuti snapshot server. Kesiapan closing kedua area diperiksa server saat kirim.
+            </p>
+          </div>
+        )}
+      </section>
+
       <section className="section-card" aria-labelledby="finance-title" style={{ marginTop: '16px' }}>
         <div className="section-heading">
           <div>
@@ -459,6 +498,11 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
             <h2 id="finance-title">Rincian Keuangan</h2>
           </div>
         </div>
+        {!isFinalizer && (
+          <p className="muted" style={{ fontSize: '12px', marginTop: '8px' }}>
+            Anda melihat ringkasan area. Pengisian dan pengiriman laporan dilakukan oleh primary BAR shift MALAM/FULL atau manajemen.
+          </p>
+        )}
 
         <div style={{ marginTop: '16px', padding: '12px', borderRadius: '10px', border: '1px solid #f0d8a9', background: '#fff3dd', color: '#7d5b2b' }}>
           <strong>Kesiapan diperiksa saat submit.</strong> Server mewajibkan tepat satu closing terkonfirmasi dan lengkap untuk BAR serta KITCHEN. Pastikan antrean sinkronisasi perangkat kosong sebelum mengirim.

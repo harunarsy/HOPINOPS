@@ -9,6 +9,17 @@ if (!url || !serviceRoleKey) {
   console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required.');
   process.exit(1);
 }
+// E0 guard: staging-only allowlist + explicit opt-in. Never run against production.
+const STAGING_REFS = ['ibzlxdmnuszcmdzuocwu'];
+const isStagingUrl = STAGING_REFS.some((ref) => url.includes(ref));
+if (!isStagingUrl) {
+  console.error('REFUSED: SUPABASE_URL is not in staging allowlist. Aborting.');
+  process.exit(2);
+}
+if (process.env.E2E_ALLOW_MUTATION !== '1') {
+  console.error('REFUSED: set E2E_ALLOW_MUTATION=1 to run this mutating script.');
+  process.exit(2);
+}
 
 // Two distinct client instances (separate HTTP agent / connection pools)
 const clientA = createClient(url, serviceRoleKey, {
@@ -125,8 +136,13 @@ async function run() {
   console.log(`Verified: B04 Lifetime Replay succeeded with different version 99 (idempotent_replay=true).`);
 
   console.log('Deactivating test profile...');
-  await clientA.from('profiles').update({ active: false, deactivated_at: new Date().toISOString() }).eq('id', testActorId);
-  console.log('Deactivated test profile.');
+  try {
+    await clientA.from('profiles').update({ active: false, deactivated_at: new Date().toISOString() }).eq('id', testActorId);
+    console.log('Deactivated test profile.');
+  } catch (cleanupErr) {
+    console.error('Cleanup failed (deactivate):', cleanupErr?.message || cleanupErr);
+    throw cleanupErr;
+  }
 
   console.log('--- Concurrency test PASSED successfully ---');
 }

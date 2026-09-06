@@ -139,6 +139,15 @@ export const api = {
   createItem: (item: any) => request('/api/app?action=items.create', { method: 'POST', body: JSON.stringify(item) }),
   updateItem: (item: any) => request('/api/app?action=items.update', { method: 'POST', body: JSON.stringify(item) }),
   archiveItem: (id: string, reason: string) => request('/api/app?action=items.archive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
+  operatorCreateItem: (item: any) => request('/api/app?action=items.operatorCreate', { method: 'POST', body: JSON.stringify(item) }),
+  operatorArchiveItem: (id: string, reason: string) => request('/api/app?action=items.operatorArchive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
+
+  // Checklist layout server-owned
+  getChecklistLayout: (area_code: 'BAR' | 'KITCHEN') => request<{ version: number; sections: { id: string; name: string; position: number; active: boolean }[]; placements: { item_id: string; section_id: string; position: number }[] }>(`/api/app?action=checklist.layout&area_code=${area_code}`),
+  upsertChecklistSection: (area_code: 'BAR' | 'KITCHEN', name: string, section_id: string | null, idempotency_key: string) =>
+    request<{ section: any; idempotent_replay: boolean }>('/api/app?action=checklist.section.upsert', { method: 'POST', body: JSON.stringify({ area_code, name, section_id, idempotency_key }) }),
+  moveChecklistItem: (area_code: 'BAR' | 'KITCHEN', item_id: string, section_id: string, position: number, expected_layout_version: number, idempotency_key: string) =>
+    request<{ item_id: string; section_id: string; position: number; layout_version: number; idempotent_replay: boolean }>('/api/app?action=checklist.item.move', { method: 'POST', body: JSON.stringify({ area_code, item_id, section_id, position, expected_layout_version, idempotency_key }) }),
 
   // Roster & Swap
   listRoster: (month?: string) => request<{ roster: any[] }>(`/api/app?action=roster.list${month ? `&month=${month}` : ''}`).then(r => r.roster),
@@ -169,6 +178,8 @@ export const api = {
   listAttendanceExceptions: (from?: string, to?: string) => request<{ exceptions: any[] }>(`/api/app?action=attendance.exceptions${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}`).then(r => r.exceptions),
   emergencyCheckout: (attendance_id: string, expected_version: number, reason: string, idempotency_key: string) =>
     request<{ attendance_id: string; event_id: string; status: 'REVIEW_REQUIRED'; exception_status: 'PENDING_REVIEW'; version: number; idempotent_replay: boolean }>('/api/app?action=attendance.emergencyCheckout', { method: 'POST', body: JSON.stringify({ attendance_id, expected_attendance_version: expected_version, reason, idempotency_key }) }),
+  selfEmergencyCheckout: (expected_version: number, reason: string, idempotency_key: string) =>
+    request<{ attendance_id: string; event_id: string; status: 'REVIEW_REQUIRED'; exception_status: 'PENDING_REVIEW'; version: number; idempotent_replay: boolean }>('/api/app?action=attendance.selfEmergencyCheckout', { method: 'POST', body: JSON.stringify({ expected_attendance_version: expected_version, reason, idempotency_key }) }),
   requestAttendanceCorrection: (correction: { attendance_id: string; correction_type: 'CHECK_IN_TIME' | 'CHECK_OUT_TIME' | 'STATUS' | 'LATENESS' | 'EXCEPTION'; proposed: { occurred_at: string } | { status: 'CHECKED_OUT' | 'APPROVED' } | { lateness_status: 'ON_TIME' | 'LATE' | 'EXCUSED' } | { exception_status: 'RESOLVED' }; reason: string }) =>
     request<{ id: string; attendance_id: string; status: 'PENDING' }>('/api/app?action=attendance.correction.request', { method: 'POST', body: JSON.stringify(correction) }),
   reviewAttendanceCorrection: (correction_id: string, status: 'APPROVED' | 'REJECTED', note: string) =>

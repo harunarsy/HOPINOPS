@@ -150,9 +150,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
           </div>
 
           <div className="login-field">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div style={{ marginBottom: '8px' }}>
               <label htmlFor="pin-input-0" style={{ margin: 0 }}>PIN 6 DIGIT</label>
-              <small style={{ fontSize: '11px', color: '#6b8378' }}>Otomatis terselubung</small>
             </div>
             <div
               className="pin-box-wrap"

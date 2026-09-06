@@ -94,9 +94,10 @@ Kartu 18px, kontrol 10px, status chip/pill penuh. Bentuk lingkaran terbatas untu
 
 ## Do's and Don'ts
 
-- Do: tampilkan status save yang jujur sebagai local-only demo.
+> Preseden E0: `FINAL_OPERATIONAL_READINESS_PLAN.md` adalah sumber kebenaran produk (server-first, RPC/audit). Baris demo lokal di bawah adalah historis dan tidak boleh dipakai AI sebagai larangan fitur production.
+- Do: tampilkan status save yang jujur dari receipt server (bukan klaim local-only demo).
 - Do: pertahankan unit dan angka tetap dekat dengan input.
 - Do: tampilkan locked/submitted dengan copy eksplisit.
-- Don't: menambahkan modul POS, absensi, pembayaran, atau security production.
+- Don't: menambahkan modul POS/pembayaran di luar kontrak; absensi GPS + security session adalah fitur production resmi per kontrak.
 - Don't: gunakan alert/confirm/prompt browser.
-- Don't: membuat angka laporan tanpa sumber dari state lokal.
+- Don't: membuat angka laporan tanpa sumber receipt server.

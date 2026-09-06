@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { api } from '../../lib/api';
 import { fmtRupiah, wibDate } from '../../domain/rules';
+import { CatalogManager } from './CatalogManager';
 
-type Tab = 'dashboard' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account';
+type Tab = 'dashboard' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account' | 'catalog';
 type Settings = Awaited<ReturnType<typeof api.getSettings>>;
 type Session = Awaited<ReturnType<typeof api.listSessions>>[number];
 type Decision = 'APPROVED' | 'REJECTED';
@@ -115,6 +116,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [attendanceReview, setAttendanceReview] = useState<{ attendance: any; correction: any; decision: Decision } | null>(null);
   const [overtimeReview, setOvertimeReview] = useState<{ claim: any; decision: Decision } | null>(null);
   const [reviewNote, setReviewNote] = useState('');
+  const [prepReason, setPrepReason] = useState<Record<string, string>>({});
+  const [prepBusy, setPrepBusy] = useState('');
   const [emergencyTarget, setEmergencyTarget] = useState<any | null>(null);
   const [emergencyReason, setEmergencyReason] = useState('');
   const [emergencyResolutionTarget, setEmergencyResolutionTarget] = useState<any | null>(null);
@@ -126,6 +129,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [payrollPeriod, setPayrollPeriod] = useState(wibDate().slice(0, 7));
   const [payrollRun, setPayrollRun] = useState<any | null>(null);
   const [payrollEntries, setPayrollEntries] = useState<any[]>([]);
+  // F05: stale-response guard — responses arriving out of order never overwrite newer period data.
+  const payrollRequestRef = useRef(0);
   const [payrollAdjustments, setPayrollAdjustments] = useState<any[]>([]);
   const [payrollLoading, setPayrollLoading] = useState(false);
   const [paymentRef, setPaymentRef] = useState('');
@@ -164,6 +169,29 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const showToast = (message: string) => setReceipt({ message });
   const showError = (message: string) => setReceipt({ message, error: true });
 
+  const handlePrepBaseline = async (cycle: any) => {
+    const reason = (prepReason[cycle.id] ?? '').trim();
+    if (!reason) {
+      showError('Alasan penyiapan patokan wajib diisi.');
+      return;
+    }
+    if (!Number.isInteger(cycle.version) || cycle.version <= 0) {
+      showError('Versi cycle tidak valid. Muat ulang dashboard.');
+      return;
+    }
+    setPrepBusy(cycle.id);
+    try {
+      const res = await api.initializeOpeningReference(cycle.id, cycle.version, reason);
+      showToast(res.duplicate ? 'Patokan sudah disiapkan sebelumnya.' : 'Patokan awal cycle berhasil disiapkan. Staf dapat mulai menghitung.');
+      setPrepReason((prev) => ({ ...prev, [cycle.id]: '' }));
+      setDashboardData(await api.getDashboard());
+    } catch (err: any) {
+      showError(err?.message || 'Gagal menyiapkan patokan.');
+    } finally {
+      setPrepBusy('');
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     setViewError('');
@@ -191,12 +219,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
         setAttendanceExceptions(exceptions);
         setOvertime(claims);
       } else if (tab === 'payroll') {
-        setPayrollLoading(true);
-        const payroll = await api.getPayrollRun(payrollPeriod);
-        const { run, entries } = payroll;
-        setPayrollRun(run);
-        setPayrollEntries(entries || []);
-        setPayrollAdjustments((payroll as any).adjustments ?? (entries || []).flatMap(getPayrollAdjustments));
+        await loadPayroll(payrollPeriod);
       } else if (tab === 'users') {
         setUsersList(await api.listUsers());
       } else if (tab === 'settings') {
@@ -213,18 +236,24 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const loadPayroll = async (period: string) => {
+    const requestId = payrollRequestRef.current + 1;
+    payrollRequestRef.current = requestId;
     setPayrollLoading(true);
     try {
       const payroll = await api.getPayrollRun(period);
+      // Drop stale responses: only the latest requested period may write state.
+      if (payrollRequestRef.current !== requestId) return;
       const { run, entries } = payroll;
+      setPayrollPeriod(period);
       setPayrollRun(run);
       setPayrollEntries(entries || []);
       setPayrollAdjustments((payroll as any).adjustments ?? (entries || []).flatMap(getPayrollAdjustments));
       setViewError('');
     } catch (e: any) {
+      if (payrollRequestRef.current !== requestId) return;
       setViewError(e.message || 'Gagal memuat data payroll.');
     } finally {
-      setPayrollLoading(false);
+      if (payrollRequestRef.current === requestId) setPayrollLoading(false);
     }
   };
 
@@ -417,6 +446,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
     try {
       const res = await api.exportPayrollXlsx(payrollRun.id, payrollRun.version);
       const download = await api.downloadPayrollExport(res.export_id, payrollRun.version, crypto.randomUUID());
+      const replayed = (res as { idempotent_replay?: boolean }).idempotent_replay === true;
       const link = document.createElement('a');
       link.href = download.signed_url;
       link.download = res.filename;
@@ -424,7 +454,9 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       document.body.appendChild(link);
       link.click();
       link.remove();
-      showToast(`Snapshot Excel (${res.label}) siap diunduh. Tautan berlaku sampai ${formatDateTime(download.expires_at)}.`);
+      showToast(replayed
+        ? `Export tercatat sebelumnya ditemukan kembali (tanpa file ganda). Tautan berlaku sampai ${formatDateTime(download.expires_at)}.`
+        : `Snapshot Excel (${res.label}) siap diunduh. Tautan berlaku sampai ${formatDateTime(download.expires_at)}.`);
     } catch (e: any) {
       showError(e.message || 'Gagal mengekspor payroll.');
     } finally {
@@ -654,6 +686,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             <button className={tab === 'exceptions' ? 'active' : ''} onClick={() => setTab('exceptions')}>Review Kehadiran</button>
             <button className={tab === 'payroll' ? 'active' : ''} onClick={() => setTab('payroll')}>Kelola Payroll</button>
             <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>Kelola Akun</button>
+            <button className={tab === 'catalog' ? 'active' : ''} onClick={() => setTab('catalog')}>Katalog</button>
             <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Pengaturan</button>
           </> : <button className={tab === 'reports' ? 'active' : ''} onClick={() => setTab('reports')}>Laporan</button>}
           <button className={tab === 'account' ? 'active' : ''} onClick={() => setTab('account')}>Akun & Sesi</button>
@@ -716,6 +749,28 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                           Bantuan: {helpers.map((h: any) => h.profiles?.display_name).join(', ')}
                         </small>
                       )}
+                      {c.status === 'ACTIVE' && (
+                        <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>
+                          <label style={{ fontSize: '11px', color: '#6b8378' }}>Alasan penyiapan patokan
+                            <input
+                              value={prepReason[c.id] ?? ''}
+                              onChange={(e) => setPrepReason((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                              placeholder="Mis. awal shift, belum ada referensi"
+                              style={{ width: '100%', padding: '6px', marginTop: '4px' }}
+                              aria-label={`Alasan penyiapan patokan ${c.shift_code} ${c.area_code}`}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="outline-button"
+                            disabled={prepBusy === c.id || !(prepReason[c.id] ?? '').trim()}
+                            onClick={() => void handlePrepBaseline(c)}
+                            style={{ fontSize: '12px', padding: '6px 12px' }}
+                          >
+                            {prepBusy === c.id ? 'Menyiapkan...' : 'Siapkan patokan cycle'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -731,7 +786,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                   {emergencyCandidates.map((attendance: any) => (
                     <div key={attendance.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px', flexWrap: 'wrap' }}>
                       <span><strong>{attendance.profiles?.display_name ?? 'Petugas'}</strong><br /><span className="muted">Versi attendance {attendance.version} · masih check-in</span></span>
-                      <button type="button" className="outline-button" onClick={() => { setEmergencyTarget(attendance); setEmergencyReason(''); }} style={{ color: '#b91c1c', borderColor: '#fecaca' }}>Emergency Checkout</button>
+                      <button type="button" className="outline-button" onClick={() => { setEmergencyTarget(attendance); setEmergencyReason(''); }} style={{ color: '#b91c1c', borderColor: '#fecaca' }}>Check-out darurat</button>
                     </div>
                   ))}
                 </div>
@@ -1300,6 +1355,9 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             )}
           </div>
         )}
+
+        {/* 5b. CATALOG (Owner/Supervisor; Investor excluded) */}
+        {tab === 'catalog' && !isInvestor && <CatalogManager />}
 
         {/* 6. ACCOUNT SESSIONS */}
         {tab === 'account' && (

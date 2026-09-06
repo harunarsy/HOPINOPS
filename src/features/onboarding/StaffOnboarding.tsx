@@ -174,9 +174,16 @@ function ChoiceButton({ selected, onClick, children }: { selected: boolean; onCl
       type="button"
       aria-pressed={selected}
       onClick={onClick}
-      style={{ ...styles.choice, ...(selected ? styles.choiceSelected : {}) }}
+      style={{
+        ...styles.choice,
+        ...(selected ? { ...styles.choiceSelected, borderWidth: '2px', padding: '10px 11px' } : {}),
+      }}
     >
+      <span aria-hidden="true" style={{ float: 'right', fontWeight: 900, color: selected ? '#1e5b48' : 'transparent' }}>
+        ✓
+      </span>
       {children}
+      <span className="sr-only">{selected ? ' (dipilih)' : ''}</span>
     </button>
   );
 }
@@ -194,6 +201,7 @@ export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }:
   const [checkedOut, setCheckedOut] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [completionError, setCompletionError] = useState<string | null>(null);
+  const [replayArmed, setReplayArmed] = useState(false);
   const [activeVersion, setActiveVersion] = useState(onboardingVersion);
   const [versionConflictNewVersion, setVersionConflictNewVersion] = useState<number | null>(null);
 
@@ -257,6 +265,7 @@ export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }:
 
   const goToStep = (nextStep: number) => {
     setCompletionError(null);
+    setReplayArmed(false);
     if (nextStep > currentStep) {
       for (let s = currentStep; s < nextStep; s += 1) {
         if (!isStepComplete(s)) return;
@@ -437,21 +446,21 @@ export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }:
       case 6:
         return (
           <>
-            <span style={styles.simulationLabel}>Latihan 07 / Sinkronisasi lokal</span>
-            <h2 id="onboarding-step-title" style={styles.stepTitle}>Offline masuk antrean, konflik perlu keputusan</h2>
-            <p style={styles.copy}>Saat koneksi terputus, tindakan yang didukung disimpan sebagai antrean. Jangan masukkan ulang. Setelah online, periksa status sinkronisasi dan selesaikan konflik yang tetap terlihat.</p>
+            <span style={styles.simulationLabel}>Latihan 07 / Saat internet terputus</span>
+            <h2 id="onboarding-step-title" style={styles.stepTitle}>Catatan menunggu dikirim, konflik perlu keputusan</h2>
+            <p style={styles.copy}>Catatan yang mendukung penyimpanan offline menunggu dikirim. Jangan masukkan ulang. Setelah online, periksa status pengiriman dan selesaikan catatan yang perlu diperbaiki.</p>
             <div style={styles.miniCard}>
-              <span style={styles.miniLabel}>Pusat sinkronisasi</span>
-              <strong>{queueState === 'ONLINE' ? 'Online · antrean kosong' : queueState === 'QUEUED' ? 'Offline · 1 menunggu' : queueState === 'CONFLICT' ? 'Konflik versi ditemukan' : 'Konflik diselesaikan'}</strong>
+              <span style={styles.miniLabel}>Status pengiriman</span>
+              <strong>{queueState === 'ONLINE' ? 'Online · tidak ada menunggu' : queueState === 'QUEUED' ? 'Offline · 1 menunggu' : queueState === 'CONFLICT' ? 'Catatan perlu diperiksa' : 'Catatan sudah diperiksa'}</strong>
               <div style={styles.actions}>
-                <button type="button" className="primary-button" style={styles.smallButton} onClick={() => setQueueState('QUEUED')} disabled={queueState !== 'ONLINE'}>Simulasikan offline</button>
-                <button type="button" className="outline-button" style={styles.smallButton} onClick={() => setQueueState('CONFLICT')} disabled={queueState !== 'QUEUED'}>Sambungkan kembali</button>
-                <button type="button" className="outline-button" style={styles.smallButton} onClick={() => setQueueState('RESOLVED')} disabled={queueState !== 'CONFLICT'}>Tinjau & selesaikan</button>
+                <button type="button" className="primary-button" style={styles.smallButton} onClick={() => setQueueState('QUEUED')} disabled={queueState !== 'ONLINE'}>Coba tanpa internet</button>
+                <button type="button" className="outline-button" style={styles.smallButton} onClick={() => setQueueState('CONFLICT')} disabled={queueState !== 'QUEUED'}>Sambungkan internet</button>
+                <button type="button" className="outline-button" style={styles.smallButton} onClick={() => setQueueState('RESOLVED')} disabled={queueState !== 'CONFLICT'}>Periksa catatan yang perlu diperbaiki</button>
               </div>
             </div>
-            {queueState === 'QUEUED' && <div style={styles.warning} role="status">Menunggu sinkronisasi. Jangan membuat catatan yang sama untuk kedua kali.</div>}
-            {queueState === 'CONFLICT' && <div style={{ ...styles.error, marginBottom: 0 }} role="alert">Data server berubah lebih dahulu. Konflik tidak dibuang otomatis; tinjau sebelum memilih hasil.</div>}
-            {queueState === 'RESOLVED' && <div style={styles.result} role="status">Antrean bersih dan keputusan konflik tercatat.</div>}
+            {queueState === 'QUEUED' && <div style={styles.warning} role="status">Menunggu dikirim. Jangan membuat catatan yang sama untuk kedua kali.</div>}
+            {queueState === 'CONFLICT' && <div style={{ ...styles.error, marginBottom: 0 }} role="alert">Data server berubah lebih dahulu. Catatan tidak dibuang otomatis; periksa sebelum memilih hasil.</div>}
+            {queueState === 'RESOLVED' && <div style={styles.result} role="status">Catatan sudah diperiksa. Anda bisa melanjutkan.</div>}
           </>
         );
       default:
@@ -462,7 +471,26 @@ export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }:
             <p style={styles.copy}>Pastikan handover atau closing, antrean, dan tugas tertunda sudah diperiksa. Check-out menggunakan pemeriksaan GPS yang sama dan tidak menggantikan penyelesaian tugas.</p>
             <div style={styles.actions}>
               <button type="button" className="primary-button" style={styles.smallButton} onClick={() => setCheckedOut(true)} disabled={checkedOut}>{checkedOut ? 'Check-out latihan berhasil' : 'Simulasikan check-out'}</button>
-              <button type="button" className="outline-button" style={styles.smallButton} onClick={replayHelp}>Ulangi panduan Bantuan</button>
+            </div>
+            <div style={{ marginTop: '18px', paddingTop: '12px', borderTop: '1px dashed #cddcd4' }}>
+              <button
+                type="button"
+                className="outline-button"
+                style={{ ...styles.smallButton, ...(replayArmed ? { borderColor: '#b95745', color: '#8f3f34' } : {}) }}
+                onClick={() => {
+                  if (replayArmed) {
+                    setReplayArmed(false);
+                    replayHelp();
+                  } else {
+                    setReplayArmed(true);
+                  }
+                }}
+              >
+                {replayArmed ? 'Ketuk lagi untuk mengulang dari awal' : 'Ulangi latihan dari awal'}
+              </button>
+              <p className="muted" style={{ fontSize: '11px', margin: '6px 0 0' }}>
+                Butuh bantuan? Hubungi Primary atau Supervisor. Mengulang akan mengembalikan semua langkah ke awal.
+              </p>
             </div>
             <div style={checkedOut ? styles.result : styles.warning} role="status">
               {checkedOut ? 'Shift latihan selesai. Simpan progres untuk mulai menggunakan HOPIN.' : 'Jika ada masalah atau tugas tertunda, buka Bantuan dan hubungi Primary atau Supervisor. Check-out darurat akan ditinjau.'}

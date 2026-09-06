@@ -1,5 +1,101 @@
 # HOPIN Action Log
 
+## E7 Selesai: Gerbang Integrasi Staging + Laporan Akhir (6 Sep 2026)
+- Baseline akhir (belum di-commit, menunggu izin): lint LULUS, test 46/46 (14 file) LULUS, build Vite 8 LULUS (JS 412.60 kB/gzip 111.82 kB), diff-check LULUS, pgTAP plan(26) LULUS di staging.
+- Staging API nyata via vercel dev terisolasi (.env.local staging terverifikasi, NODE_ENV=test untuk CSRF): investor-denial + init-403 LULUS, logout-revocation (401 pasca-logout + idempoten) LULUS, B04 once-only + payload-400 LULUS, lifecycle claim→opening→movement LULUS (ekspektasi init dimutakhirkan ke B06 setelah temuan 500 pada ekspektasi lama).
+- Browser journey desktop LULUS (`staff-journey.spec.ts`): login → 8 interaksi latihan → simpan → claim KITCHEN → check-in GPS terkontrol → Workspace Kitchen, API/RPC staging sungguhan (GPS simulasi browser, bukan perangkat fisik).
+- Init baseline nyata: OPERATOR PRIMARY BAR APPROVED (via API) + Supervisor KITCHEN APPROVED → AVAILABLE 6 baris (via API).
+- Mobile 360px: login → langsung Workspace Kitchen (B04 skip + sesi desktop masih aktif) + screenshot responsif; header/menu/tabel terpotong scroll horizontal sesuai CSS. Full click-journey mobile belum hijau karena balapan fixture (reset gabungan tak terverifikasi), bukan bug aplikasi — residual tercatat.
+- Reset fixture terverifikasi: hapus progress operator2 terkonfirmasi count=0 via query terpisah (hindari multi-statement satu panggilan).
+- Restore drill disposable: TERBLOKIR (tidak ada project disposable; hanya staging+production). Eksekusi cron production: TERBLOKIR (mutasi production). Keduanya masuk daftar tunggu izin.
+- MENUNGGU IZIN EKSPILISIT: (1) migration production 0020/0021; (2) commit/push/deploy perubahan E0–E7; (3) restore drill disposable; (4) verifikasi cron production; (5) hentikan trigger + hapus project `webapp` + konsolidasi folder; (6) pilot produksi. Tidak ada tindakan tersebut dijalankan tahap ini.
+
+## E6 Selesai: Inventaris Root + Vercel (Tanpa Pindah/Hapus) (6 Sep 2026)
+- Root lokal `/Users/harunalrasyid/Projects/HOPIN`: `webapp/` (repo aktif + `.git`), `webapp-fallback/` (demo statis 4 file), `output/pdf/`, `tmp/pdfs/`, `.pnpm-store/`. Tidak ada git repo lain; tidak ada file dipindah/dihapus tahap ini.
+- `hopinops` (prj_m2oQefN2N52iuSuaoZU8srtoBHKG): Root Directory `.`, Vite, iad1, Production Ready `hopinops-qdy8hwzhb` (alias `hopinops.vercel.app` + `git-main`), 5 functions termasuk cleanup. Env Production: APP_ALLOWED_ORIGIN, CRON_SECRET, READINESS_SECRET, PAYROLL_EXPORT_BUCKET, SUPABASE_SERVICE_ROLE_KEY, VITE_SUPABASE_PUBLISHABLE_KEY, VITE_SUPABASE_URL (nama + environment dicatat; nilai tidak disalin ke log).
+- `webapp` (prj_tNGLAKJxGWAGPJtfvliOBK4C64N0): Root Directory `.`, Vite, iad1, Production Ready `webapp-8xdemd8r7` 10:57:52 WIB + alias `git-main`. Kedua project deploy repo+branch yang sama pada detik yang sama.
+- Temuan penting: kedua project membaca `vercel.json` yang sama → cron cleanup berpotensi berjalan ganda. Env/cron/storage/webhook/traffic project `webapp` belum terpetakan (butuh dashboard/API; tidak dilakukan agar tidak mengubah state).
+- Menunggu izin eksplisit: pemindahan folder ke root tunggal, penghentian trigger + penghapusan project `webapp`, serta verifikasi domain/env/cron/storage sebelum itu.
+
+## E5 Selesai: Upgrade Bertahap + Gate per Batch (6 Sep 2026)
+- Batch aman LULUS: supabase-js 2.115.0, playwright 1.63.0, happy-dom 20.14.0, types/react-dom 19.2.7.
+- Batch kompatibilitas LULUS: vitest+coverage 5.0.0, vite 8.2.2 + plugin-react 6.1.1 (vite/plugin dikembalikan ke `dependencies` agar build Vercel aman).
+- TypeScript 7.0.2 GAGAL gate (lint: `global`/`process` tak dikenali di api_client tes + e2e fixtures) → revert ke ~5.8.3 sesuai kontrak (catat blocker, bukan paksakan). Pinned Node 24 + pnpm 11.23 runtime lokal.
+- Audit prod: tidak ada kerentanan dikenal. Build: JS 412.60 kB (gzip 111.82 kB).
+- Gates: `pnpm lint` LULUS, `pnpm test` 46/46 (14 file) LULUS, `pnpm build` (Vite 8) LULUS, `git diff --check` LULUS.
+- Blocker tercatat: TS 7 butuh penyesuaian types config; Playwright 1.63 butuh unduh browser sebelum e2e (masuk E7).
+
+## E4 Selesai: Copy Awam + A11y + Layout + Ukur Awal (6 Sep 2026)
+- Copy terkunci diterapkan: hapus `Otomatis terselubung`; latihan sinkronisasi → `Saat internet terputus`/`Coba tanpa internet`/`Sambungkan internet`/`Periksa catatan yang perlu diperbaiki`/`Catatan sudah diperiksa. Anda bisa melanjutkan.`; patokan → `Patokan stok awal belum disiapkan. Supervisor dapat menyiapkannya dari dashboard...`; darurat B05 sudah di E3.
+- Ulangi latihan dipisah sekunder two-tap (`Ulangi latihan dari awal` → `Ketuk lagi...`) + catatan bantuan; navigasi membatalkan arm. Pilihan aktif: border tegas + centang ✓ + `aria-pressed` + sr-only `(dipilih)`.
+- Header workspace: aksi sekunder (Kelola/Laporan/Check-out darurat/Keluar) masuk menu akun `<details>`; avatar sebagai summary berlabel. Escape menutup dialog konfirmasi logout + darurat (non-submit).
+- CSS: `.table-responsive{overflow-x:auto}` + menu akun + min 560px tabel mobile. Fondasi responsif/fokus (focus-visible, target ≥44px, breakpoint 650px) sudah ada dan dipertahankan.
+- Ukur jujur (sampel tunggal, bukan benchmark): build JS 416.80 kB (gzip 114.73 kB), CSS 37.46 kB (gzip 8.21 kB); production `/api/health` 200 dalam 0.89s, bootstrap-tanpa-sesi 401 dalam 1.14s. p50/p95, cold/warm, RTT server–DB, metrik browser masuk E7 Playwright.
+- Gates: `pnpm lint` LULUS, `pnpm test` 46/46 (14 file; replay two-tap + Escape + copy) LULUS, `pnpm build` LULUS, `git diff --check` LULUS.
+- Belum dibuktikan: audit keyboard penuh per dialog, kontras terukur, metrik browser nyata (E7).
+
+## E3 Selesai: Darurat Mandiri + Laporan Gabungan + Payroll Guard (6 Sep 2026)
+- Migration `0021_self_emergency_checkout_b05.sql` applied ke staging. `rpc_self_emergency_checkout` khusus OPERATOR, target dari sesi server (tanpa ID arbitrary), idempoten via `workflow_idempotency`, audit atomik. RPC manager tidak diubah. Production belum disentuh.
+- API `attendance.selfEmergencyCheckout` (OPERATOR-only, tanpa attendance_id) + klien `api.selfEmergencyCheckout`. UI pribadi App dialihkan ke jalur mandiri dengan copy terkunci (`Check-out darurat`, alasan, `Catat check-out darurat`/`Kembali`, receipt menunggu peninjauan). Error checkout-tercatat diarahkan ke pemulihan completion, bukan emergency ulang.
+- Laporan: seksi `Ringkasan Stok Area` dari snapshot server per BAR/KITCHEN + catatan kesiapan diperiksa server; non-finalizer ditegaskan hanya melihat (submit terkunci + alasan).
+- Payroll: F05 stale-guard requestId (respons basi dibuang, reload tab unifikasi); F06 validasi bulan kalender nyata + tolak export run tanpa entri (409); F07 pre-check receipt existing (replay tanpa file ganda, konflik checksum → 409) + toast replay di UI.
+- Gates: `pnpm lint` LULUS, `pnpm test` 45/45 (14 file; baru `reports_summary.test.tsx`) LULUS, `pnpm build` LULUS, `git diff --check` LULUS, pgTAP `plan(26)` LULUS (2 assertion B05 baru).
+- Belum dibuktikan: journey check-in→emergency→review→recovery lintas hari di browser staging + payroll periodik penuh (masuk E7).
+
+## E2 Selesai: Refresh Aman, Antrean Terjaga, Logout Konfirmasi (6 Sep 2026)
+- U04 ditutup di source: `loadBootstrap(background)` mengembalikan boolean; refresh latar tidak pernah melempar dan tidak pernah mengganti layar (tanpa `BOOTING`/takeover). Banner non-blokir `Data mungkin belum terbaru` + tombol `Muat ulang` bila refresh latar gagal.
+- `handleResolveConflict` hanya menghapus antrean setelah refresh terbukti sukses; gagal = antrean utuh + pesan `tetap tersimpan`. Discard eksplisit dibedakan dari receipt sukses. Handover/init/correction/closing/opening-confirm ikut cek boolean (sukses server + warning refresh, bukan sukses palsu).
+- Logout tidak membuang kerja diam-diam: workspace melaporkan antrean tak-tersinkron + hitungan belum-konfirmasi; dialog `Tetap keluar akun?` menjelaskan antrean tetap di perangkat tak-terlihat pengguna berikut vs hitungan bisa hilang. `handleLogout` tanpa argumen agar click-event tak terbaca sebagai konfirmasi (bug event-as-force diperbaiki sebelum merge).
+- `ReportsView.onRefresh` boolean; gagal = warning `Workspace gagal diperbarui`, layar laporan tetap.
+- Gates: `pnpm lint` LULUS, `pnpm test` 42/42 (13 file; baru `queue_conflict.test.tsx` 2 skenario + 1 skenario dirty-logout di staff_flow) LULUS, `pnpm build` LULUS, `git diff --check` LULUS.
+- Belum dibuktikan: skenario offline/reconnect browser nyata + response-loss retry tanpa ganda (masuk E7 staging journey).
+
+## E1 Selesai: Katalog + Checklist Server + Baseline PRIMARY (6 Sep 2026)
+- Migration `0020_catalog_checklist_b05_b07.sql` applied ke staging `ibzlxdmnuszcmdzuocwu`. Production belum disentuh (menunggu izin).
+- B01: `rpc_create/update/archive_item` kini Owner+Supervisor (dulu Owner-only); cycle-lock B02 dipertahankan. B07: `rpc_operator_create/archive_item` scoped PRIMARY area tugas aktif. B06: `rpc_initialize_stock_reference` boleh PRIMARY cycle (+Owner/Supervisor tetap).
+- Checklist server: tabel `checklist_sections/layouts/item_placements/layout_ops` + RPC get/upsert/move (expected_version + idempotency + audit). Investor ditolak di semua RPC checklist.
+- API: gate items.* dibuka untuk Supervisor; aksi baru `items.operatorCreate/operatorArchive`, `checklist.layout/get`, `checklist.section.upsert`, `checklist.item.move`; `opening.initialize` API dibuka untuk Operator (RPC menegakkan PRIMARY; HELPER/Investor ditolak).
+- UI: tab Katalog di ManagementView (Owner/Supervisor; Investor tidak ada tab) + tombol `Siapkan patokan cycle` per cycle ACTIVE di dashboard + workspace urut server per bagian dengan label bagian (fallback urutan prop bila layout gagal).
+- Gates: `pnpm lint` LULUS, `pnpm test` 39/39 (12 file, termasuk `catalog.test.tsx` baru) LULUS, `pnpm build` LULUS, `git diff --check` LULUS, pgTAP `plan(24)` LULUS (3 assertion investor-denial B01/B07 baru).
+- Belum dibuktikan: dua-perangkat snapshot-identik browser + init baseline nyata end-to-end (masuk E7); production migration 0020 (menunggu izin).
+
+## E0 Selesai: Evidence Dibekukan, Docs Diselaraskan, Pagar Skrip (6 Sep 2026)
+- HEAD `f05e7d2`, worktree: 2 file docs pengguna (ACTION_LOG, FINAL plan) dipertahankan + 2 file E0 saya (DESIGN.md, concurrency guard). Tidak ada commit/push pada tahap ini.
+- Deploy: `hopinops-qdy8hwzhb` Production Ready 10:57:52 WIB, alias `hopinops.vercel.app` + `git-main`, 5 functions termasuk cleanup, iad1. `webapp-8xdemd8r7` juga Ready — mapping trigger tetap wajib dicek di E6 sebelum simpulkan.
+- Migration ledger staging (linked `ibzlxdmnuszcmdzuocwu`): 0001–0019 sinkron. Production 0019 sesuai laporan audit sebelumnya, belum re-query mandiri tahap ini (butuh link switch; ditunda agar tidak kotor worktree).
+- DESIGN.md:97-102 diperbaiki minimal — FINAL plan dinyatakan sumber kebenaran server-first; baris demo lokal ditandai historis. Identitas visual tidak diubah.
+- Skrip concurrency dipagar: allowlist staging + `E2E_ALLOW_MUTATION=1` + cleanup deactivate terverifikasi. Tidak dijalankan ulang tahap ini.
+- Gates: `pnpm lint` LULUS, `pnpm test` 36/36 (11 file) LULUS, `pnpm build` LULUS (400.82 kB / gzip 110.43 kB), `git diff --check` LULUS, pgTAP `plan(21)` LULUS via `supabase db query --linked` (rollback, tanpa mutasi persisten).
+- Blocker E0 tersisa: parity fungsi staging vs production belum re-query mandiri; mapping Git integration kedua project belum inventaris (masuk E6).
+
+## Default Eksekusi Ditetapkan Koordinator
+
+- Harun meminta opsi terbaik untuk tiga pertanyaan pelaksana: gunakan 'Check-out darurat' dengan penjelasan tugas tetap pending; upgrade major setelah alur E1-E4 stabil dalam batch kompatibilitas berurutan; rehearsal staging lalu pilot satu outlet satu hari Siang-Malam lengkap dan terawasi.
+- Keputusan dan acceptance tambahan dicatat pada FINAL_OPERATIONAL_READINESS_PLAN.md: jangan menghilangkan hak katalog PRIMARY B07, backlog payroll E3, distinction discard vs receipt pada E2, atau salah mengisi Vercel Root Directory menjadi dua titik (yang benar satu titik).
+- Tahap ini hanya menyelaraskan plan dan log, bukan implementasi aplikasi/upgrade/deploy atau pelaksanaan pilot. Izin rollout/delete tetap terpisah.
+
+## Keputusan Final B05-B07: 6 September 2026
+
+- Tambahan Harun: susunan barang/bagian adalah konfigurasi bersama server-owned, tidak hardcoded atau lokal per browser. Supervisor melihat susunan dan versi yang sama dengan staf untuk cycle yang sama; susunan pending shift berikutnya dibedakan. RPC reorder transactional dengan version check/idempotency/audit dan tes dua perangkat diwajibkan dalam plan; belum diimplementasikan pada tahap dokumentasi ini.
+- Harun menyetujui Operator check-out darurat untuk dirinya sendiri, dengan reason/review/tugas pending; manager-on-behalf tetap jalur berbeda. Tidak otomatis approval atau menyelesaikan stok/payroll.
+- Harun menyetujui PRIMARY menyiapkan stok fisik pertama serta tambah/archive dan urutkan daftar barang per bagian lemari/lokasi dalam area tugas. Checklist server-owned, identitas barang dan histori tetap utuh. Helper tidak otomatis dinaikkan kewenangannya.
+- Kontrak lengkap, pengecualian setup pertama terhadap cycle freeze, scope/replay/concurrency dan acceptance ada di FINAL_OPERATIONAL_READINESS_PLAN.md bagian B05-B07. Keputusan ini menggantikan pertanyaan pending dan aturan manager-only baseline lama.
+- Plan E0-E7 sudah final untuk eksekusi dengan B05-B07; detail share sementara investor tetap deferred, approved-only berjalan. Folder/Vercel tetap bagian E6 dan bukan izin delete/deploy.
+- Tahap ini hanya finalisasi dokumen; implementasi B05-B07 belum dikerjakan dan status aplikasi tetap BELUM SIAP OPERASIONAL PENUH.
+
+## Status Aktif: Audit Terpadu 6 September 2026, Pasca f05e7d2
+
+- Sumber eksekusi tunggal: FINAL_OPERATIONAL_READINESS_PLAN.md bagian 0, E0-E7. CONSOLIDATION_PLAN.md adalah lampiran prosedur. Entri di bawah adalah histori, bukan status aktif bila bertentangan.
+- HEAD f05e7d2, perubahan Tahap B 3ed63dc sudah committed; worktree bersih sebelum audit ini. Verifikasi ulang lint (termasuk api), 36/36 test 11 file, build semuanya lulus.
+- Ledger read-only project-ref eksplisit: staging ibzlxdmnuszcmdzuocwu DAN production naanarmoktmsumkxmjvj mencatat 0019. Tidak menjalankan ulang pgTAP atau concurrency mutating script pada audit ini.
+- Vercel hopinops-qdy8hwzhb dan webapp-8xdemd8r7 sama-sama Ready, production, waktu 10:57:52 WIB, alias git-main. Mapping Git integration/SHA dan dependensi cron/domain masih perlu inventaris sebelum memutus trigger project webapp.
+- pnpm audit --prod tidak menemukan advisory dikenal; pnpm outdated menemukan update minor dan major, detail baseline/strategi E5 ada di plan. Dependency belum diubah.
+- Blocker nyata: self emergency CTA selalu ditolak role/self guard; operator baseline belum diizinkan dan manager belum punya aksi dashboard langsung; katalog Supervisor belum tersedia; global refresh/queue discard dan report sequence belum aman/jelas.
+- Penutupan Tahap B belum terbukti penuh: concurrency script tanpa staging guard/finally, Promise.all belum membuktikan overlap transaksi; tes logout belum membuktikan token lama revoked; lock SQL aktual profiles -> outlet_settings -> onboarding_progress, bukan urutan pada laporan lama.
+- Impeccable audit menemukan DESIGN.md:97-102 masih mengatur demo lokal/larangan security production; harus diselaraskan sebelum menjadi petunjuk desain. Screenshot tidak dapat dibaca, browser/a11y/performance lengkap belum dijalankan. Health 200 satu sampel 0.98 s bukan benchmark.
+- Menunggu keputusan: hak operator self-emergency dan baseline pertama. Sampai keputusan jangan mengubah role diam-diam.
+- Perubahan audit ini hanya plan/action log; tidak deploy, DB mutation, upgrade dependency, pindah folder, hapus project, atau commit/push. Status produk: BELUM SIAP OPERASIONAL PENUH.
+
 Tanggal: 5 September 2026
 Dasar: `PRODUCTION_PLAN.md`, `REMEDIATION_IMPLEMENTATION_PLAN_PART_3.md`
 Branch: `remediation/part3`

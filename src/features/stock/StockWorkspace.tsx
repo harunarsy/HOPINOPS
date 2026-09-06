@@ -44,7 +44,8 @@ type Props = {
   items: Item[];
   cycleData: any;
   canManage?: boolean;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<boolean>;
+  onDirtyChange?: (dirty: { queue: number; unconfirmed: boolean }) => void;
   onCheckOutRequest: () => void;
   onGoReports: () => void;
 };
@@ -60,6 +61,7 @@ export function StockWorkspace({
   cycleData,
   canManage = false,
   onRefresh,
+  onDirtyChange,
   onCheckOutRequest,
   onGoReports,
 }: Props) {
@@ -81,6 +83,8 @@ export function StockWorkspace({
   const [openingReferenceLoading, setOpeningReferenceLoading] = useState(false);
   const [openingReferenceError, setOpeningReferenceError] = useState('');
   const [openingReferenceReload, setOpeningReferenceReload] = useState(0);
+  const [layoutSections, setLayoutSections] = useState<{ id: string; name: string; position: number }[]>([]);
+  const [layoutPlacements, setLayoutPlacements] = useState<{ item_id: string; section_id: string; position: number }[]>([]);
   const [initializationDialogOpen, setInitializationDialogOpen] = useState(false);
   const [initializationReason, setInitializationReason] = useState('');
   const [bulkMatchTarget, setBulkMatchTarget] = useState<'OPENING' | 'CLOSING' | null>(null);
@@ -93,6 +97,44 @@ export function StockWorkspace({
   const activeScopeRef = useRef('');
   const cycleVersionRef = useRef(0);
   const cycleVersionScopeRef = useRef('');
+
+  // Server-owned checklist order (E1): staff and Supervisor see the same snapshot.
+  // Falls back to item prop order when layout is unavailable; never re-sorts by name locally.
+  useEffect(() => {
+    let active = true;
+    void api.getChecklistLayout(area)
+      .then((layout) => {
+        if (!active) return;
+        setLayoutSections(layout.sections);
+        setLayoutPlacements(layout.placements);
+      })
+      .catch(() => {
+        if (!active) return;
+        setLayoutSections([]);
+        setLayoutPlacements([]);
+      });
+    return () => { active = false; };
+  }, [area, outletId]);
+
+  const sectionNameOf = (itemId: string): string | null => {
+    const placement = layoutPlacements.find((p) => p.item_id === itemId);
+    if (!placement) return null;
+    return layoutSections.find((s) => s.id === placement.section_id)?.name ?? null;
+  };
+
+  const orderedItems = useMemo(() => {
+    if (layoutPlacements.length === 0) return items;
+    const sectionPos = new Map(layoutSections.map((s) => [s.id, s.position]));
+    const placePos = new Map(layoutPlacements.map((p) => [p.item_id, p]));
+    return [...items].sort((a, b) => {
+      const pa = placePos.get(a.id);
+      const pb = placePos.get(b.id);
+      const sa = pa ? (sectionPos.get(pa.section_id) ?? 999) : 999;
+      const sb = pb ? (sectionPos.get(pb.section_id) ?? 999) : 999;
+      if (sa !== sb) return sa - sb;
+      return (pa?.position ?? 999) - (pb?.position ?? 999);
+    });
+  }, [items, layoutSections, layoutPlacements]);
 
   // Opening state
   const openingRecord = cycleData?.opening;
@@ -116,6 +158,18 @@ export function StockWorkspace({
 
   const isPrimary = dutyRole === 'PRIMARY';
   const canSaveDraft = dutyRole === 'PRIMARY' || dutyRole === 'HELPER' || canManage;
+
+  // E2: report unsaved work upward so logout can confirm instead of silently discarding.
+  // Queue entries persist in-device (scoped per user/outlet); unconfirmed counts may be lost.
+  useEffect(() => {
+    if (!onDirtyChange) return;
+    const queue = queueSummary.pending + queueSummary.sending + queueSummary.conflict + queueSummary.failed;
+    const hasOpeningInput = !isOpeningConfirmed
+      && Object.values(openingCounts).some((v) => v.trim() !== '');
+    const hasClosingInput = !isClosingConfirmed && !closingCompleted
+      && Object.values(closingCounts).some((v) => v.trim() !== '');
+    onDirtyChange({ queue, unconfirmed: hasOpeningInput || hasClosingInput });
+  }, [onDirtyChange, queueSummary, openingCounts, closingCounts, isOpeningConfirmed, isClosingConfirmed, closingCompleted]);
   const isDayShift = shift === 'SIANG';
   const isNightOrFull = shift === 'MALAM' || shift === 'FULL';
   const isRequiredFinal = isDayShift
@@ -343,7 +397,8 @@ export function StockWorkspace({
       const unresolved = remaining.filter((item) => item.state !== 'SYNCED');
       if (attemptedSync && unresolved.length === 0) {
         showToast('Semua catatan offline berhasil disinkronkan ke server.');
-        await onRefresh();
+        const refreshed = await onRefresh();
+        if (!refreshed) showToast('Sinkron berhasil, tetapi tampilan gagal dimuat ulang. Data Anda aman; muat ulang manual.');
       } else if (attemptedSync && unresolved.some((item) => item.state === 'CONFLICT')) {
         showToast('Sinkronisasi menemukan konflik. Closing tetap dikunci sampai konflik diselesaikan.');
       } else if (attemptedSync && unresolved.some((item) => item.state === 'FAILED')) {
@@ -541,9 +596,8 @@ export function StockWorkspace({
       setInitializationReason('');
       setInitializationDialogOpen(false);
       showToast('Referensi stok awal berhasil diinisialisasi. Semua patokan awal kini 0.');
-      try {
-        await onRefresh();
-      } catch {
+      const refreshed = await onRefresh();
+      if (!refreshed) {
         showCriticalError('Referensi berhasil dibuat, tetapi data cycle gagal dimuat ulang.');
       }
     } catch (err: any) {
@@ -606,7 +660,11 @@ export function StockWorkspace({
       await api.confirmOpening(cycleId, lines);
       setCriticalError('');
       showToast('Stok awal berhasil dikonfirmasi.');
-      await onRefresh();
+      const refreshed = await onRefresh();
+      if (!refreshed) {
+        showCriticalError('Stok awal tersimpan, tetapi tampilan gagal dimuat ulang. Muat ulang manual sebelum lanjut.');
+        return;
+      }
       setTab('movement');
     } catch (err: any) {
       const status = typeof err?.status === 'number' ? err.status : null;
@@ -767,9 +825,8 @@ export function StockWorkspace({
       await api.completeHandover(cycleId);
       setHandoverCompleted(true);
       showToast('Handover shift berhasil diselesaikan.');
-      try {
-        await onRefresh();
-      } catch {
+      const refreshed = await onRefresh();
+      if (!refreshed) {
         showCriticalError('Handover berhasil, tetapi tampilan gagal dimuat ulang.');
       }
     } catch (err: any) {
@@ -789,17 +846,23 @@ export function StockWorkspace({
     }
   };
 
+  // E2: antrean konflik hanya dihapus setelah data terbaru terbukti termuat.
+  // Refresh yang gagal tidak pernah menghapus antrean; discard eksplisit bukan receipt sukses.
   const handleResolveConflict = async (item: QueueItem) => {
     setLoading(true);
     setCriticalError('');
     try {
-      await onRefresh();
+      const refreshed = await onRefresh();
+      if (!refreshed) {
+        showCriticalError('Konflik tidak dihapus karena data terbaru gagal dimuat. Antrean tetap tersimpan; coba lagi.');
+        return;
+      }
       await idbQueue.remove(queueScope, item.id);
       await loadQueueSummary();
       setConflictDiscardItem(null);
-      showToast('Konflik dihapus setelah refresh. Masukkan kembali transaksi dengan data terbaru.');
+      showToast('Konflik dihapus setelah data terbaru berhasil dimuat. Masukkan kembali transaksi bila masih diperlukan.');
     } catch (err: any) {
-      showCriticalError(`Konflik tidak dihapus karena refresh gagal (${typeof err?.code === 'string' ? err.code : 'REFRESH_FAILED'}).`);
+      showCriticalError(`Konflik tidak dihapus karena refresh gagal (${typeof err?.code === 'string' ? err.code : 'REFRESH_FAILED'}). Antrean tetap tersimpan.`);
     } finally {
       setLoading(false);
     }
@@ -862,9 +925,8 @@ export function StockWorkspace({
       setCorrectionMovement(null);
       setCorrectionReason('');
       showToast('Movement koreksi tersimpan sebagai catatan penyeimbang.');
-      try {
-        await onRefresh();
-      } catch {
+      const refreshed = await onRefresh();
+      if (!refreshed) {
         showCriticalError('Koreksi berhasil, tetapi ledger gagal dimuat ulang.');
       }
     } catch (err: any) {
@@ -947,9 +1009,8 @@ export function StockWorkspace({
       setCriticalError('');
       setClosingCompleted(true);
       showToast('Closing shift berhasil dikonfirmasi.');
-      try {
-        await onRefresh();
-      } catch {
+      const refreshed = await onRefresh();
+      if (!refreshed) {
         showCriticalError('Closing berhasil, tetapi tampilan gagal dimuat ulang.');
       }
       onGoReports();
@@ -1120,7 +1181,7 @@ export function StockWorkspace({
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((it) => {
+                  {orderedItems.map((it) => {
                     const b = itemBalances[it.id] || { opening: null, incoming: 0, outgoing: 0, system: null };
                     const st = statusOfStock(b.system, it.low_threshold);
                     return (
@@ -1168,7 +1229,7 @@ export function StockWorkspace({
               </>
             ) : openingReference?.state === 'INITIALIZATION_REQUIRED' ? (
               <>
-                <strong>Patokan belum tersedia.</strong> Tidak ada handover, closing terdahulu, atau inisialisasi yang disetujui. Nilai stok awal sengaja tidak ditampilkan sebagai 0.
+                <strong>Patokan stok awal belum disiapkan.</strong> Supervisor dapat menyiapkannya dari dashboard. Setelah itu, hitung stok fisik di area Anda. Kolom kosong berarti belum dihitung, bukan nol.
                 {canManage ? (
                   <button type="button" className="primary-button" onClick={() => setInitializationDialogOpen(true)} style={{ marginLeft: '10px' }}>
                     Inisialisasi Patokan 0
@@ -1210,7 +1271,7 @@ export function StockWorkspace({
           )}
 
           <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
-            {items.map((it) => {
+            {orderedItems.map((it) => {
               const reference = openingReferenceByItem.get(it.id);
               const refVal = reference !== undefined && Number.isFinite(reference) ? reference : null;
               const savedLine = openingRecord?.stock_opening_lines?.find((line: any) => line.item_id === it.id);
@@ -1227,6 +1288,9 @@ export function StockWorkspace({
                 <div key={it.id} style={{ padding: '12px', background: countState === 'UNCOUNTED' ? '#fff7ed' : '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <div style={{ minWidth: 0 }}>
+                      {sectionNameOf(it.id) && (
+                        <small style={{ display: 'block', color: '#1e5b48', fontWeight: 700 }}>{sectionNameOf(it.id)}</small>
+                      )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
                       <small style={{ display: 'block', color: '#6b8378' }}>
                         Patokan Server: {refVal === null ? 'Belum tersedia' : `${fmtNumber(refVal)} ${it.unit_code}`}
@@ -1432,7 +1496,7 @@ export function StockWorkspace({
             </button>
           )}
           <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
-            {items.map((it) => {
+            {orderedItems.map((it) => {
               const sysVal = itemBalances[it.id]?.system ?? null;
               const savedLine = closingRecord?.stock_closing_lines?.find((line: any) => line.item_id === it.id);
               const val = closingCounts[it.id] !== undefined
@@ -1448,6 +1512,9 @@ export function StockWorkspace({
                 <div key={it.id} style={{ padding: '12px', background: countState === 'UNCOUNTED' ? '#fff7ed' : '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <div>
+                      {sectionNameOf(it.id) && (
+                        <small style={{ display: 'block', color: '#1e5b48', fontWeight: 700 }}>{sectionNameOf(it.id)}</small>
+                      )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
                       <small style={{ display: 'block', color: '#6b8378' }}>Sisa Catatan: {sysVal === null ? 'Belum tersedia' : `${fmtNumber(sysVal)} ${it.unit_code}`}</small>
                       <small style={{ display: 'block', color: countState === 'VARIANCE' ? '#b45309' : '#496b5d', fontWeight: 700 }}>
@@ -1602,7 +1669,7 @@ export function StockWorkspace({
               onChange={(e) => setMvItem(e.target.value)}
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px' }}
             >
-              {items.map((it) => (
+              {orderedItems.map((it) => (
                 <option key={it.id} value={it.id}>{it.name} ({it.unit_code})</option>
               ))}
             </select>

@@ -699,7 +699,7 @@ export default {
       }
 
       if (action === 'items.create' && request.method === 'POST') {
-        if (user.role !== 'OWNER') return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh menambah item.', 403);
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh menambah item.', 403);
         const body = await readJsonObject(request, ['id', 'area_code', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
         const decimalScale = body?.decimal_scale ?? 2;
         const lowThreshold = body?.low_threshold ?? 0;
@@ -726,7 +726,7 @@ export default {
       }
 
       if (action === 'items.update' && request.method === 'POST') {
-        if (user.role !== 'OWNER') return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh mengubah item.', 403);
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh mengubah item.', 403);
         const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.name, 150)
           || !isNonEmptyString(body.unit_code, 32) || !Number.isInteger(body.decimal_scale)
@@ -749,7 +749,7 @@ export default {
       }
 
       if (action === 'items.archive' && request.method === 'POST') {
-        if (user.role !== 'OWNER') return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh mengarsipkan item.', 403);
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh mengarsipkan item.', 403);
         const body = await readJsonObject(request, ['id', 'reason']);
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.reason, 500)) {
           return invalidPayload('ID item dan reason wajib valid.');
@@ -762,6 +762,115 @@ export default {
         });
         if (error) return rpcErrorResponse(error);
         if (!isObject(data) || data.id !== body.id.trim() || data.active !== false) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      // B07: PRIMARY scoped catalog (own active area only; RPC enforces scope).
+      if (action === 'items.operatorCreate' && request.method === 'POST') {
+        if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
+        const body = await readJsonObject(request, ['id', 'area_code', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
+        const decimalScale = body?.decimal_scale ?? 2;
+        const lowThreshold = body?.low_threshold ?? 0;
+        if (!body || !isItemId(body.id) || !['BAR', 'KITCHEN'].includes(body.area_code)
+          || !isNonEmptyString(body.name, 150) || !isNonEmptyString(body.unit_code, 32)
+          || !Number.isInteger(decimalScale) || decimalScale < 0 || decimalScale > 4
+          || !isQuantity(lowThreshold, true)) {
+          return invalidPayload('ID, area, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_operator_create_item', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_item_id: body.id.trim(),
+          p_area_code: body.area_code,
+          p_name: body.name.trim(),
+          p_unit_code: body.unit_code.trim(),
+          p_decimal_scale: decimalScale,
+          p_low_threshold: lowThreshold,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.id !== body.id.trim()) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'items.operatorArchive' && request.method === 'POST') {
+        if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
+        const body = await readJsonObject(request, ['id', 'reason']);
+        if (!body || !isItemId(body.id) || !isNonEmptyString(body.reason, 500)) {
+          return invalidPayload('ID item dan reason wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_operator_archive_item', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_item_id: body.id.trim(),
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.id !== body.id.trim()) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      // Checklist layout server-owned (Owner/Supervisor full outlet; PRIMARY own area; Investor denied).
+      if (action === 'checklist.layout' && request.method === 'GET') {
+        if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan melihat susunan checklist.', 403);
+        }
+        const area = new URL(request.url).searchParams.get('area_code');
+        if (area !== 'BAR' && area !== 'KITCHEN') return invalidPayload('area_code wajib BAR atau KITCHEN.');
+        const { data, error } = await db.rpc('rpc_checklist_layout_get', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_area_code: area,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !Number.isInteger((data as any).version)
+          || !Array.isArray((data as any).sections) || !Array.isArray((data as any).placements)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'checklist.section.upsert' && request.method === 'POST') {
+        if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menata bagian.', 403);
+        }
+        const body = await readJsonObject(request, ['area_code', 'name', 'idempotency_key']);
+        if (!body || !['BAR', 'KITCHEN'].includes(body.area_code) || !isNonEmptyString(body.name, 80)
+          || !isUuid(body.idempotency_key) || (body.section_id !== undefined && body.section_id !== null && !isUuid(body.section_id))) {
+          return invalidPayload('area_code, name, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_checklist_section_upsert', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_area_code: body.area_code,
+          p_section_id: body.section_id ?? null,
+          p_name: body.name.trim(),
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isObject((data as any).section)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'checklist.item.move' && request.method === 'POST') {
+        if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menata item.', 403);
+        }
+        const body = await readJsonObject(request, ['area_code', 'item_id', 'section_id', 'position', 'expected_layout_version', 'idempotency_key']);
+        if (!body || !['BAR', 'KITCHEN'].includes(body.area_code) || !isItemId(body.item_id)
+          || !isUuid(body.section_id) || !Number.isInteger(body.position) || body.position < 0
+          || !isPositiveInteger(body.expected_layout_version) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('Payload pemindahan checklist wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_checklist_item_move', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_area_code: body.area_code,
+          p_item_id: body.item_id.trim(),
+          p_section_id: body.section_id,
+          p_position: body.position,
+          p_expected_layout_version: body.expected_layout_version,
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || typeof (data as any).layout_version !== 'number') return invalidRpcResult();
         return successResponse(data);
       }
 
@@ -1160,6 +1269,32 @@ export default {
         return successResponse(data, data.version);
       }
 
+      // B05: self-service emergency checkout. Target diambil dari sesi server
+      // (attendance milik sendiri); klien tidak mengirim attendance_id arbitrary.
+      if (action === 'attendance.selfEmergencyCheckout' && request.method === 'POST') {
+        if (user.role !== 'OPERATOR') {
+          return errorResponse('FORBIDDEN', 'Check-out darurat mandiri hanya untuk Operator.', 403);
+        }
+        const body = await readJsonObject(request, ['expected_attendance_version', 'idempotency_key', 'reason']);
+        if (!body || !isPositiveInteger(body.expected_attendance_version)
+          || !isUuid(body.idempotency_key) || !isNonEmptyString(body.reason, 1000)) {
+          return invalidPayload('expected_attendance_version, idempotency_key, dan reason wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_self_emergency_checkout', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_expected_attendance_version: body.expected_attendance_version,
+          p_idempotency_key: body.idempotency_key,
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.attendance_id) || !isUuid(data.event_id)
+          || data.status !== 'REVIEW_REQUIRED' || data.exception_status !== 'PENDING_REVIEW'
+          || data.version !== body.expected_attendance_version + 1
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
       if (action === 'attendance.correction.request' && request.method === 'POST') {
         if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan meminta koreksi attendance.', 403);
         const body = await readJsonObject(request, ['attendance_id', 'correction_type', 'proposed', 'reason']);
@@ -1364,8 +1499,9 @@ export default {
       }
 
       if (action === 'opening.initialize' && request.method === 'POST') {
-        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
-          return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh menginisialisasi referensi stok.', 403);
+        // B06: Owner/Supervisor/PRIMARY cycle. RPC verifies PRIMARY assignment; HELPER/Investor denied there.
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR' && user.role !== 'OPERATOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner, Supervisor, atau PRIMARY cycle yang boleh menginisialisasi referensi stok.', 403);
         }
         const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'idempotency_key', 'reason']);
         if (!body || !isUuid(body.cycle_id) || !isPositiveInteger(body.expected_version)
@@ -2002,14 +2138,24 @@ export default {
 
         const { data: entries, error: entriesError } = await db.from('payroll_entries').select('*, profiles(display_name)').eq('run_id', run.id).order('profile_id');
         if (entriesError) throw entriesError;
+        // F06: evidence wajib — run tanpa entri tidak boleh menghasilkan export sukses.
+        if (!entries || entries.length === 0) {
+          return errorResponse('EVIDENCE_MISSING', 'Payroll run belum memiliki entri sehingga tidak dapat diekspor.', 409);
+        }
         const entryIds = (entries ?? []).map((entry: any) => entry.id);
         const { data: adjustments, error: adjustmentsError } = entryIds.length
           ? await db.from('payroll_adjustments').select('*').in('entry_id', entryIds).order('created_at')
           : { data: [], error: null };
         if (adjustmentsError) throw adjustmentsError;
 
+        // F06: validasi bulan periode kalender yang sebenarnya (Feb/kabisat/30 hari).
+        const periodMatch = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(run.period_month ?? '');
+        if (!periodMatch) return errorResponse('VALIDATION_FAILED', 'Bulan periode payroll tidak valid.', 400);
+        const periodYear = Number(periodMatch[1]);
+        const periodMonthIdx = Number(periodMatch[2]);
+        const lastDay = new Date(Date.UTC(periodYear, periodMonthIdx, 0)).getUTCDate();
         const periodStart = `${run.period_month}-01`;
-        const periodEnd = `${run.period_month}-31`;
+        const periodEnd = `${run.period_month}-${String(lastDay).padStart(2, '0')}`;
         // Snapshot-derived supporting evidence for the payroll period (outlet-scoped reads).
         // Supportive reads are best-effort: a failure must not break the export.
         let attendance: any[] = [];
@@ -2231,11 +2377,51 @@ export default {
           audit: auditEvents?.length ?? 0,
           evidence: entries?.length ?? 0,
         };
+        // F07: retry-safe — respons hilang lalu retry tidak boleh menggandakan export
+        // atau gagal karena file sudah ada. Receipt yang sudah tercatat dikembalikan ulang.
+        const { data: existingExports } = await db.from('payroll_exports')
+          .select('id, checksum_sha256')
+          .eq('run_id', run.id)
+          .eq('file_path', filePath)
+          .order('generated_at', { ascending: false })
+          .limit(1);
+        const existingExport = existingExports?.[0] ?? null;
+        if (existingExport && existingExport.checksum_sha256 === checksum) {
+          return successResponse({
+            export_id: existingExport.id,
+            filename,
+            checksum,
+            label,
+            idempotent_replay: true,
+          });
+        }
+        if (existingExport && existingExport.checksum_sha256 !== checksum) {
+          return errorResponse('EXPORT_CONFLICT', 'Sudah ada export pada path ini dengan isi berbeda. Unduh export tercatat atau buat run baru.', 409);
+        }
         const { error: uploadError } = await db.storage.from(bucketName).upload(filePath, buffer, {
           contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           upsert: false,
         });
-        if (uploadError) return errorResponse('EXPORT_STORAGE_FAILED', uploadError.message, 503);
+        if (uploadError) {
+          // Balapan upload/checksum sama yang sudah tercatat (retry setelah respons hilang).
+          const { data: racedExports } = await db.from('payroll_exports')
+            .select('id, checksum_sha256')
+            .eq('run_id', run.id)
+            .eq('file_path', filePath)
+            .order('generated_at', { ascending: false })
+            .limit(1);
+          const raced = racedExports?.[0] ?? null;
+          if (raced && raced.checksum_sha256 === checksum) {
+            return successResponse({
+              export_id: raced.id,
+              filename,
+              checksum,
+              label,
+              idempotent_replay: true,
+            });
+          }
+          return errorResponse('EXPORT_STORAGE_FAILED', uploadError.message, 503);
+        }
 
         const { data: exportResult, error: exportError } = await db.rpc('rpc_record_payroll_export', {
           p_actor_id: user.id,
