@@ -3,6 +3,8 @@ import { api } from '../../lib/api';
 
 type Props = {
   onComplete: () => void;
+  onLogout?: () => void;
+  onboardingVersion?: number;
 };
 
 type OpeningChoice = 'MATCHED' | 'ZERO' | 'CUSTOM' | null;
@@ -179,11 +181,11 @@ function ChoiceButton({ selected, onClick, children }: { selected: boolean; onCl
   );
 }
 
-export function StaffOnboarding({ onComplete }: Props) {
+export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }: Props) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [assignment, setAssignment] = useState<'BAR' | 'KITCHEN'>('BAR');
+  const [assignment, setAssignment] = useState<'BAR' | 'KITCHEN' | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'IDLE' | 'INSIDE' | 'REVIEW'>('IDLE');
-  const [role, setRole] = useState<'PRIMARY' | 'HELPER'>('PRIMARY');
+  const [role, setRole] = useState<'PRIMARY' | 'HELPER' | null>(null);
   const [openingChoice, setOpeningChoice] = useState<OpeningChoice>(null);
   const [customQuantity, setCustomQuantity] = useState('');
   const [movementState, setMovementState] = useState<MovementState>('EMPTY');
@@ -192,11 +194,74 @@ export function StaffOnboarding({ onComplete }: Props) {
   const [checkedOut, setCheckedOut] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [completionError, setCompletionError] = useState<string | null>(null);
+  const [activeVersion, setActiveVersion] = useState(onboardingVersion);
+  const [versionConflictNewVersion, setVersionConflictNewVersion] = useState<number | null>(null);
 
   const isLastStep = currentStep === steps.length - 1;
 
+  const isCustomQuantityValid = (val: string) => {
+    const raw = val.trim();
+    if (raw === '') return false;
+    const num = Number(raw);
+    return Number.isFinite(num) && !Number.isNaN(num) && num >= 0;
+  };
+
+  const isStepComplete = (stepIndex: number): boolean => {
+    switch (stepIndex) {
+      case 0:
+        return assignment !== null;
+      case 1:
+        return gpsStatus !== 'IDLE';
+      case 2:
+        return role !== null;
+      case 3:
+        if (!openingChoice) return false;
+        if (openingChoice === 'CUSTOM') return isCustomQuantityValid(customQuantity);
+        return true;
+      case 4:
+        return movementState !== 'EMPTY';
+      case 5:
+        return closingAction !== null;
+      case 6:
+        return queueState === 'RESOLVED';
+      case 7:
+        return checkedOut === true;
+      default:
+        return false;
+    }
+  };
+
+  const getStepHint = (stepIndex: number): string | null => {
+    if (isStepComplete(stepIndex)) return null;
+    switch (stepIndex) {
+      case 0:
+        return 'Pilih area kerja (Bar atau Kitchen) untuk melanjutkan.';
+      case 1:
+        return 'Simulasikan pemeriksaan GPS untuk melanjutkan.';
+      case 2:
+        return 'Bandingkan & pilih peran (Primary atau Helper) untuk melanjutkan.';
+      case 3:
+        return 'Pilih hasil hitung fisik (atau masukkan jumlah valid) untuk melanjutkan.';
+      case 4:
+        return 'Simulasikan pergerakan stok untuk melanjutkan.';
+      case 5:
+        return 'Pilih alur penutupan shift (Handover atau Closing) untuk melanjutkan.';
+      case 6:
+        return 'Simulasikan alur offline dan selesaikan konflik untuk melanjutkan.';
+      case 7:
+        return 'Simulasikan check-out shift untuk dapat menyimpan progres.';
+      default:
+        return null;
+    }
+  };
+
   const goToStep = (nextStep: number) => {
     setCompletionError(null);
+    if (nextStep > currentStep) {
+      for (let s = currentStep; s < nextStep; s += 1) {
+        if (!isStepComplete(s)) return;
+      }
+    }
     setCurrentStep(Math.max(0, Math.min(nextStep, steps.length - 1)));
   };
 
@@ -213,13 +278,27 @@ export function StaffOnboarding({ onComplete }: Props) {
 
   const handleFinish = async () => {
     if (submitting) return;
+    for (let s = 0; s < steps.length; s += 1) {
+      if (!isStepComplete(s)) {
+        goToStep(s);
+        return;
+      }
+    }
     setSubmitting(true);
     setCompletionError(null);
     try {
-      await api.completeOnboarding(2);
+      await api.completeOnboarding(activeVersion);
       onComplete();
-    } catch {
-      setCompletionError('Progres latihan belum dapat disimpan. Anda tetap di langkah ini; periksa koneksi lalu coba lagi.');
+    } catch (err: any) {
+      const msg = err?.message || '';
+      const match = msg.match(/Current onboarding version is (\d+)/i);
+      if (match && Number(match[1])) {
+        const newVer = Number(match[1]);
+        setVersionConflictNewVersion(newVer);
+        setCompletionError(`Materi latihan telah diperbarui ke versi ${newVer} di server.`);
+      } else {
+        setCompletionError(msg || 'Progres latihan belum dapat disimpan. Anda tetap di langkah ini; periksa koneksi lalu coba lagi.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -241,7 +320,11 @@ export function StaffOnboarding({ onComplete }: Props) {
                 <strong>Kitchen</strong><br /><small>Shift Siang · 10.00-18.00</small>
               </ChoiceButton>
             </div>
-            <div style={styles.result} role="status">Penugasan latihan: <strong>{assignment}</strong>, Shift Siang. Pastikan pilihan sesuai roster sebelum check-in.</div>
+            {assignment ? (
+              <div style={styles.result} role="status">Penugasan latihan: <strong>{assignment}</strong>, Shift Siang. Pastikan pilihan sesuai roster sebelum check-in.</div>
+            ) : (
+              <div style={styles.warning} role="status">Pilih area latihan (Bar atau Kitchen) untuk memulai simulasi penugasan.</div>
+            )}
           </>
         );
       case 1:
@@ -272,9 +355,13 @@ export function StaffOnboarding({ onComplete }: Props) {
                 <strong>Helper</strong><br /><small>Hitung dan simpan draft untuk Primary</small>
               </ChoiceButton>
             </div>
-            <div style={role === 'PRIMARY' ? styles.result : styles.warning} role="status">
-              {role === 'PRIMARY' ? 'Anda bertanggung jawab memeriksa bukti sebelum konfirmasi.' : 'Serahkan draft kepada Primary. Tombol konfirmasi akhir tidak tersedia untuk Helper.'}
-            </div>
+            {role ? (
+              <div style={role === 'PRIMARY' ? styles.result : styles.warning} role="status">
+                {role === 'PRIMARY' ? 'Anda bertanggung jawab memeriksa bukti sebelum konfirmasi.' : 'Serahkan draft kepada Primary. Tombol konfirmasi akhir tidak tersedia untuk Helper.'}
+              </div>
+            ) : (
+              <div style={styles.warning} role="status">Pilih salah satu peran untuk mempelajari batas tanggung jawabnya.</div>
+            )}
           </>
         );
       case 3:
@@ -294,7 +381,18 @@ export function StaffOnboarding({ onComplete }: Props) {
               {openingChoice === 'CUSTOM' && (
                 <label style={{ display: 'block', marginTop: '12px', color: colors.muted, fontSize: '11px', fontWeight: 700 }}>
                   Jumlah fisik
-                  <input inputMode="decimal" value={customQuantity} onChange={(event) => setCustomQuantity(event.target.value)} placeholder="Contoh: 10" style={{ maxWidth: '180px' }} />
+                  <input
+                    inputMode="decimal"
+                    value={customQuantity}
+                    onChange={(event) => setCustomQuantity(event.target.value)}
+                    placeholder="Contoh: 10"
+                    style={{ maxWidth: '180px' }}
+                  />
+                  {!isCustomQuantityValid(customQuantity) && customQuantity.trim() !== '' && (
+                    <span style={{ display: 'block', color: colors.red, marginTop: '4px', fontSize: '11px' }}>
+                      Jumlah fisik harus angka valid dan tidak negatif.
+                    </span>
+                  )}
                 </label>
               )}
             </div>
@@ -372,11 +470,44 @@ export function StaffOnboarding({ onComplete }: Props) {
             {completionError && (
               <div style={styles.error} role="alert">
                 <strong>Gagal menyimpan progres.</strong><br />{completionError}
-                <div>
-                  <button type="button" className="outline-button" style={{ ...styles.smallButton, marginTop: '10px' }} onClick={() => void handleFinish()} disabled={submitting}>
-                    {submitting ? 'Mencoba lagi...' : 'Coba lagi'}
-                  </button>
-                </div>
+                {versionConflictNewVersion ? (
+                  <div style={{ marginTop: '10px' }}>
+                    <p style={{ margin: '0 0 8px', fontSize: '12px' }}>
+                      Versi materi outlet saat ini adalah versi <strong>{versionConflictNewVersion}</strong>. Klik di bawah untuk meninjau materi terbaru sebelum menyimpan.
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={styles.smallButton}
+                        onClick={() => {
+                          setActiveVersion(versionConflictNewVersion);
+                          setVersionConflictNewVersion(null);
+                          setCompletionError(null);
+                          goToStep(0);
+                        }}
+                      >
+                        Tinjau materi terbaru
+                      </button>
+                      {onLogout && (
+                        <button type="button" className="outline-button" style={styles.smallButton} onClick={onLogout} disabled={submitting}>
+                          Keluar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <button type="button" className="outline-button" style={styles.smallButton} onClick={() => void handleFinish()} disabled={submitting || !isStepComplete(7)}>
+                      {submitting ? 'Mencoba lagi...' : 'Coba lagi'}
+                    </button>
+                    {onLogout && (
+                      <button type="button" className="outline-button" style={styles.smallButton} onClick={onLogout} disabled={submitting}>
+                        Keluar
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -391,7 +522,19 @@ export function StaffOnboarding({ onComplete }: Props) {
           <div className="login-brand" style={styles.brand}>
             <div><strong style={{ fontSize: '24px' }}>HOPIN</strong><small>PANDUAN OPERATOR</small></div>
           </div>
-          <span style={styles.trainingBadge}>Latihan · Aman</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={styles.trainingBadge}>Latihan · Aman</span>
+            {onLogout && (
+              <button
+                type="button"
+                className="outline-button"
+                onClick={onLogout}
+                style={{ minHeight: '30px', padding: '4px 10px', fontSize: '11px', margin: 0 }}
+              >
+                Keluar
+              </button>
+            )}
+          </div>
         </header>
 
         <div style={styles.intro}>
@@ -433,14 +576,40 @@ export function StaffOnboarding({ onComplete }: Props) {
             Kembali
           </button>
           {!isLastStep ? (
-            <button type="button" className="primary-button" style={styles.navButton} onClick={() => goToStep(currentStep + 1)}>
-              Berikutnya
-            </button>
-          ) : !completionError ? (
-            <button type="button" className="primary-button" style={styles.navButton} onClick={() => void handleFinish()} disabled={submitting}>
-              {submitting ? 'Menyimpan...' : 'Simpan & mulai bekerja'}
-            </button>
-          ) : <span aria-hidden="true" />}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+              <button
+                type="button"
+                className="primary-button"
+                style={styles.navButton}
+                onClick={() => goToStep(currentStep + 1)}
+                disabled={!isStepComplete(currentStep)}
+              >
+                Berikutnya
+              </button>
+              {getStepHint(currentStep) && (
+                <small style={{ fontSize: '11px', color: '#8f3f34', fontWeight: 600 }}>
+                  {getStepHint(currentStep)}
+                </small>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+              <button
+                type="button"
+                className="primary-button"
+                style={styles.navButton}
+                onClick={() => void handleFinish()}
+                disabled={submitting || !isStepComplete(7)}
+              >
+                {submitting ? 'Menyimpan...' : 'Simpan & mulai bekerja'}
+              </button>
+              {!isStepComplete(7) && (
+                <small style={{ fontSize: '11px', color: '#8f3f34', fontWeight: 600 }}>
+                  Simulasikan check-out terlebih dahulu
+                </small>
+              )}
+            </div>
+          )}
         </nav>
       </main>
     </div>

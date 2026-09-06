@@ -14,6 +14,18 @@ const db = createClient(url, serviceRoleKey, {
 const pinIterations = 310_000;
 const encoder = new TextEncoder();
 
+async function authScopeKey(scope, value) {
+  const key = await webcrypto.subtle.importKey(
+    'raw',
+    encoder.encode(serviceRoleKey),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const digest = await webcrypto.subtle.sign('HMAC', key, encoder.encode(`${scope}\0${value}`));
+  return `${scope}:${Buffer.from(digest).toString('hex')}`;
+}
+
 function isWeakPin(pin) {
   if (/^(\d)\1{5}$/.test(pin)) return true;
   return ['000000', '111111', '222222', '333333', '444444', '555555', '666666', '777777', '888888', '999999', '123456', '654321', '123123', '654654', '012345', '543210', '112233', '121212'].includes(pin);
@@ -27,6 +39,8 @@ async function hashPin(pin) {
 }
 
 const outletId = '11111111-1111-1111-1111-111111111111';
+const e2eClientIp = process.env.E2E_CLIENT_IP ?? '198.51.100.42';
+const e2eFailedLoginIp = process.env.E2E_FAILED_LOGIN_IP ?? '198.51.100.43';
 const pin = '741258';
 if (isWeakPin(pin)) throw new Error('Weak PIN');
 
@@ -37,6 +51,19 @@ const users = [
   { username: 'e2e-operator2', display_name: 'E2E OPERATOR 2', role: 'OPERATOR', job_title: 'KITCHEN' },
   { username: 'e2e-investor', display_name: 'E2E INVESTOR', role: 'INVESTOR', job_title: 'INVESTOR' },
 ];
+
+const rateLimitScopeKeys = await Promise.all([
+  ...users.map((user) => authScopeKey('credential', user.username)),
+  authScopeKey('credential', 'e2e-warmup'),
+  authScopeKey('credential', 'e2e-no-such-user'),
+  ...['::1', '127.0.0.1', '::ffff:127.0.0.1', 'unknown', e2eClientIp, e2eFailedLoginIp]
+    .map((ip) => authScopeKey('ip', ip)),
+]);
+const { error: rateLimitError } = await db
+  .from('auth_rate_limits')
+  .delete()
+  .in('scope_key', rateLimitScopeKeys);
+if (rateLimitError) throw rateLimitError;
 
 const { data: policy } = await db.from('compensation_policies').select('id').eq('outlet_id', outletId).maybeSingle();
 

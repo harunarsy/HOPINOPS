@@ -154,5 +154,56 @@ test.describe('Authenticated staging API flows', () => {
     expect(claim.status).toBe(403);
     const items = await api.get('/api/app?action=items.list');
     expect([403, 404]).toContain(items.status);
+
+    // Investor cannot initialize opening reference
+    const initDenied = await api.post('/api/app?action=opening.initialize', {
+      cycle_id: '00000000-0000-0000-0000-000000000000',
+      expected_version: 1,
+      idempotency_key: crypto.randomUUID(),
+      reason: 'investor attempt',
+    });
+    expect(initDenied.status).toBe(403);
+  });
+
+  test('server-authoritative logout revokes session and subsequent requests fail with 401', async ({ request }) => {
+    const api = await login(request, credentials.username, credentials.pin);
+
+    // Verify session is active
+    const bootBefore = await api.get('/api/app?action=bootstrap');
+    expect(bootBefore.status).toBe(200);
+
+    // Logout
+    const out = await api.post('/api/auth?action=logout');
+    expect(out.status).toBe(200);
+    expect(out.body?.ok).toBe(true);
+
+    // Subsequent protected requests must be rejected with 401
+    const bootAfter = await api.get('/api/app?action=bootstrap');
+    expect(bootAfter.status).toBe(401);
+    expect(bootAfter.body?.error?.code).toBe('AUTH_REQUIRED');
+
+    // Repeated logout must be safe and idempotent
+    const outRepeat = await api.post('/api/auth?action=logout');
+    expect(outRepeat.status).toBe(200);
+  });
+
+  test('enforces B04 once-only onboarding and rejects invalid payload', async ({ request }) => {
+    const api = await login(request, 'e2e-operator2', credentials.pin);
+
+    // 1. Invalid payload rejected with 400
+    const invalidPayload = await api.post('/api/app?action=onboarding.complete', { version: -5 });
+    expect(invalidPayload.status).toBe(400);
+
+    // 2. Complete onboarding with valid version
+    const completeRes = await api.post('/api/app?action=onboarding.complete', { version: 1 });
+    expect(completeRes.status).toBe(200);
+    expect(completeRes.body?.ok).toBe(true);
+
+    // 3. Lifetime replay (B04): calling again with version 99 returns existing completion as replay
+    const replayRes = await api.post('/api/app?action=onboarding.complete', { version: 99 });
+    expect(replayRes.status).toBe(200);
+    expect(replayRes.body?.data?.idempotent_replay).toBe(true);
+
+    await api.post('/api/auth?action=logout');
   });
 });

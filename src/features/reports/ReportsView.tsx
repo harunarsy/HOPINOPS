@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FinanceData } from '../../domain/types';
 import { fmtRupiah } from '../../domain/rules';
 import { api } from '../../lib/api';
@@ -24,8 +24,23 @@ type ReportReceipt = {
   public_id?: string;
   status?: string;
 };
+type ReportSnapshot = {
+  report: ({ id: string; status: string; current_revision: number; version: number } & Record<string, unknown>) | null;
+  revision: ({ id: string; public_id?: string; status: string } & Record<string, unknown>) | null;
+  finance: (FinanceData & Record<string, unknown>) | null;
+  stock_lines: unknown[];
+  finance_draft: ({ version: number; finance_json: FinanceData } & Record<string, unknown>) | null;
+};
 type LoadState = 'checking' | 'not-applicable' | 'loading' | 'success' | 'error';
-type SubmitState = 'idle' | 'loading' | 'success' | 'error';
+type OperationState = 'idle' | 'loading' | 'success' | 'error';
+
+const emptyFinance: FinanceDraft = {
+  cash_real: '0',
+  cash_app: '0',
+  qris_mandiri: '0',
+  debit_mandiri: '0',
+};
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const financeFields: { key: keyof FinanceData; label: string; help: string }[] = [
   { key: 'cash_app', label: 'Cash POS / Aplikasi (Sistem)', help: 'Nilai cash yang tercatat di POS.' },
@@ -38,27 +53,144 @@ function messageFrom(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function codeFrom(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : '';
+}
+
+function parseServerFinance(value: unknown): FinanceData | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const parsed = financeFields.map(({ key }) => source[key]);
+  if (!parsed.every((amount) => typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0)) return null;
+  return {
+    cash_real: source.cash_real as number,
+    cash_app: source.cash_app as number,
+    qris_mandiri: source.qris_mandiri as number,
+    debit_mandiri: source.debit_mandiri as number,
+  };
+}
+
+function financeToInputs(value: FinanceData): FinanceDraft {
+  return {
+    cash_real: String(value.cash_real),
+    cash_app: String(value.cash_app),
+    qris_mandiri: String(value.qris_mandiri),
+    debit_mandiri: String(value.debit_mandiri),
+  };
+}
+
+function financeFromSnapshot(snapshot: ReportSnapshot) {
+  const immutable = Boolean(snapshot.report && !['DRAFT', 'NEEDS_CLARIFICATION'].includes(snapshot.report.status));
+  return immutable ? snapshot.finance : snapshot.finance_draft?.finance_json ?? snapshot.finance;
+}
+
+function receiptFromReport(snapshot: ReportSnapshot): ReportReceipt | null {
+  if (!snapshot.report && !snapshot.revision) return null;
+  return {
+    report_id: snapshot.report?.id,
+    revision_id: snapshot.revision?.id,
+    public_id: snapshot.revision?.public_id,
+    status: snapshot.revision?.status ?? snapshot.report?.status,
+  };
+}
+
 export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props) {
-  const [finance, setFinance] = useState<FinanceDraft>({
-    cash_real: '0',
-    cash_app: '0',
-    qris_mandiri: '0',
-    debit_mandiri: '0',
-  });
+  const [finance, setFinance] = useState<FinanceDraft>(emptyFinance);
+  const [reportLoadState, setReportLoadState] = useState<OperationState>('loading');
+  const [reportLoadError, setReportLoadError] = useState('');
+  const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null);
+  const [serverDraftFinance, setServerDraftFinance] = useState<FinanceData | null>(null);
+  const [financeDirty, setFinanceDirty] = useState(false);
+  const [draftVersion, setDraftVersion] = useState<number | null>(null);
+  const [draftState, setDraftState] = useState<OperationState>('idle');
+  const [draftMessage, setDraftMessage] = useState('');
   const [managerLoadState, setManagerLoadState] = useState<LoadState>('checking');
   const [managerLoadError, setManagerLoadError] = useState('');
   const [managerReports, setManagerReports] = useState<ManagerReport[]>([]);
   const [isManager, setIsManager] = useState(false);
-  const [submitState, setSubmitState] = useState<SubmitState>('idle');
+  const [submitState, setSubmitState] = useState<OperationState>('idle');
   const [submitMessage, setSubmitMessage] = useState('');
   const [refreshWarning, setRefreshWarning] = useState('');
   const [receipt, setReceipt] = useState<ReportReceipt | null>(null);
+  const [shareState, setShareState] = useState<OperationState>('idle');
   const [shareMessage, setShareMessage] = useState('');
+  const [recipientId, setRecipientId] = useState('');
+  const [shareReason, setShareReason] = useState('');
+  const draftIdempotencyKeyRef = useRef<string | null>(null);
+  const draftInFlightRef = useRef(false);
+  const shareIdempotencyKeyRef = useRef<string | null>(null);
+  const shareInFlightRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+
+    setReportLoadState('loading');
+    setReportLoadError('');
+    setReportSnapshot(null);
+    setFinance({ ...emptyFinance });
+    setServerDraftFinance(null);
+    setFinanceDirty(false);
+    setDraftVersion(null);
+    setDraftState('idle');
+    setDraftMessage('');
+    setSubmitState('idle');
+    setSubmitMessage('');
+    setRefreshWarning('');
+    setReceipt(null);
+    setShareState('idle');
+    setShareMessage('');
+    setRecipientId('');
+    setShareReason('');
+    draftIdempotencyKeyRef.current = null;
+    shareIdempotencyKeyRef.current = null;
+
+    const loadReport = async () => {
+      try {
+        const snapshot = await api.getReport(workDate) as ReportSnapshot;
+        if (!active) return;
+        const financeSource = financeFromSnapshot(snapshot);
+        const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
+        if (financeSource !== null && !hydratedFinance) {
+          throw new Error('Finance server tidak valid dan tidak dapat dimuat dengan aman.');
+        }
+        if (snapshot.finance_draft && (!Number.isInteger(snapshot.finance_draft.version) || snapshot.finance_draft.version <= 0)) {
+          throw new Error('Versi draft finance dari server tidak valid.');
+        }
+
+        setReportSnapshot(snapshot);
+        setFinance(hydratedFinance ? financeToInputs(hydratedFinance) : { ...emptyFinance });
+        setServerDraftFinance(snapshot.finance_draft ? hydratedFinance : null);
+        setDraftVersion(snapshot.finance_draft?.version ?? null);
+        setReceipt(receiptFromReport(snapshot));
+        setReportLoadState('success');
+      } catch (error) {
+        if (!active) return;
+        if (codeFrom(error) === 'NOT_FOUND') {
+          setReportSnapshot({ report: null, revision: null, finance: null, stock_lines: [], finance_draft: null });
+          setFinance({ ...emptyFinance });
+          setReportLoadState('success');
+          return;
+        }
+        setReportLoadError(messageFrom(error, 'Laporan gagal dimuat.'));
+        setReportLoadState('error');
+      }
+    };
+
+    void loadReport();
+    return () => {
+      active = false;
+    };
+  }, [workDate]);
 
   useEffect(() => {
     let active = true;
 
     const loadManagerReports = async () => {
+      setIsManager(false);
+      setManagerLoadError('');
+      setManagerLoadState('checking');
       try {
         const user = await api.getCurrentUser();
         if (!active) return;
@@ -105,6 +237,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     : null;
   const cashDiff = parsedFinance ? parsedFinance.cash_real - parsedFinance.cash_app : null;
   const currentReport = managerReports.find((report) => report.work_date === workDate);
+  const reportIsImmutable = Boolean(reportSnapshot?.report && !['DRAFT', 'NEEDS_CLARIFICATION'].includes(reportSnapshot.report.status));
   const receiptFields = receipt
     ? [
         receipt.report_id ? `ID laporan: ${receipt.report_id}` : '',
@@ -113,20 +246,58 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         receipt.status ? `Status: ${receipt.status}` : '',
       ].filter(Boolean)
     : [];
-  const canShareReceipt = submitState === 'success' && receiptFields.length > 0;
-  const fieldsDisabled = submitState === 'loading' || submitState === 'success' || !isFinalizer;
+  const canCopyReceipt = receiptFields.length > 0;
+  const recipientIsValid = uuidPattern.test(recipientId.trim());
+  const reasonIsValid = shareReason.trim().length > 0 && shareReason.trim().length <= 1000;
+  const canShareReport = Boolean(isManager && reportSnapshot?.revision && reportSnapshot.report && recipientIsValid && reasonIsValid);
+  const fieldsDisabled = reportLoadState !== 'success' || draftState === 'loading' || submitState === 'loading' || submitState === 'success' || reportIsImmutable || !isFinalizer;
   const submitDisabledReason = submitState === 'loading'
     ? 'Pengiriman sedang diproses oleh server.'
     : submitState === 'success'
       ? 'Laporan sudah terkirim. Receipt server tersedia di bawah.'
       : !isFinalizer
         ? 'Hanya primary BAR shift MALAM/FULL atau manajemen yang dapat mengirim laporan.'
+        : reportLoadState === 'loading'
+          ? 'Laporan server masih dimuat.'
+          : reportLoadState === 'error'
+            ? 'Laporan server gagal dimuat. Perbaiki kesalahan pemuatan sebelum mengirim.'
+            : reportIsImmutable
+              ? 'Laporan terkini sudah dikunci setelah dikirim.'
         : !financeIsValid
           ? 'Perbaiki semua nilai keuangan sebelum mengirim.'
           : '';
 
+  const handleSaveDraft = async () => {
+    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || draftInFlightRef.current) return;
+
+    draftInFlightRef.current = true;
+    draftIdempotencyKeyRef.current ??= crypto.randomUUID();
+    setDraftState('loading');
+    setDraftMessage('Menyimpan draft finance ke server...');
+    try {
+      const saved = await api.saveReportFinance(workDate, draftVersion, parsedFinance, draftIdempotencyKeyRef.current);
+      setDraftVersion(saved.version);
+      setServerDraftFinance(parsedFinance);
+      setFinanceDirty(false);
+      setReportSnapshot((current) => current ? {
+        ...current,
+        finance_draft: { ...(current.finance_draft ?? {}), ...saved, finance_json: parsedFinance },
+      } as ReportSnapshot : current);
+      setDraftState('success');
+      setDraftMessage(`Draft finance tersimpan di server (versi ${saved.version}).`);
+      draftIdempotencyKeyRef.current = null;
+    } catch (error) {
+      setDraftState('error');
+      setDraftMessage(messageFrom(error, 'Draft finance gagal disimpan. Coba lagi untuk mengulang request yang sama.'));
+    } finally {
+      draftInFlightRef.current = false;
+    }
+  };
+
   const handleSubmitReport = async () => {
-    if (!parsedFinance || !isFinalizer || submitState === 'loading' || submitState === 'success') return;
+    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || submitState === 'loading' || submitState === 'success') return;
+
+    const financeToSubmit = !financeDirty && serverDraftFinance ? serverDraftFinance : parsedFinance;
 
     setSubmitState('loading');
     setSubmitMessage('Mengirim finance dan meminta validasi kesiapan dari server...');
@@ -135,7 +306,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
     let serverReceipt: ReportReceipt;
     try {
-      serverReceipt = await api.submitReport(workDate, parsedFinance) as ReportReceipt;
+      serverReceipt = await api.submitReport(workDate, financeToSubmit) as ReportReceipt;
     } catch (error) {
       setSubmitState('error');
       setSubmitMessage(messageFrom(error, 'Laporan gagal dikirim. Data belum dinyatakan terkirim.'));
@@ -147,9 +318,26 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setSubmitMessage('Laporan diterima server. Simpan receipt berikut sebagai bukti pengiriman.');
 
     try {
+      const snapshot = await api.getReport(workDate) as ReportSnapshot;
+      const financeSource = financeFromSnapshot(snapshot);
+      const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
+      if (financeSource !== null && !hydratedFinance) throw new Error('Finance server tidak valid setelah submit.');
+      setReportSnapshot(snapshot);
+      setFinance(hydratedFinance ? financeToInputs(hydratedFinance) : financeToInputs(financeToSubmit));
+      setServerDraftFinance(snapshot.finance_draft ? hydratedFinance : null);
+      setFinanceDirty(false);
+      setDraftVersion(snapshot.finance_draft?.version ?? null);
+      setReportLoadError('');
+      setReportLoadState('success');
+      setReceipt({ ...serverReceipt, ...(receiptFromReport(snapshot) ?? {}) });
+    } catch (error) {
+      setRefreshWarning(`Laporan sudah terkirim, tetapi detail laporan gagal diperbarui: ${messageFrom(error, 'Muat ulang laporan.')}`);
+    }
+
+    try {
       await onRefresh();
     } catch (error) {
-      setRefreshWarning(`Laporan sudah terkirim, tetapi workspace gagal diperbarui: ${messageFrom(error, 'Muat ulang workspace.')}`);
+      setRefreshWarning((current) => `${current ? `${current} ` : ''}Workspace gagal diperbarui: ${messageFrom(error, 'Muat ulang workspace.')}`);
     }
 
     if (isManager) {
@@ -166,26 +354,44 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     }
   };
 
-  const handleShareReceipt = async () => {
-    if (!canShareReceipt) return;
+  const handleCopyReceipt = async () => {
+    if (!canCopyReceipt || isManager) return;
     const text = receiptFields.join('\n');
 
     try {
-      if (navigator.share) {
-        await navigator.share({ title: 'Receipt laporan harian HOPIN', text });
-        setShareMessage('Receipt server berhasil dibagikan.');
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(text);
-        setShareMessage('Receipt server disalin. Tempelkan ke WhatsApp bila diperlukan.');
-      } else {
-        setShareMessage('Browser ini tidak mendukung berbagi atau clipboard. Salin ID receipt secara manual.');
-      }
+      if (!navigator.clipboard) throw new Error('Clipboard tidak tersedia di browser ini.');
+      await navigator.clipboard.writeText(text);
+      setShareState('success');
+      setShareMessage('Receipt server berhasil disalin.');
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setShareMessage('Berbagi receipt dibatalkan.');
-      } else {
-        setShareMessage('Receipt server gagal dibagikan atau disalin. ID tetap tersedia di bawah.');
-      }
+      setShareState('error');
+      setShareMessage(messageFrom(error, 'Receipt server gagal disalin. ID tetap tersedia di bawah.'));
+    }
+  };
+
+  const handleShareReport = async () => {
+    const report = reportSnapshot?.report;
+    const revision = reportSnapshot?.revision;
+    const reason = shareReason.trim();
+    const recipient = recipientId.trim();
+    if (!isManager || !report || !revision || !recipientIsValid || !reasonIsValid || shareInFlightRef.current) return;
+
+    shareInFlightRef.current = true;
+    shareIdempotencyKeyRef.current ??= crypto.randomUUID();
+    setShareState('loading');
+    setShareMessage('Membagikan revisi laporan melalui server...');
+    try {
+      const shared = await api.shareReport(revision.id, report.version, recipient, reason, shareIdempotencyKeyRef.current);
+      setShareState('success');
+      setShareMessage(shared.already_shared
+        ? `Laporan sudah pernah dibagikan kepada penerima ini (ID ${shared.share_id}).`
+        : `Laporan berhasil dibagikan melalui server (ID ${shared.share_id}).`);
+      shareIdempotencyKeyRef.current = null;
+    } catch (error) {
+      setShareState('error');
+      setShareMessage(messageFrom(error, 'Laporan gagal dibagikan. Coba lagi untuk mengulang request yang sama.'));
+    } finally {
+      shareInFlightRef.current = false;
     }
   };
 
@@ -255,8 +461,17 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         </div>
 
         <div style={{ marginTop: '16px', padding: '12px', borderRadius: '10px', border: '1px solid #f0d8a9', background: '#fff3dd', color: '#7d5b2b' }}>
-          <strong>Kesiapan diperiksa saat submit.</strong> Server mewajibkan tepat satu closing terkonfirmasi dan lengkap untuk BAR serta KITCHEN. Pastikan antrean sinkronisasi perangkat kosong sebelum mengirim. Pemeriksaan awal belum tersedia karena <code>report.get</code> belum tersedia.
+          <strong>Kesiapan diperiksa saat submit.</strong> Server mewajibkan tepat satu closing terkonfirmasi dan lengkap untuk BAR serta KITCHEN. Pastikan antrean sinkronisasi perangkat kosong sebelum mengirim.
         </div>
+
+        {reportLoadState === 'loading' && (
+          <p role="status" style={{ margin: '12px 0 0', color: '#547066' }}>Memuat laporan dan draft finance dari server...</p>
+        )}
+        {reportLoadState === 'error' && (
+          <div role="alert" className="form-error" style={{ margin: '12px 0 0' }}>
+            Laporan tidak dapat dimuat: {reportLoadError}
+          </div>
+        )}
 
         <form onSubmit={(event) => { event.preventDefault(); void handleSubmitReport(); }} noValidate>
           <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
@@ -282,9 +497,12 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                     aria-describedby={financeErrors[key] ? errorId : undefined}
                     onChange={(event) => {
                       setFinance((current) => ({ ...current, [key]: event.target.value }));
+                      setFinanceDirty(true);
+                      setDraftState('idle');
+                      setDraftMessage('');
                       setSubmitState('idle');
                       setSubmitMessage('');
-                      setShareMessage('');
+                      draftIdempotencyKeyRef.current = null;
                     }}
                     placeholder="0"
                     title={help}
@@ -321,37 +539,39 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
             <button
               type="button"
               className="outline-button"
-              onClick={() => { void handleShareReceipt(); }}
-              disabled={!canShareReceipt}
-              aria-describedby="share-limitation"
+              onClick={() => { void handleSaveDraft(); }}
+              disabled={fieldsDisabled || !financeIsValid}
               style={{ width: '100%' }}
             >
-              Bagikan / Salin Receipt
+              {draftState === 'loading' ? 'Menyimpan...' : 'Simpan Draft'}
             </button>
 
             <button
               type="submit"
               className="primary-button"
-              disabled={Boolean(submitDisabledReason) || !financeIsValid}
-              aria-describedby={submitDisabledReason ? 'submit-disabled-reason' : 'readiness-note'}
+              disabled={Boolean(submitDisabledReason) || !financeIsValid || draftState === 'loading'}
+              aria-describedby={submitDisabledReason ? 'submit-disabled-reason' : undefined}
               style={{ width: '100%' }}
             >
               {submitState === 'loading' ? 'Mengirim...' : submitState === 'success' ? 'Laporan Terkirim' : 'Kirim Laporan Resmi'}
             </button>
           </div>
 
-          <p id="share-limitation" className="muted" style={{ marginTop: '10px', fontSize: '11px' }}>
-            Ringkasan server belum dapat dibagikan karena <code>report.share</code> belum tersedia. Tombol hanya aktif setelah submit sukses dan hanya memakai field receipt server, bukan draft finance di browser.
-          </p>
-          <p id="readiness-note" className="muted" style={{ marginTop: '6px', fontSize: '11px' }}>
-            Draft server belum tersedia karena <code>report.finance.save</code> belum tersedia. Nilai dikirim langsung saat submit.
-          </p>
           {submitDisabledReason && (
             <p id="submit-disabled-reason" style={{ margin: '6px 0 0', color: '#7d5b2b', fontSize: '11px' }}>
               Tombol kirim nonaktif: {submitDisabledReason}
             </p>
           )}
         </form>
+
+        {draftState !== 'idle' && (
+          <div
+            role={draftState === 'error' ? 'alert' : 'status'}
+            style={{ marginTop: '16px', padding: '12px', borderRadius: '10px', border: `1px solid ${draftState === 'error' ? '#e6b9b0' : '#c6dfd0'}`, background: draftState === 'error' ? '#fbe8e4' : '#e4f1e8', color: draftState === 'error' ? '#8f3f34' : '#1e5b48' }}
+          >
+            {draftMessage}
+          </div>
+        )}
 
         {submitState !== 'idle' && (
           <div
@@ -387,7 +607,81 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           </section>
         )}
 
-        {shareMessage && <p role="status" style={{ margin: '10px 0 0', color: '#547066' }}>{shareMessage}</p>}
+        {isManager && reportSnapshot?.revision && reportSnapshot.report && (
+          <section aria-labelledby="share-report-title" style={{ marginTop: '16px', padding: '16px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9' }}>
+            <p className="eyebrow">AKSES LAPORAN</p>
+            <h3 id="share-report-title">Bagikan Revisi Server</h3>
+            <div style={{ display: 'grid', gap: '12px', marginTop: '12px' }}>
+              <div>
+                <label htmlFor="report-share-recipient" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>
+                  UUID Penerima
+                </label>
+                <input
+                  id="report-share-recipient"
+                  value={recipientId}
+                  required
+                  aria-invalid={Boolean(recipientId) && !recipientIsValid}
+                  onChange={(event) => {
+                    setRecipientId(event.target.value);
+                    setShareState('idle');
+                    setShareMessage('');
+                    shareIdempotencyKeyRef.current = null;
+                  }}
+                  placeholder="00000000-0000-0000-0000-000000000000"
+                  style={{ width: '100%', padding: '8px', borderRadius: '8px', border: recipientId && !recipientIsValid ? '1px solid #b95745' : '1px solid #cddcd4' }}
+                />
+                {recipientId && !recipientIsValid && <p style={{ margin: '4px 0 0', color: '#8f3f34', fontSize: '11px' }}>UUID penerima wajib valid.</p>}
+              </div>
+              <div>
+                <label htmlFor="report-share-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>
+                  Alasan
+                </label>
+                <textarea
+                  id="report-share-reason"
+                  value={shareReason}
+                  required
+                  maxLength={1000}
+                  aria-invalid={Boolean(shareReason) && !reasonIsValid}
+                  onChange={(event) => {
+                    setShareReason(event.target.value);
+                    setShareState('idle');
+                    setShareMessage('');
+                    shareIdempotencyKeyRef.current = null;
+                  }}
+                  placeholder="Jelaskan tujuan pembagian laporan."
+                  style={{ width: '100%', minHeight: '76px', padding: '8px', borderRadius: '8px', border: shareReason && !reasonIsValid ? '1px solid #b95745' : '1px solid #cddcd4', resize: 'vertical' }}
+                />
+                {shareReason && !reasonIsValid && <p style={{ margin: '4px 0 0', color: '#8f3f34', fontSize: '11px' }}>Alasan wajib berisi 1 sampai 1000 karakter.</p>}
+              </div>
+              <button
+                type="button"
+                className="outline-button"
+                disabled={!canShareReport || shareState === 'loading'}
+                onClick={() => { void handleShareReport(); }}
+              >
+                {shareState === 'loading' ? 'Membagikan...' : 'Bagikan Laporan'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {managerLoadState === 'not-applicable' && receipt && (
+          <button
+            type="button"
+            className="outline-button"
+            disabled={!canCopyReceipt}
+            onClick={() => { void handleCopyReceipt(); }}
+            style={{ width: '100%', marginTop: '12px' }}
+          >
+            Salin Receipt
+          </button>
+        )}
+
+        {shareMessage && (
+          <p role={shareState === 'error' ? 'alert' : 'status'} style={{ margin: '10px 0 0', color: shareState === 'error' ? '#8f3f34' : '#547066' }}>
+            {shareMessage}
+          </p>
+        )}
       </section>
     </div>
   );

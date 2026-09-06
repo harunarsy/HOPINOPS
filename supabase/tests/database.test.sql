@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(17);
+select plan(21);
 
 create temporary table required_functions (signature text primary key) on commit drop;
 insert into required_functions values
@@ -20,6 +20,7 @@ insert into required_functions values
   ('public.enforce_bonus_pool_state()'),
   ('public.enforce_bonus_allocation_state()'),
   ('public.enforce_payroll_entry_state()'),
+  ('public.enforce_payroll_adjustment_state()'),
   ('public.enforce_payroll_run_state()'),
   ('public.enforce_payroll_export_state()'),
   ('public.haversine_distance_m(double precision,double precision,double precision,double precision)'),
@@ -70,7 +71,20 @@ insert into required_functions values
   ('public.rpc_replay_onboarding(uuid,uuid,integer)'),
   ('public.enforce_hr_request_state()'),
   ('public.rpc_cleanup_runtime_data()'),
-  ('public.rpc_issue_login_session(uuid,uuid,integer,text,text,timestamp with time zone,timestamp with time zone,text,text,text)');
+  ('public.rpc_issue_login_session(uuid,uuid,integer,text,text,timestamp with time zone,timestamp with time zone,text,text,text)'),
+  ('public.rpc_list_sessions(uuid,uuid)'),
+  ('public.rpc_revoke_sessions(uuid,uuid,uuid[],integer[],uuid)'),
+  ('public.rpc_save_opening_draft(uuid,uuid,integer,uuid,jsonb)'),
+  ('public.rpc_save_closing_draft(uuid,uuid,integer,uuid,jsonb)'),
+  ('public.rpc_get_stock_drafts(uuid,uuid,uuid)'),
+  ('public.rpc_get_report(uuid,uuid,date)'),
+  ('public.rpc_save_report_finance(uuid,uuid,date,integer,uuid,jsonb)'),
+  ('public.rpc_share_report(uuid,uuid,integer,uuid,text,uuid)'),
+  ('public.rpc_adjust_payroll_entry(uuid,uuid,integer,text,numeric,text,uuid)'),
+  ('public.rpc_review_payroll_adjustment(uuid,uuid,integer,integer,text,text,uuid)'),
+  ('public.rpc_emergency_checkout(uuid,uuid,integer,uuid,text)'),
+  ('public.rpc_get_payroll_export_download(uuid,uuid,integer,uuid)'),
+  ('public.rpc_rate_limit_public_options(text)');
 
 select ok(
   bool_and(to_regprocedure(signature) is not null),
@@ -127,7 +141,10 @@ insert into operational_tables values
   ('public.payroll_runs'), ('public.payroll_entries'),
   ('public.payroll_adjustments'), ('public.payroll_exports'),
   ('public.onboarding_progress'),
-  ('public.stock_reference_initializations'), ('public.stock_reference_initialization_lines');
+  ('public.stock_reference_initializations'), ('public.stock_reference_initialization_lines'),
+  ('public.workflow_idempotency'), ('public.stock_opening_drafts'),
+  ('public.stock_closing_drafts'), ('public.daily_report_finance_drafts'),
+  ('public.daily_report_shares'), ('public.payroll_export_download_authorizations');
 
 select ok(
   bool_and(not has_table_privilege('anon', relation, privilege)),
@@ -142,6 +159,22 @@ select ok(
 )
 from operational_tables
 cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) privilege;
+
+select ok(
+  coalesce((
+    select count(*) = 1
+      and bool_and(
+        trigger.tgname = 'trg_payroll_adjustments_parent_state'
+        and trigger.tgenabled = 'O'
+        and function.proname = 'enforce_payroll_adjustment_state'
+      )
+    from pg_trigger trigger
+    join pg_proc function on function.oid = trigger.tgfoid
+    where trigger.tgrelid = 'public.payroll_adjustments'::regclass
+      and not trigger.tgisinternal
+  ), false),
+  'payroll adjustments has one enabled state trigger'
+);
 
 select ok(
   exists (
@@ -248,6 +281,37 @@ select throws_ok(
   '42501',
   'FORBIDDEN_ROLE: Hanya OWNER yang dapat membuat user.',
   'OPERATOR cannot create a user'
+);
+
+select throws_ok(
+  $$select public.rpc_complete_onboarding(
+    'bbbbbbbb-0000-0000-0000-000000000001',
+    '11111111-1111-1111-1111-111111111111',
+    1
+  )$$,
+  '42501',
+  'FORBIDDEN_ROLE: Guided onboarding hanya untuk OPERATOR.',
+  'INVESTOR cannot complete onboarding'
+);
+
+select is(
+  (public.rpc_complete_onboarding(
+    'bbbbbbbb-0000-0000-0000-000000000002',
+    '11111111-1111-1111-1111-111111111111',
+    1
+  )->>'idempotent_replay')::boolean,
+  false,
+  'OPERATOR completes onboarding for the first time with idempotent_replay: false'
+);
+
+select is(
+  (public.rpc_complete_onboarding(
+    'bbbbbbbb-0000-0000-0000-000000000002',
+    '11111111-1111-1111-1111-111111111111',
+    99
+  )->>'idempotent_replay')::boolean,
+  true,
+  'B04 Lifetime: OPERATOR receives idempotent_replay: true even with different version'
 );
 
 select * from finish();
