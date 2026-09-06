@@ -3,9 +3,10 @@ import { api } from '../../lib/api';
 
 type Props = {
   onSuccess: () => void;
+  onLogout?: () => void;
 };
 
-export function ForcedPinChange({ onSuccess }: Props) {
+export function ForcedPinChange({ onSuccess, onLogout }: Props) {
   const [oldPin, setOldPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -97,6 +98,17 @@ export function ForcedPinChange({ onSuccess }: Props) {
           >
             {loading ? 'Menyimpan...' : 'Simpan PIN & Lanjutkan'}
           </button>
+          {onLogout && (
+            <button
+              className="outline-button"
+              type="button"
+              onClick={onLogout}
+              disabled={loading}
+              style={{ marginTop: '8px', width: '100%' }}
+            >
+              Keluar
+            </button>
+          )}
         </form>
       </div>
     </div>

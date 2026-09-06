@@ -174,6 +174,22 @@ async function authContextHashes(username: string, clientIp: string, deviceToken
   };
 }
 
+async function publicOptionsScopeKey(clientIp: string) {
+  const pepper = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!pepper) throw new Error('Server Supabase environment is not configured.');
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(pepper),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const digest = await crypto.subtle.sign('HMAC', key, encoder.encode(`public-options\0${clientIp || 'unknown'}`));
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `public_options:${hash}`;
+}
+
 async function runAuthLimitRpc(
   db: SupabaseClient,
   rpc: 'rpc_check_auth_limits' | 'rpc_record_auth_failure',
@@ -375,10 +391,18 @@ export async function currentUser(request: ApiRequest): Promise<AuthProfile | nu
 
 export async function revokeCurrentSession(request: ApiRequest) {
   const token = sessionTokenFromRequest(request);
-  if (!token) return;
+  if (!token) return { revoked: false, reason: 'NO_TOKEN' };
   const db = getAdminClient();
-  await db.from('app_sessions').update({ revoked_at: new Date().toISOString() })
-    .eq('token_hash', await hashSessionToken(token)).is('revoked_at', null);
+  const tokenHash = await hashSessionToken(token);
+  const { error } = await db.from('app_sessions')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('token_hash', tokenHash)
+    .is('revoked_at', null);
+  if (error) {
+    console.error('Session revocation error in database', error.message);
+    throw new Error(`SESSION_REVOCATION_FAILED: ${error.message}`);
+  }
+  return { revoked: true };
 }
 
 export async function changePin(request: ApiRequest, profileId: string, oldPin: string, newPin: string) {
@@ -570,6 +594,19 @@ export default {
 
     if (request.method === 'GET' && action === 'options') {
       try {
+        const db = getAdminClient();
+        const { data: limit, error: limitError } = await db.rpc('rpc_rate_limit_public_options', {
+          p_scope_key: await publicOptionsScopeKey(clientIpFromRequest(request)),
+        });
+        if (limitError) throw limitError;
+        if (!limit?.allowed) {
+          const retryAfter = Math.max(1, Number(limit?.retry_after_seconds) || 60);
+          return jsonResponse(
+            { error: 'Terlalu banyak permintaan. Silakan coba lagi nanti.' },
+            429,
+            { 'Retry-After': String(retryAfter) },
+          );
+        }
         return jsonResponse({ options: await listLoginOptions() });
       } catch (error) {
         console.error('Unable to load login options', error);
@@ -665,10 +702,20 @@ export default {
     if (request.method === 'POST' && action === 'logout') {
       try {
         await revokeCurrentSession(request);
-      } catch (error) {
-        console.error('Unable to logout', error);
+        return jsonResponse({ ok: true }, 200, { 'Set-Cookie': clearedSessionCookie() });
+      } catch (error: any) {
+        console.error('Unable to revoke session on logout', error?.message);
+        return jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: 'SESSION_REVOCATION_FAILED',
+              message: 'Keluar akun belum terkonfirmasi di server. Jangan tinggalkan perangkat ini.',
+            },
+          },
+          500
+        );
       }
-      return jsonResponse({ ok: true }, 200, { 'Set-Cookie': clearedSessionCookie() });
     }
 
     return jsonResponse({ error: 'Not found' }, 404);

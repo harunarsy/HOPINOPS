@@ -43,4 +43,14 @@ describe('Production Business API Dispatcher (api/app.ts)', () => {
     expect(appTs).not.toContain('from "./auth"');
     expect(appTs).not.toContain("import('./auth')");
   });
+
+  it('rejects unauthenticated requests to onboarding.complete with 401', async () => {
+    const req = new Request('http://localhost/api/app?action=onboarding.complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: 1 }),
+    });
+    const res = await appHandler.fetch(req);
+    expect(res.status).toBe(401);
+  });
 });

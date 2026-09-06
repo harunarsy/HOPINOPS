@@ -7,9 +7,10 @@ type Props = {
   onClaim: (shift: ShiftType, area: Area, duty: DutyRole) => Promise<void>;
   loading: boolean;
   onLogout: () => void;
+  onBack?: () => void;
 };
 
-export function AssignmentScreen({ name, onClaim, loading, onLogout }: Props) {
+export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: Props) {
   const [shift, setShift] = useState<ShiftType>('SIANG');
   const [area, setArea] = useState<Area>('BAR');
   const [duty, setDuty] = useState<DutyRole>('PRIMARY');
@@ -22,7 +23,18 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout }: Props) {
           <span><strong>HOPIN</strong><small>PENUGASAN SHIFT</small></span>
         </div>
         <div className="topbar-right">
-          <button className="logout-button" onClick={onLogout}>
+          {onBack && (
+            <button
+              type="button"
+              className="outline-button"
+              onClick={onBack}
+              disabled={loading}
+              style={{ fontSize: '11px', padding: '6px 10px', marginRight: '8px' }}
+            >
+              Dashboard
+            </button>
+          )}
+          <button className="logout-button" onClick={onLogout} disabled={loading}>
             <span>Keluar</span>
           </button>
         </div>

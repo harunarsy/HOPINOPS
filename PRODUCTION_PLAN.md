@@ -1,8 +1,10 @@
 # HOPIN One-Shot Production Plan
 
-Status: **normatif dan siap dieksekusi**
+Status: **normatif; status eksekusi aktual berada di `ACTION_LOG.md`**
 Target: membawa prototype saat ini menjadi sistem production satu outlet yang aman, dapat diaudit, mobile-friendly, dan mempunyai sumber data server tunggal.
 Zona waktu bisnis: **Asia/Jakarta (WIB)**.
+
+> Status eksekusi 5 September 2026: migrations production `0001`-`0018` dan deployment production telah selesai dengan smoke live lulus. Restore drill environment disposable, pilot operasional satu hari, dan observability Cron pertama masih tertunda. Bagian "Current State" di bawah adalah baseline historis, bukan snapshot runtime saat ini.
 
 ## 0. Kontrak Eksekusi untuk AI
 
@@ -21,7 +23,7 @@ Dokumen ini adalah sumber keputusan implementasi. AI eksekutor tidak boleh meneb
 11. Semua perubahan database harus additive sampai cutover berhasil. Penghapusan tabel/kolom legacy ditunda ke release terpisah.
 12. Hasil akhir wajib menyertakan `EXECUTION_REPORT.md` sesuai format pada bagian terakhir dokumen ini.
 
-## 1. Current State Terverifikasi
+## 1. Baseline Historis
 
 ### 1.1 Aplikasi
 

@@ -364,6 +364,14 @@ function isQuantity(value: unknown, allowZero = false): value is number {
   return /^\d{1,10}(?:\.\d{1,4})?$/.test(String(value));
 }
 
+function isWholeAmount(value: unknown, allowNegative = false): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && Number.isInteger(value)
+    && Math.abs(value) <= 99_999_999_999_999
+    && (allowNegative || value >= 0);
+}
+
 function isStrongTemporaryPin(pin: string): boolean {
   return !WEAK_PINS.has(pin) && !/^(\d)\1{5}$/.test(pin);
 }
@@ -392,6 +400,25 @@ function snapshotLines(value: unknown) {
     reason_code: line?.reason_code ?? null,
     notes: line?.notes ?? null,
   }));
+}
+
+function isDraftLines(value: unknown): value is Array<Record<string, any>> {
+  if (!Array.isArray(value) || value.length > 200) return false;
+  const itemIds = new Set<string>();
+  for (const line of value) {
+    if (!isObject(line) || !hasOnlyKeys(line, ['item_id', 'counted_qty', 'reason_code', 'notes'])
+      || !Object.prototype.hasOwnProperty.call(line, 'item_id')
+      || !Object.prototype.hasOwnProperty.call(line, 'counted_qty')
+      || !isItemId(line.item_id) || line.item_id !== line.item_id.trim()
+      || !isQuantity(line.counted_qty, true)
+      || (line.reason_code !== undefined && line.reason_code !== null && typeof line.reason_code !== 'string')
+      || (line.notes !== undefined && line.notes !== null && typeof line.notes !== 'string')
+      || itemIds.has(line.item_id)) {
+      return false;
+    }
+    itemIds.add(line.item_id);
+  }
+  return true;
 }
 
 function attendanceChallengeBinding(body: any): { challengeId: string; nonce: string } | null {
@@ -475,11 +502,40 @@ export default {
 
       // 1. BOOTSTRAP
       if (action === 'bootstrap' && request.method === 'GET') {
-        const { data: outlet } = await db.from('outlets').select('*').eq('id', outletId).eq('active', true).single();
-        const { data: settings } = await db.from('outlet_settings').select('*').eq('outlet_id', outletId).single();
-        const { data: items } = await db.from('items').select('*').eq('active', true).order('name');
-        const { data: shifts } = await db.from('shift_templates').select('*').eq('outlet_id', outlet?.id).eq('active', true);
-        const { data: onboarding } = await db.from('onboarding_progress').select('*').eq('profile_id', user.id).maybeSingle();
+        const { data: outlet, error: outletError } = await db.from('outlets').select('*').eq('id', outletId).eq('active', true).single();
+        if (outletError || !outlet) throw (outletError || new Error('OUTLET_NOT_FOUND'));
+
+        const { data: settings, error: settingsError } = await db.from('outlet_settings').select('*').eq('outlet_id', outletId).single();
+        if (settingsError || !settings) throw (settingsError || new Error('SETTINGS_NOT_FOUND'));
+
+        const { data: items, error: itemsError } = await db.from('items').select('*').eq('active', true).order('name');
+        if (itemsError) throw itemsError;
+
+        const { data: shifts, error: shiftsError } = await db.from('shift_templates').select('*').eq('outlet_id', outlet?.id).eq('active', true);
+        if (shiftsError) throw shiftsError;
+
+        // Decision B04: Training completion is once per user lifetime.
+        // Retrieve any completed onboarding first to avoid repeated training upon version changes.
+        const { data: completedOnboardings, error: completedError } = await db
+          .from('onboarding_progress')
+          .select('*')
+          .eq('profile_id', user.id)
+          .not('completed_at', 'is', null)
+          .order('completed_at', { ascending: false })
+          .limit(1);
+        if (completedError) throw completedError;
+
+        let onboarding = completedOnboardings?.[0] ?? null;
+        if (!onboarding) {
+          const { data: activeOnboardings, error: activeError } = await db
+            .from('onboarding_progress')
+            .select('*')
+            .eq('profile_id', user.id)
+            .order('started_at', { ascending: false })
+            .limit(1);
+          if (activeError) throw activeError;
+          onboarding = activeOnboardings?.[0] ?? null;
+        }
 
         const workDate = getWibDate();
         const { data: activeAssignment } = await db
@@ -488,7 +544,7 @@ export default {
            .eq('profile_id', user.id)
           .eq('work_cycles.outlet_id', outletId)
           .eq('work_date', workDate)
-          .eq('status', 'ACTIVE')
+          .in('status', ['ACTIVE', 'PENDING_TASKS'])
           .maybeSingle();
 
         const { data: activeAttendance } = await db
@@ -516,6 +572,46 @@ export default {
         });
       }
 
+      if (action === 'sessions.list' && request.method === 'GET') {
+        const { data, error } = await db.rpc('rpc_list_sessions', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !hasOnlyKeys(data, ['sessions']) || !Array.isArray(data.sessions)
+          || data.sessions.some((session: any) => !isObject(session)
+            || !hasOnlyKeys(session, ['session_id', 'created_at', 'last_seen_at', 'expires_at', 'version'])
+            || !isUuid(session.session_id) || !isTimestamp(session.created_at)
+            || !isTimestamp(session.last_seen_at) || !isTimestamp(session.expires_at)
+            || !isPositiveInteger(session.version))) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'sessions.revoke' && request.method === 'POST') {
+        const body = await readJsonObject(request, ['session_ids', 'expected_versions', 'idempotency_key']);
+        const sessionIds = body?.session_ids;
+        const expectedVersions = body?.expected_versions;
+        if (!body || !Array.isArray(sessionIds) || sessionIds.length < 1 || sessionIds.length > 20
+          || sessionIds.some(sessionId => !isUuid(sessionId))
+          || new Set(sessionIds).size !== sessionIds.length
+          || !Array.isArray(expectedVersions) || expectedVersions.length !== sessionIds.length
+          || expectedVersions.some(version => !isPositiveInteger(version))
+          || !isUuid(body.idempotency_key)) {
+          return invalidPayload('session_ids, expected_versions, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_revoke_sessions', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_session_ids: sessionIds,
+          p_expected_versions: expectedVersions,
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !hasOnlyKeys(data, ['revoked_count', 'idempotent_replay'])
+          || data.revoked_count !== sessionIds.length || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data);
+      }
+
       // 2. DASHBOARD (OWNER / SUPERVISOR)
       if (action === 'dashboard.get' && request.method === 'GET') {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
@@ -523,7 +619,7 @@ export default {
         }
         const workDate = url.searchParams.get('date') || getWibDate();
         const { data: cycles } = await db.from('work_cycles').select('*, work_assignments(*, profiles(display_name))').eq('outlet_id', outletId).eq('work_date', workDate);
-        const { data: attendance } = await db.from('attendance_records').select('*, profiles(display_name), attendance_events(*)').eq('outlet_id', outletId).eq('work_date', workDate);
+        const { data: attendance } = await db.from('attendance_records').select('*, profiles(display_name, role), attendance_events(*)').eq('outlet_id', outletId).eq('work_date', workDate);
         const { data: reports } = await db.from('daily_reports').select('*, daily_report_revisions(*)').eq('outlet_id', outletId).eq('work_date', workDate);
         const { data: exceptions } = await db.from('attendance_records').select('*, profiles(display_name)').eq('outlet_id', outletId).eq('work_date', workDate).or('lateness_status.eq.LATE,status.eq.REVIEW_REQUIRED,status.eq.MISSING_CHECKOUT');
 
@@ -539,6 +635,38 @@ export default {
       if (action === 'investor.reports' && request.method === 'GET') {
         if (user.role !== 'INVESTOR' && user.role !== 'OWNER') {
           return errorResponse('FORBIDDEN', 'Hanya Investor dan Owner yang berhak melihat laporan investor.', 403);
+        }
+        if (user.role === 'INVESTOR') {
+          const { data: revisions, error } = await db
+            .from('daily_report_revisions')
+            .select(`
+              id, revision, status, public_id,
+              daily_report_finance(*), daily_report_stock_lines(*),
+              daily_report_shares!inner(recipient_id),
+              daily_reports!inner(id, work_date, status, current_revision)
+            `)
+            .eq('daily_report_shares.recipient_id', user.id)
+            .eq('daily_reports.outlet_id', outletId)
+            .in('status', ['SUBMITTED', 'APPROVED']);
+          if (error) throw error;
+
+          const reports = (revisions ?? []).flatMap((revision: any) => {
+            const report = revision.daily_reports;
+            if (!report || report.current_revision !== revision.revision || report.status !== revision.status) return [];
+            return [{
+              ...report,
+              daily_report_revisions: [{
+                id: revision.id,
+                revision: revision.revision,
+                status: revision.status,
+                public_id: revision.public_id,
+                daily_report_finance: revision.daily_report_finance,
+                daily_report_stock_lines: revision.daily_report_stock_lines,
+              }],
+            }];
+          }).sort((left: any, right: any) => right.work_date.localeCompare(left.work_date)).slice(0, 30);
+
+          return successResponse({ reports });
         }
         const { data: reports } = await db
            .from('daily_reports')
@@ -915,7 +1043,12 @@ export default {
           return errorResponse('DEVICE_REQUIRED', 'Session attendance harus terikat ke device aktif.', 403);
         }
 
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, [
+          'challengeId', 'nonce', 'assignmentId', 'assignment_id',
+          'idempotencyKey', 'idempotency_key', 'samples',
+          'location_failure', 'locationFailure', 'note',
+        ]);
+        if (!body) return invalidPayload();
         const binding = attendanceChallengeBinding(body);
         if (!binding) {
           return errorResponse('VALIDATION_FAILED', 'Challenge dan nonce absensi wajib valid.', 400);
@@ -925,7 +1058,7 @@ export default {
           return errorResponse('VALIDATION_FAILED', 'assignmentId wajib berupa UUID untuk check-in.', 400);
         }
         const suppliedIdempotencyKey = body.idempotencyKey ?? body.idempotency_key;
-        if (suppliedIdempotencyKey !== undefined && !isUuid(suppliedIdempotencyKey)) {
+        if (!isUuid(suppliedIdempotencyKey)) {
           return errorResponse('VALIDATION_FAILED', 'idempotencyKey wajib berupa UUID.', 400);
         }
 
@@ -951,7 +1084,7 @@ export default {
           p_challenge_id: binding.challengeId,
           p_action: eventType,
           p_nonce_hash: await hashSessionToken(binding.nonce),
-          p_idempotency_key: suppliedIdempotencyKey || crypto.randomUUID(),
+          p_idempotency_key: suppliedIdempotencyKey,
           p_assignment_id: eventType === 'CHECK_IN' ? assignmentId : null,
           p_samples: samples,
           p_location_failure: locationFailure,
@@ -1001,6 +1134,30 @@ export default {
           || (attendance.attendance_corrections ?? []).some((correction: any) => correction.status === 'PENDING'),
         );
         return successResponse({ exceptions });
+      }
+
+      if (action === 'attendance.emergencyCheckout' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh melakukan emergency checkout.', 403);
+        }
+        const body = await readJsonObject(request, ['attendance_id', 'expected_attendance_version', 'idempotency_key', 'reason']);
+        if (!body || !isUuid(body.attendance_id) || !isPositiveInteger(body.expected_attendance_version)
+          || !isUuid(body.idempotency_key) || !isNonEmptyString(body.reason, 1000)) {
+          return invalidPayload('attendance_id, expected_attendance_version, idempotency_key, dan reason wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_emergency_checkout', {
+          p_actor_id: user.id,
+          p_attendance_id: body.attendance_id,
+          p_expected_attendance_version: body.expected_attendance_version,
+          p_idempotency_key: body.idempotency_key,
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.attendance_id !== body.attendance_id || !isUuid(data.event_id)
+          || data.status !== 'REVIEW_REQUIRED' || data.exception_status !== 'PENDING_REVIEW'
+          || data.version !== body.expected_attendance_version + 1
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
       }
 
       if (action === 'attendance.correction.request' && request.method === 'POST') {
@@ -1180,6 +1337,19 @@ export default {
         return successResponse({ cycle, opening, movements: movements ?? [], handover, closing, items: items ?? [] });
       }
 
+      if (action === 'stock.drafts' && request.method === 'GET') {
+        const cycleId = url.searchParams.get('cycle_id');
+        if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
+        const { data, error } = await db.rpc('rpc_get_stock_drafts', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_cycle_id: cycleId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !hasOnlyKeys(data, ['opening_draft', 'closing_draft'])) return invalidRpcResult();
+        return successResponse(data);
+      }
+
       if (action === 'opening.reference' && request.method === 'GET') {
         const cycleId = url.searchParams.get('cycle_id');
         if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
@@ -1212,6 +1382,30 @@ export default {
         if (error) return rpcErrorResponse(error);
         if (!isObject(data) || !isUuid(data.initialization_id) || data.status !== 'APPROVED') return invalidRpcResult();
         return successResponse(data);
+      }
+
+      if (action === 'opening.saveDraft' && request.method === 'POST') {
+        if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyimpan draft opening.', 403);
+        const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'idempotency_key', 'lines']);
+        const expectedVersion = body?.expected_version ?? null;
+        if (!body || !isUuid(body.cycle_id)
+          || (expectedVersion !== null && !isPositiveInteger(expectedVersion))
+          || !isUuid(body.idempotency_key) || !isDraftLines(body.lines)) {
+          return invalidPayload('cycle_id, expected_version, idempotency_key, dan lines draft opening wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_save_opening_draft', {
+          p_actor_id: user.id,
+          p_cycle_id: body.cycle_id,
+          p_expected_version: expectedVersion,
+          p_idempotency_key: body.idempotency_key,
+          p_lines: body.lines,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.draft_id) || data.cycle_id !== body.cycle_id
+          || data.owner_id !== user.id || data.version !== (expectedVersion === null ? 1 : expectedVersion + 1)
+          || data.line_count !== body.lines.length || !isTimestamp(data.updated_at)
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
       }
 
       if (action === 'opening.confirm' && request.method === 'POST') {
@@ -1314,6 +1508,30 @@ export default {
         return successResponse({ handover });
       }
 
+      if (action === 'closing.saveDraft' && request.method === 'POST') {
+        if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyimpan draft closing.', 403);
+        const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'idempotency_key', 'lines']);
+        const expectedVersion = body?.expected_version ?? null;
+        if (!body || !isUuid(body.cycle_id)
+          || (expectedVersion !== null && !isPositiveInteger(expectedVersion))
+          || !isUuid(body.idempotency_key) || !isDraftLines(body.lines)) {
+          return invalidPayload('cycle_id, expected_version, idempotency_key, dan lines draft closing wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_save_closing_draft', {
+          p_actor_id: user.id,
+          p_cycle_id: body.cycle_id,
+          p_expected_version: expectedVersion,
+          p_idempotency_key: body.idempotency_key,
+          p_lines: body.lines,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.draft_id) || data.cycle_id !== body.cycle_id
+          || data.owner_id !== user.id || data.version !== (expectedVersion === null ? 1 : expectedVersion + 1)
+          || data.line_count !== body.lines.length || !isTimestamp(data.updated_at)
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
       if (action === 'closing.confirm' && request.method === 'POST') {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mengonfirmasi closing.', 403);
@@ -1332,6 +1550,82 @@ export default {
       }
 
       // 9. DAILY REPORTS & FINANCE (VALIDATING BOTH BAR & KITCHEN READY)
+      if (action === 'report.get' && request.method === 'GET') {
+        const workDate = url.searchParams.get('date') || getWibDate();
+        if (!isIsoDate(workDate)) return errorResponse('VALIDATION_FAILED', 'date wajib berupa tanggal ISO.', 400);
+        const { data, error } = await db.rpc('rpc_get_report', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_work_date: workDate,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !hasOnlyKeys(data, ['report', 'revision', 'finance', 'stock_lines', 'finance_draft'])
+          || (data.report !== null && !isObject(data.report))
+          || (data.revision !== null && !isObject(data.revision))
+          || (data.finance !== null && !isObject(data.finance))
+          || !Array.isArray(data.stock_lines)
+          || (data.finance_draft !== null && !isObject(data.finance_draft))) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'report.finance.save' && request.method === 'POST') {
+        if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyimpan finance laporan.', 403);
+        const body = await readJsonObject(request, ['work_date', 'expected_version', 'idempotency_key', 'finance']);
+        const expectedVersion = body?.expected_version ?? null;
+        const finance = body?.finance;
+        if (!body || !isIsoDate(body.work_date)
+          || (expectedVersion !== null && !isPositiveInteger(expectedVersion))
+          || !isUuid(body.idempotency_key) || !isObject(finance)
+          || !hasOnlyKeys(finance, ['cash_real', 'cash_app', 'qris_mandiri', 'debit_mandiri'])
+          || Object.keys(finance).length !== 4
+          || !isWholeAmount(finance.cash_real) || !isWholeAmount(finance.cash_app)
+          || !isWholeAmount(finance.qris_mandiri) || !isWholeAmount(finance.debit_mandiri)) {
+          return invalidPayload('work_date, expected_version, idempotency_key, dan empat nilai finance whole nonnegative wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_save_report_finance', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_work_date: body.work_date,
+          p_expected_version: expectedVersion,
+          p_idempotency_key: body.idempotency_key,
+          p_finance: finance,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.draft_id) || data.outlet_id !== outletId
+          || data.work_date !== body.work_date || data.owner_id !== user.id
+          || data.version !== (expectedVersion === null ? 1 : expectedVersion + 1)
+          || !isTimestamp(data.updated_at) || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
+      if (action === 'report.share' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh membagikan laporan.', 403);
+        }
+        const body = await readJsonObject(request, [
+          'revision_id', 'expected_report_version', 'recipient_id', 'reason', 'idempotency_key',
+        ]);
+        if (!body || !isUuid(body.revision_id) || !isPositiveInteger(body.expected_report_version)
+          || !isUuid(body.recipient_id) || body.recipient_id === user.id
+          || !isOptionalString(body.reason, 1000) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('revision_id, expected_report_version, recipient_id, reason, dan idempotency_key wajib valid.');
+        }
+        const reason = body.reason?.trim() || null;
+        const { data, error } = await db.rpc('rpc_share_report', {
+          p_actor_id: user.id,
+          p_revision_id: body.revision_id,
+          p_expected_report_version: body.expected_report_version,
+          p_recipient_id: body.recipient_id,
+          p_reason: reason,
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.share_id) || data.revision_id !== body.revision_id
+          || data.recipient_id !== body.recipient_id || !isTimestamp(data.shared_at)
+          || typeof data.already_shared !== 'boolean' || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data);
+      }
+
       if (action === 'report.submit' && request.method === 'POST') {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mengirim laporan harian.', 403);
@@ -1505,6 +1799,7 @@ export default {
         if (runError) throw runError;
 
         let entries: any[] = [];
+        let adjustments: any[] = [];
         if (run?.id) {
           const { data: entriesData, error: entriesError } = await db
             .from('payroll_entries')
@@ -1513,9 +1808,18 @@ export default {
             .order('profile_id');
           if (entriesError) throw entriesError;
           entries = entriesData ?? [];
+          if (entries.length > 0) {
+            const { data: adjustmentsData, error: adjustmentsError } = await db
+              .from('payroll_adjustments')
+              .select('*')
+              .in('entry_id', entries.map(entry => entry.id))
+              .order('created_at');
+            if (adjustmentsError) throw adjustmentsError;
+            adjustments = adjustmentsData ?? [];
+          }
         }
 
-        return successResponse({ run: run ?? null, entries });
+        return successResponse({ run: run ?? null, entries, adjustments });
       }
 
       if (action === 'payroll.preview' && request.method === 'POST') {
@@ -1535,6 +1839,63 @@ export default {
         if (error) return rpcErrorResponse(error);
         if (!result?.run_id) return invalidRpcResult();
         return successResponse(result);
+      }
+
+      if (action === 'payroll.entry.adjust' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mengajukan adjustment payroll.', 403);
+        }
+        const body = await readJsonObject(request, [
+          'entry_id', 'expected_entry_version', 'adjustment_type', 'amount', 'reason', 'idempotency_key',
+        ]);
+        if (!body || !isUuid(body.entry_id) || !isPositiveInteger(body.expected_entry_version)
+          || !isNonEmptyString(body.adjustment_type, 64) || !/^[A-Z][A-Z0-9_]{0,63}$/.test(body.adjustment_type.trim())
+          || !isWholeAmount(body.amount, true) || !isNonEmptyString(body.reason, 1000) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('entry_id, expected_entry_version, adjustment_type, amount, reason, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_adjust_payroll_entry', {
+          p_actor_id: user.id,
+          p_entry_id: body.entry_id,
+          p_expected_entry_version: body.expected_entry_version,
+          p_adjustment_type: body.adjustment_type.trim(),
+          p_amount: body.amount,
+          p_reason: body.reason.trim(),
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.adjustment_id) || data.entry_id !== body.entry_id || data.status !== 'PENDING'
+          || data.version !== 1 || data.adjustment_type !== body.adjustment_type.trim() || data.amount !== body.amount
+          || data.entry_version !== body.expected_entry_version + 1 || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.entry_version);
+      }
+
+      if (action === 'payroll.adjustment.review' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mereview adjustment payroll.', 403);
+        }
+        const body = await readJsonObject(request, [
+          'adjustment_id', 'expected_adjustment_version', 'expected_entry_version', 'status', 'note', 'idempotency_key',
+        ]);
+        if (!body || !isUuid(body.adjustment_id) || !isPositiveInteger(body.expected_adjustment_version)
+          || !isPositiveInteger(body.expected_entry_version) || !['APPROVED', 'REJECTED'].includes(body.status)
+          || !isNonEmptyString(body.note, 1000) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('adjustment_id, adjustment/entry version, status, note, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_review_payroll_adjustment', {
+          p_actor_id: user.id,
+          p_adjustment_id: body.adjustment_id,
+          p_expected_adjustment_version: body.expected_adjustment_version,
+          p_expected_entry_version: body.expected_entry_version,
+          p_status: body.status,
+          p_note: body.note.trim(),
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.adjustment_id !== body.adjustment_id || !isUuid(data.entry_id)
+          || data.status !== body.status || data.version !== body.expected_adjustment_version + 1
+          || typeof data.reviewed_at !== 'string' || data.entry_version !== body.expected_entry_version + 1
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.entry_version);
       }
 
       if (action === 'payroll.review' && request.method === 'POST') {
@@ -1641,7 +2002,7 @@ export default {
 
         const { data: entries, error: entriesError } = await db.from('payroll_entries').select('*, profiles(display_name)').eq('run_id', run.id).order('profile_id');
         if (entriesError) throw entriesError;
-        const entryIds = (entries ?? []).map(entry => entry.id);
+        const entryIds = (entries ?? []).map((entry: any) => entry.id);
         const { data: adjustments, error: adjustmentsError } = entryIds.length
           ? await db.from('payroll_adjustments').select('*').in('entry_id', entryIds).order('created_at')
           : { data: [], error: null };
@@ -1731,7 +2092,7 @@ export default {
           { header: 'Total Final', key: 'gross', width: 18 },
           { header: 'Status', key: 'status', width: 14 },
         ];
-        (entries ?? []).forEach(entry => {
+        (entries ?? []).forEach((entry: any) => {
           sSummary.addRow({
             id: sanitizeExcelCell(entry.profile_id),
             name: sanitizeExcelCell(entry.profiles?.display_name),
@@ -1755,7 +2116,7 @@ export default {
           { header: 'Jumlah (Rp)', key: 'amount', width: 18 },
           { header: 'Status', key: 'status', width: 14 },
         ];
-        (adjustments ?? []).forEach(adj => {
+        (adjustments ?? []).forEach((adj: any) => {
           sAdj.addRow({
             entry: sanitizeExcelCell(adj.entry_id),
             type: sanitizeExcelCell(adj.adjustment_type),
@@ -1896,9 +2257,49 @@ export default {
         return successResponse({
           export_id: exportResult.export_id,
           filename,
-          file_path: filePath,
           checksum,
           label,
+        });
+      }
+
+      if (action === 'payroll.export.download' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mengunduh export payroll.', 403);
+        }
+        const body = await readJsonObject(request, ['export_id', 'expected_run_version', 'idempotency_key']);
+        if (!body || !isUuid(body.export_id) || !isPositiveInteger(body.expected_run_version) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('export_id, expected_run_version, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_get_payroll_export_download', {
+          p_actor_id: user.id,
+          p_export_id: body.export_id,
+          p_expected_run_version: body.expected_run_version,
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.authorization_id) || data.export_id !== body.export_id
+          || !isNonEmptyString(data.file_path, 1024) || !isNonEmptyString(data.format, 32)
+          || !isNonEmptyString(data.checksum_sha256, 128) || typeof data.expires_at !== 'string'
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+
+        const bucketName = process.env.PAYROLL_EXPORT_BUCKET;
+        if (!bucketName) return errorResponse('PRIVATE_STORAGE_UNAVAILABLE', 'Bucket privat payroll belum dikonfigurasi.', 503);
+        const { data: bucket, error: bucketError } = await db.storage.getBucket(bucketName);
+        if (bucketError || !bucket || bucket.public) {
+          return errorResponse('PRIVATE_STORAGE_UNAVAILABLE', 'Bucket payroll tidak tersedia atau tidak privat.', 503);
+        }
+        const { data: signed, error: signedError } = await db.storage.from(bucketName).createSignedUrl(data.file_path, 300);
+        if (signedError || !signed?.signedUrl) {
+          return errorResponse('EXPORT_STORAGE_FAILED', 'URL unduhan payroll tidak dapat dibuat.', 503);
+        }
+        return successResponse({
+          authorization_id: data.authorization_id,
+          export_id: data.export_id,
+          format: data.format,
+          checksum_sha256: data.checksum_sha256,
+          expires_at: data.expires_at,
+          url: signed.signedUrl,
+          idempotent_replay: data.idempotent_replay,
         });
       }
 
@@ -1912,27 +2313,44 @@ export default {
           .maybeSingle();
         if (settingsError) throw settingsError;
         if (!settings || !isPositiveInteger(settings.onboarding_version)) return errorResponse('NOT_FOUND', 'Versi onboarding outlet tidak ditemukan.', 404);
-        const { data: progress, error: progressError } = await db
+
+        // B04: Check if operator has already completed ANY onboarding version
+        const { data: completedRows } = await db
           .from('onboarding_progress')
           .select('*')
           .eq('profile_id', user.id)
-          .eq('onboarding_version', settings.onboarding_version)
-          .maybeSingle();
-        if (progressError) throw progressError;
+          .not('completed_at', 'is', null)
+          .order('completed_at', { ascending: false })
+          .limit(1);
+
+        let progress = completedRows?.[0] ?? null;
+        if (!progress) {
+          const { data: currentVersionProgress } = await db
+            .from('onboarding_progress')
+            .select('*')
+            .eq('profile_id', user.id)
+            .eq('onboarding_version', settings.onboarding_version)
+            .maybeSingle();
+          progress = currentVersionProgress ?? null;
+        }
         return successResponse({ onboarding_version: settings.onboarding_version, progress: progress ?? null });
       }
 
       if (action === 'onboarding.complete' && request.method === 'POST') {
         if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Guided onboarding hanya untuk Operator.', 403);
         const body = await readJsonObject(request, ['version']);
-        if (!body || !isPositiveInteger(body.version)) return invalidPayload('version onboarding wajib berupa integer positif.');
+        if (!body || !isPositiveInteger(body.version)) {
+          return invalidPayload('version onboarding wajib berupa integer positif.');
+        }
+
         const { data, error } = await db.rpc('rpc_complete_onboarding', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_onboarding_version: body.version,
         });
+
         if (error) return rpcErrorResponse(error);
-        if (!isObject(data) || data.profile_id !== user.id || data.onboarding_version !== body.version
+        if (!isObject(data) || data.profile_id !== user.id
           || typeof data.completed_at !== 'string' || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
         return successResponse(data);
       }
@@ -1965,7 +2383,7 @@ export default {
         if (user.role === 'SUPERVISOR') query = query.eq('profiles.role', 'OPERATOR');
         const { data, error } = await query;
         if (error) throw error;
-        const users = (data ?? []).map(scope => scope.profiles).sort((a: any, b: any) => a.display_name.localeCompare(b.display_name));
+        const users = (data ?? []).map((scope: any) => scope.profiles).sort((a: any, b: any) => a.display_name.localeCompare(b.display_name));
         return successResponse({ users });
       }
 

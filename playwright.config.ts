@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PORT ?? 4173);
 const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+const e2eClientIp = process.env.E2E_CLIENT_IP;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -15,7 +16,10 @@ export default defineConfig({
     baseURL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
-    extraHTTPHeaders: { Origin: baseURL },
+    extraHTTPHeaders: {
+      Origin: baseURL,
+      ...(e2eClientIp ? { 'X-Forwarded-For': e2eClientIp } : {}),
+    },
   },
   projects: [
     { name: 'desktop-chromium', use: { ...devices['Desktop Chrome'] } },

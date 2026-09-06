@@ -6,8 +6,22 @@ import { idbQueue, type QueueItem } from '../../lib/idb-queue';
 
 type Tab = 'overview' | 'opening' | 'movement' | 'closing';
 type OpeningReference = Awaited<ReturnType<typeof api.getOpeningReference>>;
+type DraftReceipt = Awaited<ReturnType<typeof api.saveOpeningDraft>>;
+type DraftSaveState = {
+  expectedVersion: number | null;
+  idempotencyKey: string;
+  payloadSignature: string | null;
+  receipt: DraftReceipt | null;
+};
 type CountState = 'UNCOUNTED' | 'MATCHED' | 'VARIANCE';
 type CorrectionCategory = 'PURCHASE' | 'RETURN_IN' | 'TRANSFER_IN' | 'USAGE' | 'INTERNAL' | 'TRANSFER_OUT' | 'WASTE';
+
+const newDraftSaveState = (): DraftSaveState => ({
+  expectedVersion: null,
+  idempotencyKey: crypto.randomUUID(),
+  payloadSignature: null,
+  receipt: null,
+});
 
 const countStateOf = (value: string, reference: number | null): CountState => {
   if (reference === null || value.trim() === '' || !Number.isFinite(Number(value))) return 'UNCOUNTED';
@@ -86,6 +100,8 @@ export function StockWorkspace({
   const [openingCounts, setOpeningCounts] = useState<Record<string, string>>({});
   const [openingReasons, setOpeningReasons] = useState<Record<string, string>>({});
   const [openingNotes, setOpeningNotes] = useState<Record<string, string>>({});
+  const [openingDraftSaving, setOpeningDraftSaving] = useState(false);
+  const [openingDraftState, setOpeningDraftState] = useState<DraftSaveState>(newDraftSaveState);
 
   // Closing state
   const closingRecord = cycleData?.closing;
@@ -95,8 +111,11 @@ export function StockWorkspace({
   const [closingCounts, setClosingCounts] = useState<Record<string, string>>({});
   const [closingReasons, setClosingReasons] = useState<Record<string, string>>({});
   const [closingNotes, setClosingNotes] = useState<Record<string, string>>({});
+  const [closingDraftSaving, setClosingDraftSaving] = useState(false);
+  const [closingDraftState, setClosingDraftState] = useState<DraftSaveState>(newDraftSaveState);
 
   const isPrimary = dutyRole === 'PRIMARY';
+  const canSaveDraft = dutyRole === 'PRIMARY' || dutyRole === 'HELPER' || canManage;
   const isDayShift = shift === 'SIANG';
   const isNightOrFull = shift === 'MALAM' || shift === 'FULL';
   const isRequiredFinal = isDayShift
@@ -139,6 +158,65 @@ export function StockWorkspace({
     setConflictDiscardItem(null);
     setCorrectionMovement(null);
   }, [cycleId]);
+
+  useEffect(() => {
+    setOpeningDraftSaving(false);
+    setOpeningDraftState(newDraftSaveState());
+    setClosingDraftSaving(false);
+    setClosingDraftState(newDraftSaveState());
+  }, [profileId, cycleId]);
+
+  useEffect(() => {
+    let active = true;
+    void api.getStockDrafts(cycleId)
+      .then(({ opening_draft: openingDraft, closing_draft: closingDraft }) => {
+        if (!active || activeScopeRef.current !== scopeSignature) return;
+        if (openingDraft && !isOpeningConfirmed) {
+          const counts: Record<string, string> = {};
+          const reasons: Record<string, string> = {};
+          const notes: Record<string, string> = {};
+          openingDraft.lines.forEach((line) => {
+            if (line.counted_qty !== null && line.counted_qty !== undefined) counts[line.item_id] = String(line.counted_qty);
+            if (line.reason_code) reasons[line.item_id] = line.reason_code;
+            if (line.notes) notes[line.item_id] = line.notes;
+          });
+          setOpeningCounts(counts);
+          setOpeningReasons(reasons);
+          setOpeningNotes(notes);
+          setOpeningDraftState({
+            expectedVersion: openingDraft.version,
+            idempotencyKey: crypto.randomUUID(),
+            payloadSignature: null,
+            receipt: null,
+          });
+        }
+        if (closingDraft && !isClosingConfirmed && !closingCompleted) {
+          const counts: Record<string, string> = {};
+          const reasons: Record<string, string> = {};
+          const notes: Record<string, string> = {};
+          closingDraft.lines.forEach((line) => {
+            if (line.counted_qty !== null && line.counted_qty !== undefined) counts[line.item_id] = String(line.counted_qty);
+            if (line.reason_code) reasons[line.item_id] = line.reason_code;
+            if (line.notes) notes[line.item_id] = line.notes;
+          });
+          setClosingCounts(counts);
+          setClosingReasons(reasons);
+          setClosingNotes(notes);
+          setClosingDraftState({
+            expectedVersion: closingDraft.version,
+            idempotencyKey: crypto.randomUUID(),
+            payloadSignature: null,
+            receipt: null,
+          });
+        }
+      })
+      .catch((err: any) => {
+        if (!active || activeScopeRef.current !== scopeSignature) return;
+        const code = typeof err?.code === 'string' ? err.code : 'DRAFT_RESTORE_FAILED';
+        setCriticalError(`Draft stok gagal dipulihkan (${code}). Input baru belum disimpan.`);
+      });
+    return () => { active = false; };
+  }, [scopeSignature, isOpeningConfirmed, isClosingConfirmed, closingCompleted]);
 
   useEffect(() => {
     let active = true;
@@ -541,6 +619,64 @@ export function StockWorkspace({
     }
   };
 
+  const handleSaveOpeningDraft = async () => {
+    setCriticalError('');
+    if (!canSaveDraft) {
+      showCriticalError('Draft stok awal hanya dapat disimpan oleh Penanggung Jawab Utama atau manajemen.');
+      return;
+    }
+    if (isOpeningConfirmed) {
+      showCriticalError('Draft stok awal tidak dapat disimpan setelah opening dikonfirmasi.');
+      return;
+    }
+
+    const enteredItems = items.filter((item) => openingCounts[item.id]?.trim() !== '');
+    const invalidItem = enteredItems.find((item) => {
+      const count = Number(openingCounts[item.id]);
+      return !Number.isFinite(count) || count < 0;
+    });
+    if (invalidItem) {
+      showCriticalError(`Jumlah fisik "${invalidItem.name}" harus berupa angka minimal 0.`);
+      return;
+    }
+
+    const lines = enteredItems.map((item) => ({
+      item_id: item.id,
+      counted_qty: Number(openingCounts[item.id]),
+      reason_code: openingReasons[item.id]?.trim() || null,
+      notes: openingNotes[item.id]?.trim() || null,
+    }));
+    const payloadSignature = JSON.stringify(lines);
+    const idempotencyKey = openingDraftState.payloadSignature === payloadSignature
+      ? openingDraftState.idempotencyKey
+      : crypto.randomUUID();
+    const expectedVersion = openingDraftState.expectedVersion;
+    const requestScope = scopeSignature;
+
+    setOpeningDraftState((current) => ({ ...current, idempotencyKey, payloadSignature }));
+    setOpeningDraftSaving(true);
+    try {
+      const receipt = await api.saveOpeningDraft(cycleId, expectedVersion, lines, idempotencyKey);
+      if (activeScopeRef.current !== requestScope) return;
+      setOpeningDraftState({
+        expectedVersion: receipt.version,
+        idempotencyKey: crypto.randomUUID(),
+        payloadSignature: null,
+        receipt,
+      });
+      showToast('Draft stok awal berhasil disimpan tanpa konfirmasi.');
+    } catch (err: any) {
+      if (activeScopeRef.current !== requestScope) return;
+      const status = typeof err?.status === 'number' ? err.status : null;
+      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
+      showCriticalError(status === 409 || errorCode === 'VERSION_CONFLICT'
+        ? `Draft stok awal berkonflik dengan versi server (${errorCode}).`
+        : `Gagal menyimpan draft stok awal (${errorCode}).`);
+    } finally {
+      if (activeScopeRef.current === requestScope) setOpeningDraftSaving(false);
+    }
+  };
+
   const handleAddMovement = async () => {
     setCriticalError('');
     if (isMovementFinal) {
@@ -828,6 +964,64 @@ export function StockWorkspace({
     }
   };
 
+  const handleSaveClosingDraft = async () => {
+    setCriticalError('');
+    if (!canSaveDraft) {
+      showCriticalError('Draft stok akhir hanya dapat disimpan oleh Penanggung Jawab Utama atau manajemen.');
+      return;
+    }
+    if (isClosingConfirmed || closingCompleted) {
+      showCriticalError('Draft stok akhir tidak dapat disimpan setelah closing dikonfirmasi.');
+      return;
+    }
+
+    const enteredItems = items.filter((item) => closingCounts[item.id]?.trim() !== '');
+    const invalidItem = enteredItems.find((item) => {
+      const count = Number(closingCounts[item.id]);
+      return !Number.isFinite(count) || count < 0;
+    });
+    if (invalidItem) {
+      showCriticalError(`Jumlah fisik "${invalidItem.name}" harus berupa angka minimal 0.`);
+      return;
+    }
+
+    const lines = enteredItems.map((item) => ({
+      item_id: item.id,
+      counted_qty: Number(closingCounts[item.id]),
+      reason_code: closingReasons[item.id]?.trim() || null,
+      notes: closingNotes[item.id]?.trim() || null,
+    }));
+    const payloadSignature = JSON.stringify(lines);
+    const idempotencyKey = closingDraftState.payloadSignature === payloadSignature
+      ? closingDraftState.idempotencyKey
+      : crypto.randomUUID();
+    const expectedVersion = closingDraftState.expectedVersion;
+    const requestScope = scopeSignature;
+
+    setClosingDraftState((current) => ({ ...current, idempotencyKey, payloadSignature }));
+    setClosingDraftSaving(true);
+    try {
+      const receipt = await api.saveClosingDraft(cycleId, expectedVersion, lines, idempotencyKey);
+      if (activeScopeRef.current !== requestScope) return;
+      setClosingDraftState({
+        expectedVersion: receipt.version,
+        idempotencyKey: crypto.randomUUID(),
+        payloadSignature: null,
+        receipt,
+      });
+      showToast('Draft stok akhir berhasil disimpan tanpa konfirmasi.');
+    } catch (err: any) {
+      if (activeScopeRef.current !== requestScope) return;
+      const status = typeof err?.status === 'number' ? err.status : null;
+      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
+      showCriticalError(status === 409 || errorCode === 'VERSION_CONFLICT'
+        ? `Draft stok akhir berkonflik dengan versi server (${errorCode}).`
+        : `Gagal menyimpan draft stok akhir (${errorCode}).`);
+    } finally {
+      if (activeScopeRef.current === requestScope) setClosingDraftSaving(false);
+    }
+  };
+
   return (
     <div className="workspace">
       <section className="welcome">
@@ -1109,12 +1303,36 @@ export function StockWorkspace({
             })}
           </div>
 
+          <button
+            type="button"
+            className="outline-button"
+            onClick={() => void handleSaveOpeningDraft()}
+            disabled={loading || openingDraftSaving || !canSaveDraft || isOpeningConfirmed}
+            title={!canSaveDraft ? 'Draft hanya tersedia untuk anggota cycle aktif atau manajemen.' : undefined}
+            style={{ marginTop: '20px', width: '100%' }}
+          >
+            {openingDraftSaving ? 'Menyimpan Draft...' : 'Simpan Draft Stok Awal'}
+          </button>
+          {!canSaveDraft && !isOpeningConfirmed && (
+            <p className="muted" style={{ marginTop: '6px', fontSize: '12px' }}>
+              Draft hanya tersedia untuk anggota cycle aktif atau manajemen.
+            </p>
+          )}
+          {openingDraftState.receipt && (
+            <div role="status" style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid #b9d8c5', background: '#f0f7f2', color: '#1e5b48', fontSize: '12px' }}>
+              <strong>Draft stok awal tersimpan.</strong>{' '}
+              {openingDraftState.receipt.line_count} baris · versi {openingDraftState.receipt.version} ·{' '}
+              {new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(openingDraftState.receipt.updated_at))} WIB
+              <span style={{ display: 'block', marginTop: '4px' }}>ID tanda terima: {openingDraftState.receipt.draft_id}</span>
+            </div>
+          )}
+
           {!isOpeningConfirmed && (
             <button
               className="primary-button"
               onClick={handleConfirmOpening}
-              disabled={loading || !isPrimary || !openingReferenceReady || missingOpeningReferences.length > 0}
-              style={{ marginTop: '20px', width: '100%' }}
+              disabled={loading || openingDraftSaving || !isPrimary || !openingReferenceReady || missingOpeningReferences.length > 0}
+              style={{ marginTop: '10px', width: '100%' }}
             >
               {loading ? 'Menyimpan...' : 'Konfirmasi Stok Awal →'}
             </button>
@@ -1304,12 +1522,36 @@ export function StockWorkspace({
             })}
           </div>
 
+          <button
+            type="button"
+            className="outline-button"
+            onClick={() => void handleSaveClosingDraft()}
+            disabled={loading || closingDraftSaving || !canSaveDraft || isClosingConfirmed || closingCompleted}
+            title={!canSaveDraft ? 'Draft hanya tersedia untuk anggota cycle aktif atau manajemen.' : undefined}
+            style={{ marginTop: '20px', width: '100%' }}
+          >
+            {closingDraftSaving ? 'Menyimpan Draft...' : 'Simpan Draft Stok Akhir'}
+          </button>
+          {!canSaveDraft && !isClosingConfirmed && !closingCompleted && (
+            <p className="muted" style={{ marginTop: '6px', fontSize: '12px' }}>
+              Draft hanya tersedia untuk anggota cycle aktif atau manajemen.
+            </p>
+          )}
+          {closingDraftState.receipt && (
+            <div role="status" style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid #b9d8c5', background: '#f0f7f2', color: '#1e5b48', fontSize: '12px' }}>
+              <strong>Draft stok akhir tersimpan.</strong>{' '}
+              {closingDraftState.receipt.line_count} baris · versi {closingDraftState.receipt.version} ·{' '}
+              {new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(closingDraftState.receipt.updated_at))} WIB
+              <span style={{ display: 'block', marginTop: '4px' }}>ID tanda terima: {closingDraftState.receipt.draft_id}</span>
+            </div>
+          )}
+
           {!isClosingConfirmed && !closingCompleted && (
             <button
               className="primary-button"
               onClick={handleConfirmClosing}
-              disabled={loading || !isPrimary || !queueStateLoaded || unresolvedCount > 0}
-              style={{ marginTop: '20px', width: '100%' }}
+              disabled={loading || closingDraftSaving || !isPrimary || !queueStateLoaded || unresolvedCount > 0}
+              style={{ marginTop: '10px', width: '100%' }}
             >
               {loading
                 ? 'Menyimpan...'

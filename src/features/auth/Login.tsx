@@ -11,19 +11,35 @@ type Props = {
 export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: Props) {
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
-  const [showPin, setShowPin] = useState(false);
+  const [transientVisibleIndex, setTransientVisibleIndex] = useState<number | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const pinInputRef = useRef<HTMLInputElement>(null);
   const submitInFlightRef = useRef(false);
   const prevErrorRef = useRef(error);
+  const transientTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedUser = options.find((o) => o.username === username);
   const disabled = loading || lockoutSeconds > 0;
+
+  useEffect(() => {
+    return () => {
+      if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+    };
+  }, []);
+
+  const flashDigit = (idx: number) => {
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+    setTransientVisibleIndex(idx);
+    transientTimerRef.current = setTimeout(() => {
+      setTransientVisibleIndex(null);
+    }, 800);
+  };
 
   // Server-authoritative lock countdown. When it expires, reset input focus.
   useEffect(() => {
     if (lockoutSeconds <= 0) {
       setPin('');
+      setTransientVisibleIndex(null);
       submitInFlightRef.current = false;
       prevErrorRef.current = error;
       setTimeout(() => {
@@ -36,6 +52,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
   useEffect(() => {
     if (error && error !== prevErrorRef.current && lockoutSeconds === 0) {
       setPin('');
+      setTransientVisibleIndex(null);
       setTimeout(() => {
         document.getElementById('pin-input-0')?.focus();
       }, 50);
@@ -54,6 +71,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
     if (submitInFlightRef.current || loading || !username || pin.length !== 6 || lockoutSeconds > 0) {
       return;
     }
+    if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+    setTransientVisibleIndex(null);
     submitInFlightRef.current = true;
     void onLogin(username, pin);
   };
@@ -115,6 +134,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                       className={`user-picker-option${opt.username === username ? ' is-selected' : ''}`}
                       onClick={() => {
                         setUsername(opt.username);
+                        setPin('');
+                        setTransientVisibleIndex(null);
                         setPickerOpen(false);
                         pinInputRef.current?.focus();
                       }}
@@ -131,22 +152,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
           <div className="login-field">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <label htmlFor="pin-input-0" style={{ margin: 0 }}>PIN 6 DIGIT</label>
-              <button
-                type="button"
-                className="pin-toggle"
-                onClick={() => setShowPin(!showPin)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: '11px',
-                  fontWeight: 600,
-                  color: '#4a6b5d',
-                  padding: '2px 4px',
-                }}
-              >
-                {showPin ? 'Sembunyikan' : 'Lihat'}
-              </button>
+              <small style={{ fontSize: '11px', color: '#6b8378' }}>Otomatis terselubung</small>
             </div>
             <div
               className="pin-box-wrap"
@@ -157,6 +163,12 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                 width: '100%',
                 maxWidth: '340px',
                 margin: '0 auto',
+              }}
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+                  setTransientVisibleIndex(null);
+                }
               }}
               onClick={() => {
                 const idx = Math.min(pin.length, 5);
@@ -170,7 +182,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                   <input
                     key={idx}
                     id={`pin-input-${idx}`}
-                    type={showPin ? 'text' : 'password'}
+                    aria-label={`Digit PIN ${idx + 1} dari 6`}
+                    type={transientVisibleIndex === idx ? 'text' : 'password'}
                     inputMode="numeric"
                     pattern="[0-9]*"
                     maxLength={1}
@@ -181,6 +194,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                       if (!val) {
                         const newPin = pin.slice(0, idx) + pin.slice(idx + 1);
                         setPin(newPin);
+                        setTransientVisibleIndex(null);
                         return;
                       }
                       const char = val[val.length - 1];
@@ -188,6 +202,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                       newPinArr[idx] = char;
                       const nextPin = newPinArr.join('').slice(0, 6);
                       setPin(nextPin);
+                      flashDigit(idx);
                       if (idx < 5) {
                         const nextEl = document.getElementById(`pin-input-${idx + 1}`);
                         nextEl?.focus();
@@ -203,6 +218,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Backspace') {
+                        if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+                        setTransientVisibleIndex(null);
                         if (!digit && idx > 0) {
                           const prevEl = document.getElementById(`pin-input-${idx - 1}`);
                           prevEl?.focus();
@@ -211,6 +228,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                     }}
                     onPaste={(e) => {
                       e.preventDefault();
+                      if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+                      setTransientVisibleIndex(null);
                       const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
                       if (pasted) {
                         setPin(pasted);
@@ -244,6 +263,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
 
           {lockoutSeconds > 0 && (
             <div
+              role="alert"
               style={{
                 background: '#fff1f2',
                 border: '1px solid #fecdd3',
