@@ -9,7 +9,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:db": "supabase db reset && supabase test db",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/run-staging-e2e.mjs",
+    "test:e2e:playwright": "playwright test",
     "test:watch": "vitest",
     "provision:user": "node scripts/provision-user.mjs"
   },
@@ -33,6 +34,7 @@
     "@vitest/coverage-v8": "^5.0.0",
     "happy-dom": "^20.14.0",
     "typescript": "~5.8.3",
+    "vercel": "^59.11.7",
     "vitest": "^5.0.0"
   }
 }

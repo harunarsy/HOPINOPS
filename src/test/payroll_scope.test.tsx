@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { api } from '../lib/api';
 import { wibDateKey } from '../domain/rules';
@@ -95,12 +95,13 @@ describe('ManagementView payroll period isolation', () => {
     await user.click(screen.getByRole('button', { name: /hitung ulang draft|buat draft payroll/i }));
     fireEvent.change(monthInput(), { target: { value: periodB } });
 
-    resolvePreview({ entry_count: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    resolveLoadB(runFor(periodB, 'run-b', 'DRAFT', 1));
+    await act(async () => {
+      resolvePreview({ entry_count: 2 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      resolveLoadB(runFor(periodB, 'run-b', 'DRAFT', 1));
+    });
 
     await waitFor(() => expect(monthInput().value).toBe(periodB));
     expect(monthInput().value).toBe(periodB);
   });
 });
-

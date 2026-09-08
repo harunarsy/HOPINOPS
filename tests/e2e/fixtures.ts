@@ -1,32 +1,30 @@
 /**
  * Shared E2E fixtures and helpers.
  *
- * Phase 1 constraint: no test may mutate production data.
- * Mutating flows require explicit opt-in, an allowlisted staging URL, and
- * disposable credentials. Misconfiguration fails loudly, never skips.
+ * Mutating tests are staging-only, use a disposable manifest, and are served
+ * through a localhost `vercel dev` process. Remote browser targets are denied.
  */
-
 import { existsSync, readFileSync } from 'node:fs';
 
 export type Role = 'OWNER' | 'SUPERVISOR' | 'OPERATOR' | 'INVESTOR';
-
 export const STAGING_PROJECT_REF = 'ibzlxdmnuszcmdzuocwu';
-
-const BLOCKED_E2E_HOSTS = [
-  'hopinops.vercel.app',
-  'webapp-rose-mu.vercel.app',
-  'naanarmoktmsumkxmjvj.supabase.co',
-];
-
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4173';
 
-export function credentialsForProject(projectName: string) {
-  const mobile = projectName.includes('mobile');
-  return {
-    username: mobile ? process.env.E2E_MOBILE_USERNAME ?? '' : process.env.E2E_DESKTOP_USERNAME ?? '',
-    pin: mobile ? process.env.E2E_MOBILE_PASSWORD ?? '' : process.env.E2E_DESKTOP_PASSWORD ?? '',
+type Project = 'desktop' | 'mobile';
+type FixtureKind = 'lifecycle' | 'journey' | 'onboarding' | 'investor';
+
+export type FixtureUser = { id: string; username: string; displayName: string; role: string };
+export type FixtureManifest = {
+  runId: string;
+  projectRef: string;
+  gps: { latitude: number; longitude: number };
+  clientIps: { desktop: string; mobile: string };
+  outlets: { desktop: { id: string; code: string }; mobile: { id: string; code: string } };
+  users: {
+    desktop: Record<FixtureKind, FixtureUser>;
+    mobile: Record<FixtureKind, FixtureUser>;
   };
-}
+};
 
 function assertStagingRef(projectRef: string) {
   if (projectRef !== STAGING_PROJECT_REF) {
@@ -41,147 +39,126 @@ function assertSafeBaseUrl(baseUrl: string) {
   } catch {
     throw new Error(`Mutating E2E URL tidak valid: ${baseUrl}`);
   }
-  const host = parsed.hostname.toLowerCase();
-  if (BLOCKED_E2E_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`))) {
-    throw new Error(`Mutating E2E menolak host production: ${baseUrl}`);
+  const localHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  if (
+    parsed.protocol !== 'http:' ||
+    !localHosts.has(parsed.hostname.toLowerCase()) ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== '/' ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`Mutating E2E wajib melalui vercel dev lokal yang terhubung staging, bukan host remote: ${baseUrl}`);
   }
 }
 
-function assertDistinctProjectCredentials() {
-  const desktopUser = (process.env.E2E_DESKTOP_USERNAME ?? '').trim();
-  const mobileUser = (process.env.E2E_MOBILE_USERNAME ?? '').trim();
-  if (desktopUser && mobileUser && desktopUser.toLowerCase() === mobileUser.toLowerCase()) {
-    throw new Error('Desktop dan mobile wajib memakai username disposable berbeda agar tidak berbagi cycle/onboarding.');
-  }
-  const manifest = loadFixtureManifestIfPresent();
-  if (manifest) assertManifestIsolation(manifest);
+function projectKey(projectName: string): Project {
+  return projectName.includes('mobile') ? 'mobile' : 'desktop';
 }
 
-export type FixtureUser = { id: string; username: string; displayName: string; role: string };
-export type FixtureManifest = {
-  runId: string;
-  projectRef: string;
-  gps: { latitude: number; longitude: number };
-  clientIps: { desktop: string; mobile: string };
-  outlets: { desktop: { id: string; code: string }; mobile: { id: string; code: string } };
-  users: {
-    desktop: { lifecycle: FixtureUser; journey: FixtureUser; onboarding: FixtureUser; investor: FixtureUser };
-    mobile: { lifecycle: FixtureUser; journey: FixtureUser; onboarding: FixtureUser; investor: FixtureUser };
-  };
-};
+function expectedUsername(runId: string, project: Project, kind: FixtureKind) {
+  return `e2e-${runId}-${project === 'desktop' ? 'd' : 'm'}-${kind}`;
+}
+
+function assertManifestIsolation(manifest: FixtureManifest) {
+  const projects: Project[] = ['desktop', 'mobile'];
+  const kinds: FixtureKind[] = ['lifecycle', 'journey', 'onboarding', 'investor'];
+  const outletIds = projects.map((project) => manifest.outlets?.[project]?.id);
+  const outletCodes = projects.map((project) => manifest.outlets?.[project]?.code);
+  if (outletIds.some((id) => !id) || new Set(outletIds).size !== 2) {
+    throw new Error('Manifest: desktop dan mobile wajib memakai tepat dua outlet unik.');
+  }
+  for (const project of projects) {
+    if (manifest.outlets[project].code !== `e2e-${manifest.runId}-${project}`) {
+      throw new Error(`Manifest: outlet ${project} bukan fixture disposable run ${manifest.runId}.`);
+    }
+  }
+  if (new Set(outletCodes).size !== 2) throw new Error('Manifest: outlet code desktop/mobile wajib berbeda.');
+  const ids: string[] = [];
+  const usernames: string[] = [];
+  for (const project of projects) {
+    for (const kind of kinds) {
+      const user = manifest.users?.[project]?.[kind];
+      if (!user?.id || !user.username || user.username !== expectedUsername(manifest.runId, project, kind)) {
+        throw new Error(`Manifest: user ${project}/${kind} bukan fixture disposable yang valid.`);
+      }
+      ids.push(user.id);
+      usernames.push(user.username.toLowerCase());
+    }
+  }
+  if (new Set(ids).size !== 8 || new Set(usernames).size !== 8) {
+    throw new Error('Manifest: semua profile ID dan username fixture wajib unik.');
+  }
+  if (!manifest.clientIps?.desktop || !manifest.clientIps?.mobile || manifest.clientIps.desktop === manifest.clientIps.mobile) {
+    throw new Error('Manifest: client IP desktop/mobile wajib berbeda.');
+  }
+}
 
 function manifestPath(): string {
   return process.env.E2E_FIXTURE_MANIFEST ?? '';
 }
 
 export function loadFixtureManifestIfPresent(): FixtureManifest | null {
-  const p = manifestPath();
-  if (!p) return null;
-  if (!existsSync(p)) throw new Error(`E2E_FIXTURE_MANIFEST tidak ditemukan: ${p}`);
-  const raw = JSON.parse(readFileSync(p, 'utf8')) as FixtureManifest;
-  if (raw.projectRef !== STAGING_PROJECT_REF) {
-    throw new Error(`Manifest menolak ref ${raw.projectRef}; wajib ${STAGING_PROJECT_REF}.`);
+  const filePath = manifestPath();
+  if (!filePath) return null;
+  if (!existsSync(filePath)) throw new Error(`E2E_FIXTURE_MANIFEST tidak ditemukan: ${filePath}`);
+  const manifest = JSON.parse(readFileSync(filePath, 'utf8')) as FixtureManifest;
+  if (manifest.projectRef !== STAGING_PROJECT_REF) {
+    throw new Error(`Manifest menolak ref ${manifest.projectRef}; wajib ${STAGING_PROJECT_REF}.`);
   }
-  if (!/^[a-z0-9]{4,12}$/.test(raw.runId ?? '')) throw new Error(`Manifest runId tidak valid: ${raw.runId}`);
-  return raw;
+  if (!/^[a-z0-9]{4,12}$/.test(manifest.runId ?? '')) throw new Error(`Manifest runId tidak valid: ${manifest.runId}`);
+  assertManifestIsolation(manifest);
+  return manifest;
 }
 
-function assertManifestIsolation(manifest: FixtureManifest) {
-  if (manifest.outlets.desktop.id === manifest.outlets.mobile.id) {
-    throw new Error('Manifest: desktop dan mobile wajib outlet berbeda.');
-  }
-  if (manifest.outlets.desktop.code === manifest.outlets.mobile.code) {
-    throw new Error('Manifest: outlet code desktop/mobile wajib berbeda.');
-  }
-  const names: string[] = [];
-  for (const project of ['desktop', 'mobile'] as const) {
-    for (const kind of ['lifecycle', 'journey', 'onboarding', 'investor'] as const) {
-      const u = manifest.users[project][kind];
-      if (!u?.username || !u?.id) throw new Error(`Manifest: user ${project}/${kind} tidak lengkap.`);
-      names.push(u.username.toLowerCase());
-    }
-  }
-  if (new Set(names).size !== names.length) {
-    throw new Error('Manifest: semua username fixture wajib unik agar tidak berbagi state.');
-  }
-  if (manifest.clientIps.desktop === manifest.clientIps.mobile) {
-    throw new Error('Manifest: client IP desktop/mobile wajib berbeda.');
-  }
-}
-
-function projectKey(projectName: string): 'desktop' | 'mobile' {
-  return projectName.includes('mobile') ? 'mobile' : 'desktop';
+function fixturePin(): string {
+  const pin = process.env.E2E_FIXTURE_PIN ?? '';
+  if (!pin) throw new Error('Mutating E2E memerlukan E2E_FIXTURE_PIN untuk manifest disposable.');
+  return pin;
 }
 
 export function getProjectOutletId(projectName: string): string | null {
   const manifest = loadFixtureManifestIfPresent();
-  if (!manifest) return null;
-  return manifest.outlets[projectKey(projectName)].id;
+  return manifest?.outlets[projectKey(projectName)].id ?? null;
 }
 
 export function getProjectGps(): { latitude: number; longitude: number } | null {
-  const manifest = loadFixtureManifestIfPresent();
-  return manifest?.gps ?? null;
-}
-
-function manifestPinFallback(projectName: string): string {
-  return (
-    process.env.E2E_FIXTURE_PIN ??
-    (projectKey(projectName) === 'mobile' ? process.env.E2E_MOBILE_PASSWORD : process.env.E2E_DESKTOP_PASSWORD) ??
-    ''
-  );
+  return loadFixtureManifestIfPresent()?.gps ?? null;
 }
 
 export function getLifecycleCredentials(projectName: string): { username: string; pin: string } | null {
   const manifest = loadFixtureManifestIfPresent();
   if (!manifest) return null;
-  const user = manifest.users[projectKey(projectName)].lifecycle;
-  return { username: user.username, pin: manifestPinFallback(projectName) };
+  return { username: manifest.users[projectKey(projectName)].lifecycle.username, pin: fixturePin() };
 }
 
 export function getJourneyIdentity(projectName: string): { username: string; displayName: string; pin: string } | null {
   const manifest = loadFixtureManifestIfPresent();
   if (!manifest) return null;
   const user = manifest.users[projectKey(projectName)].journey;
-  return { username: user.username, displayName: user.displayName, pin: manifestPinFallback(projectName) };
+  return { username: user.username, displayName: user.displayName, pin: fixturePin() };
 }
 
 export function getOnboardingUsername(projectName: string): string | null {
-  const manifest = loadFixtureManifestIfPresent();
-  if (!manifest) return null;
-  return manifest.users[projectKey(projectName)].onboarding.username;
-}
-
-export function getInvestorUsername(): string | null {
-  const manifest = loadFixtureManifestIfPresent();
-  // investor per project berbeda; default ke desktop untuk backward compat bila pemanggil tidak tahu project
-  if (!manifest) return null;
-  return manifest.users.desktop.investor.username;
+  return loadFixtureManifestIfPresent()?.users[projectKey(projectName)].onboarding.username ?? null;
 }
 
 export function getInvestorUsernameForProject(projectName: string): string {
   const manifest = loadFixtureManifestIfPresent();
-  if (!manifest) return process.env.E2E_INVESTOR_USERNAME ?? 'e2e-investor';
+  if (!manifest) throw new Error('Mutating E2E memerlukan manifest untuk investor fixture.');
   return manifest.users[projectKey(projectName)].investor.username;
 }
 
 export function requireMutatingStaging(projectName = '') {
   if (process.env.E2E_MUTATIONS !== '1') throw new Error('Mutating E2E disabled: set E2E_MUTATIONS=1 explicitly.');
-  const projectRef = process.env.E2E_STAGING_PROJECT_REF ?? '';
-  assertStagingRef(projectRef);
+  assertStagingRef(process.env.E2E_STAGING_PROJECT_REF ?? '');
   assertSafeBaseUrl(BASE_URL);
-  const allowed = (process.env.E2E_STAGING_ALLOWLIST ?? '').split(',').map((origin) => origin.trim()).filter(Boolean);
-  if (!allowed.some((origin) => BASE_URL === origin || BASE_URL.startsWith(`${origin}/`))) throw new Error(`Mutating E2E URL is not allowlisted: ${BASE_URL}`);
-  assertDistinctProjectCredentials();
   const manifest = loadFixtureManifestIfPresent();
-  if (manifest) {
-    const lifecycle = getLifecycleCredentials(projectName);
-    if (!lifecycle?.username || !lifecycle?.pin) throw new Error(`Missing manifest credentials for ${projectName || 'default'} project.`);
-    return lifecycle;
-  }
-  const selected = credentialsForProject(projectName);
-  if (!selected.username || !selected.pin) throw new Error(`Missing disposable credentials for ${projectName || 'default'} project.`);
-  return selected;
+  if (!manifest) throw new Error('Mutating E2E memerlukan E2E_FIXTURE_MANIFEST disposable per-run.');
+  const lifecycle = getLifecycleCredentials(projectName);
+  if (!lifecycle?.username || !lifecycle.pin) throw new Error(`Missing manifest credentials for ${projectName || 'default'} project.`);
+  return lifecycle;
 }
 
 export const WIB_TZ = 'Asia/Jakarta';

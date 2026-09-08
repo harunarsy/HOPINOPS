@@ -15,13 +15,21 @@ pnpm install
 pnpm lint        # tsc --noEmit
 pnpm test        # vitest
 pnpm build       # vite build
-pnpm test:e2e    # playwright
-pnpm test:db     # supabase db reset + pgTAP — BUTUH DOCKER berjalan
+pnpm test:e2e    # lifecycle staging disposable: provision → Playwright → teardown
+pnpm test:db     # supabase db reset + pgTAP; membutuhkan Docker berjalan
 ```
 
 `pnpm dev` hanya menjalankan UI Vite; endpoint `/api/*` berjalan penuh saat project dijalankan oleh Vercel (production/preview).
 
-Mutating E2E hanya boleh memakai staging disposable (`ibzlxdmnuszcmdzuocwu`) dan memerlukan `E2E_MUTATIONS=1`, `E2E_STAGING_PROJECT_REF` yang dipin di kode, `E2E_STAGING_ALLOWLIST`, serta fixture disposable per run. Alur wajib: provision → test → teardown. `scripts/provision-staging-fixtures.mjs` membuat 2 outlet + 8 profil unik per `E2E_RUN_ID` (desktop/mobile terisolasi) dan menulis manifest ke `/tmp` (jangan ke `test-results/`, dihapus Playwright); `scripts/teardown-staging-fixtures.mjs` menonaktifkan outlet/profil/scope, revoke device, dan menghapus session/rate-limit tanpa menghapus histori. Tanpa teardown, outlet ganda memblokir mutasi katalog (`GLOBAL_ITEM_SCHEMA`). Smoke tidak punya default production dan menarget origin yang sama dengan `E2E_BASE_URL` (vercel dev + `.env.local` staging).
+### E2E mutating staging
+
+Mutating E2E tidak pernah boleh menarget production atau origin remote. Browser wajib menuju root `http://127.0.0.1:<port>` atau `http://localhost:<port>` dari `vercel dev` yang dikonfigurasi dengan environment staging `ibzlxdmnuszcmdzuocwu`; Vite preview tidak menyediakan endpoint `/api/*`.
+
+1. CLI `vercel` sudah menjadi dev dependency. Runner memakai `vercel dev --local`, jadi tidak menarik environment atau memilih project Vercel remote.
+2. Set hanya secret server-side staging yang diperlukan (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, dan `E2E_FIXTURE_PIN`), serta `E2E_MUTATIONS=1` dan `E2E_STAGING_PROJECT_REF=ibzlxdmnuszcmdzuocwu`. Runner memverifikasi host Supabase tepat ke staging sebelum provisioning.
+3. Jalankan `pnpm test:e2e`. Runner menyalakan `vercel dev` hanya di `127.0.0.1`, menunggu `/api/health`, membuat run ID acak dan fixture disposable, menjalankan Playwright, lalu selalu teardown serta menghentikan server. `E2E_RUN_ID`, `E2E_PORT`, dan `E2E_BASE_URL` hanya untuk investigasi lokal.
+
+`E2E_FIXTURE_MANIFEST` dibuat di direktori temporary dengan permission owner-only. Provisioner menolak run ID, outlet, profile, atau manifest yang sudah ada. Sebelum satu write pun, teardown memastikan dua outlet, delapan profile, username, dan scope aktif benar-benar milik run disposable tersebut. Bila teardown gagal, manifest dipertahankan dan runner gagal agar cleanup dapat dilakukan dengan aman. Histori audit/cycle/attendance/stock tidak dihapus.
 
 ## Verifikasi staging (2026-09-05)
 
