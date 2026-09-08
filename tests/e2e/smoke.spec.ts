@@ -1,19 +1,37 @@
 import { test, expect } from '@playwright/test';
+import { BASE_URL, requireMutatingStaging, loadFixtureManifestIfPresent } from './fixtures';
 
 /**
- * Read-only smoke tests. Safe against production.
- *
- * IMPORTANT: vite preview has NO /api backend (Vercel serverless functions
- * do not run locally without Docker). API assertions therefore target the
- * real deployed URL from E2E_API_BASE_URL (defaults to production).
- * UI-only assertions always run against the local preview build.
+ * Smoke tests against the same BASE_URL under test (vercel dev staging).
+ * Tidak ada default production dan tidak ada target API kedua.
+ * UI-only assertions tidak menyentuh kredensial; negative-login memakai
+ * akun disposable dari manifest dan IP unik per project.
  */
 
-const API_BASE = process.env.E2E_API_BASE_URL ?? 'https://hopinops.vercel.app';
-const failedLoginIp = process.env.E2E_FAILED_LOGIN_IP ?? '198.51.100.43';
+const API_BASE = BASE_URL;
+
+function projectClientIp(projectName: string): string {
+  const manifest = loadFixtureManifestIfPresent();
+  if (manifest) return projectName.includes('mobile') ? manifest.clientIps.mobile : manifest.clientIps.desktop;
+  if (projectName.includes('mobile')) return process.env.E2E_MOBILE_CLIENT_IP ?? '198.51.100.44';
+  return process.env.E2E_DESKTOP_CLIENT_IP ?? '198.51.100.42';
+}
+
+/** IP khusus untuk negative-login; wajib berbeda dari IP project agar tidak memblokir test lain. */
+function failedLoginIpForProject(projectName: string): string {
+  if (projectName.includes('mobile')) return process.env.E2E_MOBILE_FAILED_LOGIN_IP ?? '198.51.100.45';
+  return process.env.E2E_FAILED_LOGIN_IP ?? '198.51.100.43';
+}
+
+function disposableDisplayName(projectName: string): string | null {
+  const manifest = loadFixtureManifestIfPresent();
+  if (!manifest) return null;
+  const project = projectName.includes('mobile') ? 'mobile' : 'desktop';
+  return manifest.users[project].lifecycle.displayName;
+}
 
 async function apiGetAbs(path: string): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, { headers: { Origin: API_BASE } });
   let body: any = null;
   try {
     body = await res.json();
@@ -26,7 +44,7 @@ async function apiGetAbs(path: string): Promise<{ status: number; body: any }> {
 async function apiPostAbs(path: string, payload: unknown): Promise<{ status: number; body: any }> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Origin: API_BASE },
     body: JSON.stringify(payload),
   });
   let body: any = null;
@@ -38,34 +56,11 @@ async function apiPostAbs(path: string, payload: unknown): Promise<{ status: num
   return { status: res.status, body };
 }
 
-test.describe('Deployment smoke (read-only)', () => {
+test.describe('Staging smoke (same origin)', () => {
   test('login page renders with user picker and PIN boxes', async ({ page }) => {
     await page.goto('/');
     const picker = page.getByRole('button', { name: /pilih nama anda|memuat daftar nama|nama lengkap/i });
-    const recovery = page.getByRole('button', { name: /coba lagi/i });
-    // Local preview has no /api backend: the app may either show the login form
-    // (options fetch failed open) or the new fail-closed recovery screen. Both
-    // are valid; the deployed-API assertions below cover the backend path.
-    // `vercel dev` + Vite may also crash with a plugin preamble error, in which
-    // case the page is blank — that is an environment limitation, not a product bug.
-    let loginVisible = await picker
-      .waitFor({ state: 'visible', timeout: 8_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (!loginVisible) {
-      const recoveryVisible = await recovery
-        .waitFor({ state: 'visible', timeout: 4_000 })
-        .then(() => true)
-        .catch(() => false);
-      if (!recoveryVisible) {
-        const bodyEmpty = await page.evaluate(() => document.body.innerText.trim().length === 0);
-        test.skip(bodyEmpty, 'Dev-server rendered blank (Vite preamble limitation under vercel dev)');
-        return;
-      }
-      await expect(recovery).toBeVisible();
-      test.skip(true, 'Local preview shows fail-closed recovery screen (no /api backend)');
-      return;
-    }
+    await expect(picker).toBeVisible({ timeout: 12_000 });
     await expect(page.locator('#pin-input-0')).toBeVisible();
     for (let i = 1; i <= 5; i++) {
       await expect(page.locator(`#pin-input-${i}`)).toBeVisible();
@@ -76,15 +71,7 @@ test.describe('Deployment smoke (read-only)', () => {
   test('six PIN boxes are focus-ordered and numeric-only', async ({ page }) => {
     await page.goto('/');
     const picker = page.getByRole('button', { name: /pilih nama anda|memuat daftar nama|nama lengkap/i });
-    const loginVisible = await picker
-      .waitFor({ state: 'visible', timeout: 8_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (!loginVisible) {
-      const bodyEmpty = await page.evaluate(() => document.body.innerText.trim().length === 0);
-      test.skip(bodyEmpty || true, 'Dev-server blank (Vite preamble) or recovery screen — UI form covered in vite preview run');
-      return;
-    }
+    await expect(picker).toBeVisible({ timeout: 12_000 });
     await page.locator('#pin-input-0').click();
     await page.keyboard.type('12');
     await expect(page.locator('#pin-input-0')).toHaveValue('1');
@@ -92,7 +79,7 @@ test.describe('Deployment smoke (read-only)', () => {
     await expect(page.locator('#pin-input-2')).toBeFocused();
   });
 
-  test('unauthenticated business API returns 401 envelope (deployed API)', async () => {
+  test('unauthenticated business API returns 401 envelope', async () => {
     const { status, body } = await apiGetAbs('/api/app?action=bootstrap');
     expect(status).toBe(401);
     expect(body?.ok).toBe(false);
@@ -106,40 +93,33 @@ test.describe('Deployment smoke (read-only)', () => {
     expect(body?.error?.code).toBe('AUTH_REQUIRED');
   });
 
-  test('failed login is generic and does not leak user existence (deployed API)', async () => {
-    const { status, body } = await apiPostAbs('/api/auth?action=login', {
-      username: 'e2e-no-such-user',
-      pin: '000000',
+  test('failed login is generic and does not leak user existence', async ({ request }, testInfo) => {
+    requireMutatingStaging(testInfo.project.name);
+    const res = await request.post(`${API_BASE}/api/auth?action=login`, {
+      data: { username: 'e2e-no-such-user', pin: '000000' },
+      headers: { Origin: API_BASE, 'X-Forwarded-For': failedLoginIpForProject(testInfo.project.name) },
     });
-    // 401 = bad credentials; 403 = CSRF/origin rejected by serverless edge.
-    // Both are acceptable for a request with no Origin header.
-    expect([401, 403, 429]).toContain(status);
-    if (status === 401) {
-      expect(body?.error ?? body?.error?.message).toBeDefined();
-    }
+    const status = res.status();
+    let body: any = null;
+    try { body = await res.json(); } catch { body = null; }
+    // Wajib 401 generik; 403 berarti CSRF belum benar, 429 berarti fixture tercemar.
+    expect(status, `Login negatif tercemar: ${JSON.stringify(body)}`).toBe(401);
+    expect(body?.error ?? body?.error?.message).toBeDefined();
   });
 
-  test('failed login clears all six PIN boxes on the form', async ({ page }) => {
-    test.skip(!process.env.E2E_USERNAME, 'Requires E2E_USERNAME pointing at a disposable account');
-    await page.setExtraHTTPHeaders({ 'X-Forwarded-For': failedLoginIp });
+  test('failed login clears all six PIN boxes on the form', async ({ page }, testInfo) => {
+    requireMutatingStaging(testInfo.project.name);
+    await page.setExtraHTTPHeaders({ 'X-Forwarded-For': failedLoginIpForProject(testInfo.project.name) });
     await page.goto('/');
     const picker = page.getByRole('button', { name: /pilih nama anda|memuat daftar nama|nama lengkap/i });
-    const loginVisible = await picker
-      .waitFor({ state: 'visible', timeout: 8_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (!loginVisible) {
-      // vercel dev can serve a blank Vite page even while its API functions work.
-      const bodyEmpty = await page.evaluate(() => document.body.innerText.trim().length === 0);
-      test.skip(true, bodyEmpty
-        ? 'Dev-server blank (Vite preamble) — UI form covered in vite preview run'
-        : 'Dev-server recovery screen — UI form covered in vite preview run');
-      return;
-    }
+    await expect(picker).toBeVisible({ timeout: 12_000 });
     await picker.click();
-    const option = page.locator('.user-picker-option').first();
-    await expect(option).toBeVisible();
-    await option.click();
+    const targetName = disposableDisplayName(testInfo.project.name);
+    const option = targetName
+      ? page.getByText(new RegExp(targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'))
+      : page.locator('.user-picker-option').first();
+    await expect(option.first()).toBeVisible();
+    await option.first().click();
     // Fill an intentionally wrong PIN.
     for (let i = 0; i < 6; i++) {
       await page.locator(`#pin-input-${i}`).fill('9');

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 
 type Area = 'BAR' | 'KITCHEN';
@@ -10,8 +10,11 @@ const DEFAULT_SECTION = 'Belum dikelompokkan';
 
 export function CatalogManager() {
   const [area, setArea] = useState<Area>('BAR');
+  const [loadedArea, setLoadedArea] = useState<Area | null>(null);
   const [items, setItems] = useState<any[]>([]);
   const [layoutVersion, setLayoutVersion] = useState(1);
+  const [layoutPending, setLayoutPending] = useState(false);
+  const [layoutPendingVersion, setLayoutPendingVersion] = useState<number | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(false);
@@ -23,24 +26,48 @@ export function CatalogManager() {
   const [newSection, setNewSection] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
+  const loadRequestRef = useRef(0);
+  const activeAreaRef = useRef<Area>('BAR');
+  const [pendingLayoutChange, setPendingLayoutChange] = useState(false);
 
   const placementByItem = new Map(placements.map((p) => [p.item_id, p]));
   const sectionById = new Map(sections.map((s) => [s.id, s]));
 
-  const load = async (targetArea: Area = area) => {
+  const load = async (targetArea: Area) => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setError('');
     try {
       const [itemList, layout] = await Promise.all([api.listItems(), api.getChecklistLayout(targetArea)]);
+      if (loadRequestRef.current !== requestId || activeAreaRef.current !== targetArea) return;
       setItems(itemList.filter((it: any) => it.area_code === targetArea));
       setLayoutVersion(layout.version);
+      setLayoutPending((layout as any).pending === true);
+      setLayoutPendingVersion(typeof (layout as any).pending_version === 'number' ? (layout as any).pending_version : null);
       setSections(layout.sections);
       setPlacements(layout.placements);
+      setLoadedArea(targetArea);
     } catch (err: any) {
+      if (loadRequestRef.current !== requestId || activeAreaRef.current !== targetArea) return;
       setError(err?.message || 'Gagal memuat katalog.');
     } finally {
-      setLoading(false);
+      if (loadRequestRef.current === requestId && activeAreaRef.current === targetArea) setLoading(false);
     }
+  };
+
+  const switchArea = (next: Area) => {
+    if (next === activeAreaRef.current) return;
+    activeAreaRef.current = next;
+    loadRequestRef.current += 1;
+    setArea(next);
+    setLoadedArea(null);
+    setItems([]);
+    setSections([]);
+    setPlacements([]);
+    setArchiveTarget(null);
+    setArchiveReason('');
+    setNotice('');
+    setPendingLayoutChange(false);
   };
 
   useEffect(() => {
@@ -54,7 +81,7 @@ export function CatalogManager() {
     const sa = pa ? sectionById.get(pa.section_id)?.position ?? 999 : 999;
     const sb = pb ? sectionById.get(pb.section_id)?.position ?? 999 : 999;
     if (sa !== sb) return sa - sb;
-    return (pa?.position ?? 999) - (pb?.position ?? 999) || a.name.localeCompare(b.name);
+    return (pa?.position ?? 999) - (pb?.position ?? 999);
   });
 
   const grouped = new Map<string, typeof orderedItems>();
@@ -66,68 +93,94 @@ export function CatalogManager() {
   }
 
   const handleCreate = async () => {
+    const operationArea = activeAreaRef.current;
     setError('');
     setNotice('');
     try {
       await api.createItem({
         id: newId.trim().toLowerCase().replace(/\s+/g, '_'),
-        area_code: area,
+        area_code: operationArea,
         name: newName.trim(),
         unit_code: newUnit.trim() || 'pcs',
         decimal_scale: 2,
         low_threshold: 0,
       });
+      if (activeAreaRef.current !== operationArea) return;
       setNotice(`Barang ${newName.trim()} ditambahkan. Berlaku mulai cycle berikutnya bila cycle aktif berjalan.`);
       setNewId('');
       setNewName('');
-      await load();
+      await load(operationArea);
     } catch (err: any) {
+      if (activeAreaRef.current !== operationArea) return;
       setError(err?.message || 'Gagal menambah barang.');
     }
   };
 
   const handleArchive = async () => {
     if (!archiveTarget) return;
+    const operationArea = activeAreaRef.current;
+    if (!items.some((it: any) => it.id === archiveTarget)) {
+      setError('Area berubah saat formulir arsip terbuka. Pilih ulang barang pada area aktif.');
+      setArchiveTarget(null);
+      setArchiveReason('');
+      return;
+    }
     setError('');
     setNotice('');
     try {
       await api.archiveItem(archiveTarget, archiveReason.trim());
+      if (activeAreaRef.current !== operationArea) return;
       setNotice('Barang diarsipkan dari daftar berikutnya. Histori dan laporan lama tetap utuh.');
       setArchiveTarget(null);
       setArchiveReason('');
-      await load();
+      await load(operationArea);
     } catch (err: any) {
+      if (activeAreaRef.current !== operationArea) return;
       setError(err?.message || 'Gagal mengarsipkan barang.');
     }
   };
 
   const handleMove = async (itemId: string, sectionId: string, position: number) => {
+    if (pendingLayoutChange) return;
+    const operationArea = activeAreaRef.current;
+    const operationVersion = layoutVersion;
     setError('');
     setNotice('');
+    setPendingLayoutChange(true);
     try {
-      const res = await api.moveChecklistItem(area, itemId, sectionId, position, layoutVersion, crypto.randomUUID());
+      const res = await api.moveChecklistItem(operationArea, itemId, sectionId, position, operationVersion, crypto.randomUUID());
+      if (activeAreaRef.current !== operationArea) return;
       setLayoutVersion(res.layout_version);
       setNotice('Susunan checklist tersimpan di server.');
-      await load();
+      await load(operationArea);
     } catch (err: any) {
+      if (activeAreaRef.current !== operationArea) return;
       if (/VERSION_CONFLICT/.test(err?.message ?? '')) {
         setError('Susunan berubah oleh pengguna lain. Memuat versi terbaru...');
-        await load();
+        await load(operationArea);
         return;
       }
       setError(err?.message || 'Gagal memindahkan barang.');
+    } finally {
+      if (activeAreaRef.current === operationArea) setPendingLayoutChange(false);
     }
   };
 
   const handleNewSection = async () => {
-    if (!newSection.trim()) return;
+    if (!newSection.trim() || pendingLayoutChange) return;
+    const operationArea = activeAreaRef.current;
     setError('');
+    setPendingLayoutChange(true);
     try {
-      await api.upsertChecklistSection(area, newSection.trim(), null, crypto.randomUUID());
+      await api.upsertChecklistSection(operationArea, newSection.trim(), null, crypto.randomUUID());
+      if (activeAreaRef.current !== operationArea) return;
       setNewSection('');
-      await load();
+      await load(operationArea);
     } catch (err: any) {
+      if (activeAreaRef.current !== operationArea) return;
       setError(err?.message || 'Gagal menambah bagian.');
+    } finally {
+      if (activeAreaRef.current === operationArea) setPendingLayoutChange(false);
     }
   };
 
@@ -144,7 +197,8 @@ export function CatalogManager() {
               key={a}
               type="button"
               className={`segmented-btn ${area === a ? 'active' : ''}`}
-              onClick={() => setArea(a)}
+              aria-pressed={area === a}
+              onClick={() => switchArea(a)}
             >
               {a === 'BAR' ? 'Bar' : 'Kitchen'}
             </button>
@@ -153,7 +207,13 @@ export function CatalogManager() {
       </div>
 
       <p className="muted" style={{ fontSize: '12px' }}>
-        Perubahan katalog berlaku mulai cycle berikutnya. Versi susunan server: <strong>{layoutVersion}</strong>.
+        {layoutPending && layoutPendingVersion !== null ? (
+          <>Draft cycle berikutnya: <strong>versi {layoutPendingVersion}</strong>. Berlaku mulai cycle berikutnya; cycle aktif tetap memakai susunan lama.</>
+        ) : (
+          <>Susunan aktif server: <strong>versi {layoutVersion}</strong>.</>
+        )}
+        {pendingLayoutChange && <> Perubahan susunan sedang menunggu konfirmasi server.</>}
+        <br /><strong>Perubahan berikutnya:</strong> barang baru, arsip, dan susunan ini berlaku mulai cycle berikutnya.
         Arsip tidak menghapus histori.
       </p>
 
@@ -178,12 +238,17 @@ export function CatalogManager() {
 
       <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
         <input value={newSection} onChange={(e) => setNewSection(e.target.value)} placeholder="Bagian baru, mis. Rak atas" style={{ flex: 1, padding: '6px' }} aria-label="Nama bagian baru" />
-        <button type="button" className="outline-button" onClick={() => void handleNewSection()} disabled={!newSection.trim()}>
+        <button type="button" className="outline-button" onClick={() => void handleNewSection()} disabled={!newSection.trim() || pendingLayoutChange}>
           Tambah bagian
         </button>
       </div>
 
-      {[...grouped.entries()].map(([sectionName, sectionItems]) => (
+      {loadedArea !== area && (
+        <p role="status" style={{ color: '#476058', fontSize: '12px', marginTop: '12px' }}>
+          Memuat katalog {area === 'BAR' ? 'Bar' : 'Kitchen'}...
+        </p>
+      )}
+      {loadedArea === area && [...grouped.entries()].map(([sectionName, sectionItems]) => (
         <div key={sectionName} style={{ marginTop: '16px' }}>
           <h3 style={{ fontSize: '14px' }}>{sectionName} <small className="muted">({sectionItems.length} barang)</small></h3>
           <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '6px' }}>
@@ -192,11 +257,12 @@ export function CatalogManager() {
               return (
                 <li key={it.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid #e0ece6', borderRadius: '8px' }}>
                   <span style={{ flex: 1 }}><strong>{it.name}</strong> <small className="muted">{it.id} · {it.unit_code}</small></span>
-                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke atas`} disabled={idx === 0} onClick={() => p && void handleMove(it.id, p.section_id, Math.max(0, p.position - 1))} style={{ padding: '4px 8px' }}>↑</button>
-                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke bawah`} disabled={idx === sectionItems.length - 1} onClick={() => p && void handleMove(it.id, p.section_id, p.position + 1)} style={{ padding: '4px 8px' }}>↓</button>
+                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke atas`} disabled={idx === 0 || pendingLayoutChange} onClick={() => p && void handleMove(it.id, p.section_id, Math.max(0, p.position - 1))} style={{ padding: '4px 8px' }}>↑</button>
+                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke bawah`} disabled={idx === sectionItems.length - 1 || pendingLayoutChange} onClick={() => p && void handleMove(it.id, p.section_id, p.position + 1)} style={{ padding: '4px 8px' }}>↓</button>
                   <select
                     aria-label={`Pindahkan ${it.name} ke bagian`}
                     value={p?.section_id ?? ''}
+                    disabled={pendingLayoutChange}
                     onChange={(e) => e.target.value && void handleMove(it.id, e.target.value, 0)}
                     style={{ padding: '4px' }}
                   >

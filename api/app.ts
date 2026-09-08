@@ -421,6 +421,28 @@ function isDraftLines(value: unknown): value is Array<Record<string, any>> {
   return true;
 }
 
+function isSnapshotLines(value: unknown): value is Array<Record<string, any>> {
+  // Confirmations must carry a complete, typed physical snapshot. Never turn a
+  // malformed payload into an empty snapshot or an implicit zero baseline.
+  return isDraftLines(value) && value.length > 0 && value.every((line: any) =>
+    typeof line.reason_code === 'string' || line.reason_code === null || line.reason_code === undefined
+  );
+}
+
+function isPhysicalBaselineLines(value: unknown): value is Array<Record<string, any>> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 200) return false;
+  const itemIds = new Set<string>();
+  for (const line of value) {
+    if (!isObject(line) || !hasOnlyKeys(line, ['item_id', 'counted_qty'])
+      || !isItemId(line.item_id) || line.item_id !== line.item_id.trim()
+      || !isQuantity(line.counted_qty, true) || itemIds.has(line.item_id)) {
+      return false;
+    }
+    itemIds.add(line.item_id);
+  }
+  return true;
+}
+
 function attendanceChallengeBinding(body: any): { challengeId: string; nonce: string } | null {
   if (isUuid(body?.challengeId) && typeof body?.nonce === 'string' && body.nonce.length > 0) {
     return { challengeId: body.challengeId, nonce: body.nonce };
@@ -458,8 +480,8 @@ export function getWibMinutesOfDay(date = new Date()): number {
 }
 
 // Sanitize string to prevent Excel Formula Injection
-function sanitizeExcelCell(val: any): any {
-  if (typeof val === 'string' && /^[=+\-@]/.test(val)) {
+export function sanitizeExcelCell(val: any): any {
+  if (typeof val === 'string' && /^[\s\u0000-\u001f\u007f-\u009f]*[=+\-@]/u.test(val)) {
     return `'${val}`;
   }
   return val;
@@ -468,6 +490,39 @@ function sanitizeExcelCell(val: any): any {
 async function sha256Buffer(buffer: ArrayBuffer | Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buffer);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function canonicalJson(value: unknown): string {
+  const seen = new WeakSet<object>();
+  const serialize = (item: unknown): string => {
+    if (item === null || typeof item === 'boolean' || typeof item === 'string') return JSON.stringify(item);
+    if (typeof item === 'number') {
+      if (!Number.isFinite(item)) throw new TypeError('Canonical JSON numbers must be finite.');
+      return JSON.stringify(item);
+    }
+    if (typeof item !== 'object') throw new TypeError(`Unsupported canonical JSON value: ${typeof item}`);
+    if (seen.has(item)) throw new TypeError('Canonical JSON does not support cyclic values.');
+    seen.add(item);
+    try {
+      if (Array.isArray(item)) {
+        if (Object.getOwnPropertySymbols(item).length > 0
+          || Object.keys(item).some(key => !/^(0|[1-9]\d*)$/.test(key))
+          || Array.from({ length: item.length }, (_, index) => index)
+            .some(index => !Object.prototype.hasOwnProperty.call(item, index))) {
+          throw new TypeError('Canonical JSON only supports dense arrays.');
+        }
+        return `[${item.map(serialize).join(',')}]`;
+      }
+      const prototype = Object.getPrototypeOf(item);
+      if ((prototype !== Object.prototype && prototype !== null) || Object.getOwnPropertySymbols(item).length > 0) {
+        throw new TypeError('Canonical JSON only supports plain string-keyed objects.');
+      }
+      return `{${Object.keys(item).sort().map(key => `${JSON.stringify(key)}:${serialize((item as Record<string, unknown>)[key])}`).join(',')}}`;
+    } finally {
+      seen.delete(item);
+    }
+  };
+  return serialize(value);
 }
 
 export default {
@@ -482,17 +537,28 @@ export default {
 
     if (!action) return errorResponse('NOT_FOUND', 'Action tidak ditemukan', 404);
 
-    const authContext = await currentAuthContext(request);
+    let authContext;
+    try {
+      authContext = await currentAuthContext(request);
+    } catch (err) {
+      console.error('API Auth/Dependency Error:', err);
+      return errorResponse('SERVICE_UNAVAILABLE', 'Layanan autentikasi atau database mengalami kendala. Coba lagi.', 503);
+    }
     if (!authContext) {
       return errorResponse('AUTH_REQUIRED', 'Sesi tidak valid atau telah berakhir.', 401);
+    }
+    let db;
+    try {
+      db = getAdminClient();
+    } catch (err) {
+      console.error('API Dependency Error:', err);
+      return errorResponse('SERVICE_UNAVAILABLE', 'Layanan autentikasi atau database mengalami kendala. Coba lagi.', 503);
     }
     const user = authContext.user;
 
     if (user.force_pin_change && action !== 'changePin' && action !== 'bootstrap') {
       return errorResponse('PIN_CHANGE_REQUIRED', 'Wajib mengganti PIN sebelum melanjutkan.', 403);
     }
-
-    const db = getAdminClient();
 
     try {
       const outletId = await scopedOutletId(db, user.id);
@@ -1114,7 +1180,8 @@ export default {
 
       // 7. ATTENDANCE
       if (action === 'attendance.challenge' && request.method === 'POST') {
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['action']);
+        if (!body) return invalidPayload();
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan melakukan absensi.', 403);
         }
@@ -1290,7 +1357,9 @@ export default {
         if (error) return rpcErrorResponse(error);
         if (!isObject(data) || !isUuid(data.attendance_id) || !isUuid(data.event_id)
           || data.status !== 'REVIEW_REQUIRED' || data.exception_status !== 'PENDING_REVIEW'
-          || data.version !== body.expected_attendance_version + 1
+          // A replay returns the original committed version, not expected+1.
+          || (!data.idempotent_replay && data.version !== body.expected_attendance_version + 1)
+          || (data.idempotent_replay && data.version < body.expected_attendance_version)
           || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
         return successResponse(data, data.version);
       }
@@ -1472,6 +1541,40 @@ export default {
         return successResponse({ cycle, opening, movements: movements ?? [], handover, closing, items: items ?? [] });
       }
 
+      if (action === 'cycle.baseline' && request.method === 'GET') {
+        const cycleId = url.searchParams.get('cycle_id');
+        if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
+        const { data, error } = await db.rpc('rpc_get_cycle_physical_baseline', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_cycle_id: cycleId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.cycle_id !== cycleId
+          || !['AVAILABLE', 'REQUIRED', 'PENDING_REVIEW'].includes(data.state)
+          || !Array.isArray(data.lines)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'cycle.baseline.record' && request.method === 'POST') {
+        if (!isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan merekam baseline fisik cycle.', 403);
+        }
+        const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'lines', 'reason', 'idempotency_key']);
+        if (!body || !isUuid(body.cycle_id) || !isPositiveInteger(body.expected_version)
+          || !isPhysicalBaselineLines(body.lines) || !isNonEmptyString(body.reason, 1000)
+          || !isUuid(body.idempotency_key)) {
+          return invalidPayload('cycle_id, expected_version, lines physical, reason, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_record_cycle_physical_baseline', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_cycle_id: body.cycle_id,
+          p_expected_version: body.expected_version, p_lines: body.lines,
+          p_reason: body.reason.trim(), p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.cycle_id !== body.cycle_id || !isPositiveInteger(data.version)
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
       if (action === 'stock.drafts' && request.method === 'GET') {
         const cycleId = url.searchParams.get('cycle_id');
         if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
@@ -1498,27 +1601,6 @@ export default {
         return successResponse(data);
       }
 
-      if (action === 'opening.initialize' && request.method === 'POST') {
-        // B06: Owner/Supervisor/PRIMARY cycle. RPC verifies PRIMARY assignment; HELPER/Investor denied there.
-        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR' && user.role !== 'OPERATOR') {
-          return errorResponse('FORBIDDEN', 'Hanya Owner, Supervisor, atau PRIMARY cycle yang boleh menginisialisasi referensi stok.', 403);
-        }
-        const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'idempotency_key', 'reason']);
-        if (!body || !isUuid(body.cycle_id) || !isPositiveInteger(body.expected_version)
-          || !isUuid(body.idempotency_key) || !isNonEmptyString(body.reason, 1000)) {
-          return invalidPayload('cycle_id, expected_version, idempotency_key, dan reason wajib valid.');
-        }
-        const { data, error } = await db.rpc('rpc_initialize_stock_reference', {
-          p_cycle_id: body.cycle_id,
-          p_actor_id: user.id,
-          p_expected_cycle_version: body.expected_version,
-          p_idempotency_key: body.idempotency_key,
-          p_reason: body.reason.trim(),
-        });
-        if (error) return rpcErrorResponse(error);
-        if (!isObject(data) || !isUuid(data.initialization_id) || data.status !== 'APPROVED') return invalidRpcResult();
-        return successResponse(data);
-      }
 
       if (action === 'opening.saveDraft' && request.method === 'POST') {
         if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyimpan draft opening.', 403);
@@ -1548,8 +1630,10 @@ export default {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mengonfirmasi opening.', 403);
         }
-        const body = (await request.json()) as any;
-        if (!body.cycle_id) return errorResponse('VALIDATION_FAILED', 'cycle_id diperlukan.', 400);
+        const body = await readJsonObject(request, ['cycle_id', 'lines']);
+        if (!body || !isUuid(body.cycle_id) || !isSnapshotLines(body.lines)) {
+          return invalidPayload('cycle_id UUID dan snapshot physical opening lengkap wajib diisi.');
+        }
 
         const { data: opening, error } = await db.rpc('rpc_confirm_opening', {
           p_cycle_id: body.cycle_id,
@@ -1565,7 +1649,11 @@ export default {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mencatat movement.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, [
+          'cycle_id', 'expected_version', 'idempotency_key', 'client_occurred_at',
+          'item_id', 'direction', 'category', 'quantity', 'correction_of_id', 'correction_reason',
+        ]);
+        if (!body) return invalidPayload();
         if (!isUuid(body.idempotency_key) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
           return errorResponse('VALIDATION_FAILED', 'idempotency_key UUID dan expected_version integer positif wajib diisi.', 400);
         }
@@ -1632,7 +1720,8 @@ export default {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyelesaikan handover.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['cycle_id']);
+        if (!body) return invalidPayload();
         if (!body.cycle_id) return errorResponse('VALIDATION_FAILED', 'cycle_id diperlukan.', 400);
 
         const { data: handover, error } = await db.rpc('rpc_complete_handover', {
@@ -1672,8 +1761,10 @@ export default {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mengonfirmasi closing.', 403);
         }
-        const body = (await request.json()) as any;
-        if (!body.cycle_id) return errorResponse('VALIDATION_FAILED', 'cycle_id diperlukan.', 400);
+        const body = await readJsonObject(request, ['cycle_id', 'lines']);
+        if (!body || !isUuid(body.cycle_id) || !isSnapshotLines(body.lines)) {
+          return invalidPayload('cycle_id UUID dan snapshot physical closing lengkap wajib diisi.');
+        }
 
         const { data: closing, error } = await db.rpc('rpc_confirm_closing', {
           p_cycle_id: body.cycle_id,
@@ -1766,7 +1857,8 @@ export default {
         if (!isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan mengirim laporan harian.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['work_date', 'finance']);
+        if (!body) return invalidPayload();
         const workDate = body.work_date || getWibDate();
         const finance = {
           cash_real: body.finance?.cash_real,
@@ -1792,7 +1884,8 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang berhak mereview laporan harian.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['revision_id', 'status', 'note']);
+        if (!body) return invalidPayload();
         if (!body.revision_id || !body.status) {
           return errorResponse('VALIDATION_FAILED', 'revision_id dan status wajib diisi.', 400);
         }
@@ -1816,7 +1909,8 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh memfinalisasi bonus.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['report_revision_id']);
+        if (!body) return invalidPayload();
         if (!body.report_revision_id) {
           return errorResponse('VALIDATION_FAILED', 'report_revision_id diperlukan.', 400);
         }
@@ -1962,7 +2056,8 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh membuat preview payroll.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['period_month', 'expected_version']);
+        if (!body) return invalidPayload();
         const period = body.period_month || getWibDate().slice(0, 7);
         const expectedVersion = body.expected_version ? Number(body.expected_version) : null;
 
@@ -2038,7 +2133,8 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh me-review payroll.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['run_id', 'expected_version']);
+        if (!body) return invalidPayload();
         if (!isUuid(body.run_id) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
           return errorResponse('VALIDATION_FAILED', 'run_id UUID dan expected_version integer positif diperlukan.', 400);
         }
@@ -2057,7 +2153,8 @@ export default {
         if (user.role !== 'OWNER') {
           return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh memfinalisasi payroll.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['run_id', 'expected_version']);
+        if (!body) return invalidPayload();
         if (!isUuid(body.run_id) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
           return errorResponse('VALIDATION_FAILED', 'run_id UUID dan expected_version integer positif diperlukan.', 400);
         }
@@ -2076,7 +2173,8 @@ export default {
         if (user.role !== 'OWNER') {
           return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh menandai payroll dibayar.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['run_id', 'expected_version', 'payment_reference', 'payment_reason']);
+        if (!body) return invalidPayload();
         if (!isUuid(body.run_id) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
           return errorResponse('VALIDATION_FAILED', 'run_id UUID dan expected_version integer positif diperlukan.', 400);
         }
@@ -2100,7 +2198,8 @@ export default {
         if (user.role !== 'OWNER') {
           return errorResponse('FORBIDDEN', 'Hanya Owner yang boleh membatalkan (VOID) payroll.', 403);
         }
-        const body = (await request.json()) as any;
+        const body = await readJsonObject(request, ['run_id', 'expected_version', 'void_reason']);
+        if (!body) return invalidPayload();
         if (!isUuid(body.run_id) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
           return errorResponse('VALIDATION_FAILED', 'run_id UUID dan expected_version integer positif diperlukan.', 400);
         }
@@ -2124,93 +2223,9 @@ export default {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mengekspor payroll.', 403);
         }
-        const body = (await request.json()) as any;
-        if (!isUuid(body.run_id) || !Number.isInteger(body.expected_version) || body.expected_version <= 0) {
-          return errorResponse('VALIDATION_FAILED', 'run_id UUID dan expected_version integer positif wajib diisi.', 400);
-        }
-        const { data: run, error: runError } = await db.from('payroll_runs').select('*').eq('id', body.run_id).eq('outlet_id', outletId).maybeSingle();
-        if (runError) throw runError;
-        if (!run) return errorResponse('NOT_FOUND', 'Payroll run pada outlet ini tidak ditemukan.', 404);
-        if (run.version !== body.expected_version) return errorResponse('VERSION_CONFLICT', 'Versi payroll run sudah berubah.', 409);
-        if (!['REVIEWED', 'FINALIZED', 'PAID'].includes(run.status)) {
-          return errorResponse('STATE_CONFLICT', `Payroll ${run.status} tidak dapat diekspor.`, 409);
-        }
-
-        const { data: entries, error: entriesError } = await db.from('payroll_entries').select('*, profiles(display_name)').eq('run_id', run.id).order('profile_id');
-        if (entriesError) throw entriesError;
-        // F06: evidence wajib — run tanpa entri tidak boleh menghasilkan export sukses.
-        if (!entries || entries.length === 0) {
-          return errorResponse('EVIDENCE_MISSING', 'Payroll run belum memiliki entri sehingga tidak dapat diekspor.', 409);
-        }
-        const entryIds = (entries ?? []).map((entry: any) => entry.id);
-        const { data: adjustments, error: adjustmentsError } = entryIds.length
-          ? await db.from('payroll_adjustments').select('*').in('entry_id', entryIds).order('created_at')
-          : { data: [], error: null };
-        if (adjustmentsError) throw adjustmentsError;
-
-        // F06: validasi bulan periode kalender yang sebenarnya (Feb/kabisat/30 hari).
-        const periodMatch = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(run.period_month ?? '');
-        if (!periodMatch) return errorResponse('VALIDATION_FAILED', 'Bulan periode payroll tidak valid.', 400);
-        const periodYear = Number(periodMatch[1]);
-        const periodMonthIdx = Number(periodMatch[2]);
-        const lastDay = new Date(Date.UTC(periodYear, periodMonthIdx, 0)).getUTCDate();
-        const periodStart = `${run.period_month}-01`;
-        const periodEnd = `${run.period_month}-${String(lastDay).padStart(2, '0')}`;
-        // Snapshot-derived supporting evidence for the payroll period (outlet-scoped reads).
-        // Supportive reads are best-effort: a failure must not break the export.
-        let attendance: any[] = [];
-        let bonusRows: any[] = [];
-        let auditEvents: any[] = [];
-        try {
-          const [attendanceRes, reportRes, auditRes] = await Promise.all([
-            db
-              .from('attendance_records')
-              .select('*, profiles(display_name), attendance_events(*)')
-              .eq('outlet_id', outletId)
-              .gte('work_date', periodStart)
-              .lte('work_date', periodEnd),
-            db
-              .from('daily_reports')
-              .select('id')
-              .eq('outlet_id', outletId)
-              .gte('work_date', periodStart)
-              .lte('work_date', periodEnd),
-            db
-              .from('audit_events')
-              .select('server_occurred_at, action, entity_type, entity_id, reason, profiles(display_name)')
-              .eq('outlet_id', outletId)
-              .order('server_occurred_at', { ascending: false })
-              .limit(200),
-          ]);
-          attendance = attendanceRes.data ?? [];
-          auditEvents = auditRes.data ?? [];
-          const reportIds = (reportRes.data ?? []).map((r: any) => r.id);
-          if (reportIds.length) {
-            const revisionRes = await db
-              .from('daily_report_revisions')
-              .select('id')
-              .in('report_id', reportIds);
-            const revisionIds = (revisionRes.data ?? []).map((r: any) => r.id);
-            if (revisionIds.length) {
-              const poolRes = await db
-                .from('daily_bonus_pools')
-                .select('id, report_revision_id')
-                .in('report_revision_id', revisionIds);
-              const poolIds = (poolRes.data ?? []).map((p: any) => p.id);
-              if (poolIds.length) {
-                const allocRes = await db
-                  .from('daily_bonus_allocations')
-                  .select('amount, remainder_awarded, profiles(display_name)')
-                  .in('pool_id', poolIds);
-                bonusRows = allocRes.data ?? [];
-              }
-            }
-          }
-        } catch (supportErr) {
-          console.error('Payroll export supportive data read failed (non-fatal):', supportErr);
-          attendance = [];
-          bonusRows = [];
-          auditEvents = [];
+        const body = await readJsonObject(request, ['run_id', 'expected_version', 'idempotency_key']);
+        if (!body || !isUuid(body.run_id) || !isPositiveInteger(body.expected_version) || !isUuid(body.idempotency_key)) {
+          return invalidPayload('run_id, expected_version, dan idempotency_key UUID wajib diisi.');
         }
 
         const bucketName = process.env.PAYROLL_EXPORT_BUCKET;
@@ -2220,9 +2235,79 @@ export default {
           return errorResponse('PRIVATE_STORAGE_UNAVAILABLE', 'Bucket payroll tidak tersedia atau tidak privat.', 503);
         }
 
+        const { data: reservation, error: reservationError } = await db.rpc('rpc_reserve_payroll_export', {
+          p_actor_id: user.id,
+          p_run_id: body.run_id,
+          p_expected_run_version: body.expected_version,
+          p_idempotency_key: body.idempotency_key,
+        });
+        if (reservationError) return rpcErrorResponse(reservationError);
+        if (!isObject(reservation) || !isUuid(reservation.reservation_id) || !isUuid(reservation.final_export_id)
+          || !isNonEmptyString(reservation.file_path, 1024) || !isObject(reservation.evidence_json)
+          || !isObject(reservation.row_counts) || !/^[a-f0-9]{64}$/.test(reservation.evidence_checksum_sha256)
+          || !isTimestamp(reservation.created_at) || typeof reservation.idempotent_replay !== 'boolean'
+          || typeof reservation.can_upload !== 'boolean'
+          || !['IN_PROGRESS', 'UPLOAD_UNKNOWN', 'COMMITTED', 'ABANDONED'].includes(reservation.status)) {
+          return invalidRpcResult();
+        }
+
+        const evidenceJson = reservation.evidence_json;
+        const run = evidenceJson.run;
+        const entries = evidenceJson.entries;
+        const adjustments = evidenceJson.adjustments;
+        const attendance = evidenceJson.attendance;
+        const bonusRows = evidenceJson.bonusRows;
+        const auditEvents = evidenceJson.auditEvents;
+        if (!isObject(run) || run.id !== body.run_id || run.outlet_id !== outletId
+          || run.version !== body.expected_version || !['REVIEWED', 'FINALIZED', 'PAID'].includes(run.status)
+          || !isIsoMonth(run.period_month) || !Array.isArray(entries) || !Array.isArray(adjustments)
+          || !Array.isArray(attendance) || !Array.isArray(bonusRows) || !Array.isArray(auditEvents)) {
+          return invalidRpcResult();
+        }
+        try {
+          canonicalJson(evidenceJson);
+        } catch {
+          return invalidRpcResult();
+        }
+        const expectedEntryStatus = run.status === 'REVIEWED' ? 'REVIEWED' : 'APPROVED';
+        if (entries.length === 0 || entries.some((entry: any) =>
+          !isObject(entry) || !isUuid(entry.id) || entry.run_id !== run.id || !isUuid(entry.profile_id)
+          || entry.status !== expectedEntryStatus
+          || ['base_amount', 'approved_overtime_amount', 'approved_shortage_amount', 'absence_deduction', 'bonus_amount', 'manual_adjustment_amount', 'final_gross']
+            .some(field => !Number.isFinite(Number(entry[field]))))) {
+          return errorResponse('EVIDENCE_MISSING', 'Evidence entry payroll tidak lengkap atau statusnya tidak sesuai.', 409);
+        }
+
+        const label = run.status === 'REVIEWED' ? 'DRAFT' : 'FINALIZED';
+        const filename = `HOPIN-PAYROLL-${run.period_month}-${label}.xlsx`;
+        if (reservation.status === 'COMMITTED') {
+          if (!/^[a-f0-9]{64}$/.test(reservation.artifact_checksum_sha256)) return invalidRpcResult();
+          return successResponse({
+            export_id: reservation.final_export_id,
+            reservation_id: reservation.reservation_id,
+            filename,
+            file_path: reservation.file_path,
+            checksum: reservation.artifact_checksum_sha256,
+            label,
+            idempotent_replay: true,
+          });
+        }
+        if (!reservation.can_upload) {
+          const code = reservation.status === 'UPLOAD_UNKNOWN' ? 'EXPORT_UPLOAD_UNKNOWN'
+            : reservation.status === 'ABANDONED' ? 'EXPORT_RETRY_REQUIRED' : 'EXPORT_IN_PROGRESS';
+          return errorResponse(code, 'Export dengan idempotency key ini sedang diproses atau menunggu rekonsiliasi.', 409, {
+            reservation_id: reservation.reservation_id,
+            final_export_id: reservation.final_export_id,
+            reservation_status: reservation.status,
+          });
+        }
+        if (!isUuid(reservation.upload_token)) return invalidRpcResult();
+
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'HOPIN Operations Engine';
-        workbook.created = new Date();
+        workbook.created = new Date(reservation.created_at);
+        workbook.modified = new Date(reservation.created_at);
+        workbook.lastModifiedBy = 'HOPIN Operations Engine';
 
         const sSummary = workbook.addWorksheet('Summary');
         sSummary.columns = [
@@ -2365,86 +2450,135 @@ export default {
 
         const buffer = await workbook.xlsx.writeBuffer();
         const checksum = await sha256Buffer(buffer);
-        const label = run.status === 'REVIEWED' ? 'DRAFT' : 'FINALIZED';
-        const filename = `HOPIN-PAYROLL-${run.period_month}-${label}.xlsx`;
-        const filePath = `${outletId}/${run.id}/${filename}`;
-        const rowCounts = {
-          summary: entries?.length ?? 0,
-          attendance: attendance?.length ?? 0,
-          overtime: attendance?.length ?? 0,
-          bonus: bonusRows?.length ?? 0,
-          adjustments: adjustments?.length ?? 0,
-          audit: auditEvents?.length ?? 0,
-          evidence: entries?.length ?? 0,
-        };
-        // F07: retry-safe — respons hilang lalu retry tidak boleh menggandakan export
-        // atau gagal karena file sudah ada. Receipt yang sudah tercatat dikembalikan ulang.
-        const { data: existingExports } = await db.from('payroll_exports')
-          .select('id, checksum_sha256')
-          .eq('run_id', run.id)
-          .eq('file_path', filePath)
-          .order('generated_at', { ascending: false })
-          .limit(1);
-        const existingExport = existingExports?.[0] ?? null;
-        if (existingExport && existingExport.checksum_sha256 === checksum) {
-          return successResponse({
-            export_id: existingExport.id,
-            filename,
-            checksum,
-            label,
-            idempotent_replay: true,
+        const filePath = reservation.file_path;
+        let uploadError: any = null;
+        try {
+          const uploadResult = await db.storage.from(bucketName).upload(filePath, buffer, {
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            upsert: false,
           });
+          uploadError = uploadResult.error;
+        } catch (error) {
+          uploadError = error;
         }
-        if (existingExport && existingExport.checksum_sha256 !== checksum) {
-          return errorResponse('EXPORT_CONFLICT', 'Sudah ada export pada path ini dengan isi berbeda. Unduh export tercatat atau buat run baru.', 409);
-        }
-        const { error: uploadError } = await db.storage.from(bucketName).upload(filePath, buffer, {
-          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          upsert: false,
-        });
         if (uploadError) {
-          // Balapan upload/checksum sama yang sudah tercatat (retry setelah respons hilang).
-          const { data: racedExports } = await db.from('payroll_exports')
-            .select('id, checksum_sha256')
-            .eq('run_id', run.id)
-            .eq('file_path', filePath)
-            .order('generated_at', { ascending: false })
-            .limit(1);
-          const raced = racedExports?.[0] ?? null;
-          if (raced && raced.checksum_sha256 === checksum) {
+          let uploadState: any = null;
+          try {
+            const reconcileResult = await db.rpc('rpc_reconcile_payroll_export', {
+              p_actor_id: user.id,
+              p_reservation_id: reservation.reservation_id,
+              p_upload_token: reservation.upload_token,
+              p_observed_state: 'UNKNOWN',
+              p_artifact_checksum_sha256: checksum,
+            });
+            uploadState = reconcileResult.data;
+          } catch (reconcileError) {
+            console.error('Payroll export upload reconciliation failed:', reconcileError);
+          }
+          if (isObject(uploadState) && uploadState.status === 'COMMITTED'
+            && uploadState.final_export_id === reservation.final_export_id
+            && uploadState.artifact_checksum_sha256 === checksum) {
             return successResponse({
-              export_id: raced.id,
+              export_id: uploadState.final_export_id,
+              reservation_id: reservation.reservation_id,
               filename,
+              file_path: filePath,
               checksum,
               label,
               idempotent_replay: true,
             });
           }
-          return errorResponse('EXPORT_STORAGE_FAILED', uploadError.message, 503);
+          return errorResponse('EXPORT_UPLOAD_UNKNOWN', 'Hasil upload tidak dapat dipastikan dan harus direkonsiliasi.', 503, {
+            reservation_id: reservation.reservation_id,
+            final_export_id: reservation.final_export_id,
+            reservation_status: isObject(uploadState) ? uploadState.status : 'IN_PROGRESS',
+          });
         }
 
-        const { data: exportResult, error: exportError } = await db.rpc('rpc_record_payroll_export', {
-          p_actor_id: user.id,
-          p_run_id: run.id,
-          p_expected_run_version: body.expected_version,
-          p_export_label: label,
-          p_file_path: filePath,
-          p_checksum_sha256: checksum,
-          p_row_counts: rowCounts,
-        });
-        if (exportError) {
-          await db.storage.from(bucketName).remove([filePath]);
-          return rpcErrorResponse(exportError);
+        let exportResult: any = null;
+        let exportError: any = null;
+        try {
+          const commitResult = await db.rpc('rpc_commit_payroll_export', {
+            p_actor_id: user.id,
+            p_reservation_id: reservation.reservation_id,
+            p_upload_token: reservation.upload_token,
+            p_artifact_checksum_sha256: checksum,
+          });
+          exportResult = commitResult.data;
+          exportError = commitResult.error;
+        } catch (error) {
+          exportError = error;
         }
-        if (!exportResult?.export_id) {
-          await db.storage.from(bucketName).remove([filePath]);
-          return invalidRpcResult();
+        if (exportError || !isObject(exportResult) || exportResult.export_id !== reservation.final_export_id
+          || exportResult.checksum_sha256 !== checksum || typeof exportResult.idempotent_replay !== 'boolean') {
+          let current: any = null;
+          let currentError: any = null;
+          try {
+            const lookupResult = await db.rpc('rpc_get_payroll_export_reservation', {
+              p_actor_id: user.id,
+              p_reservation_id: reservation.reservation_id,
+              p_idempotency_key: body.idempotency_key,
+            });
+            current = lookupResult.data;
+            currentError = lookupResult.error;
+          } catch (error) {
+            currentError = error;
+          }
+          if (!currentError && isObject(current) && current.status === 'COMMITTED'
+            && current.final_export_id === reservation.final_export_id
+            && current.artifact_checksum_sha256 === checksum) {
+            return successResponse({
+              export_id: current.final_export_id,
+              reservation_id: reservation.reservation_id,
+              filename,
+              file_path: filePath,
+              checksum,
+              label,
+              idempotent_replay: true,
+            });
+          }
+          let preservedStatus = isObject(current) && typeof current.status === 'string' ? current.status : 'UPLOAD_UNKNOWN';
+          if (!isObject(current) || current.status === 'IN_PROGRESS') {
+            try {
+              const { data: reconciled } = await db.rpc('rpc_reconcile_payroll_export', {
+                p_actor_id: user.id,
+                p_reservation_id: reservation.reservation_id,
+                p_upload_token: reservation.upload_token,
+                p_observed_state: 'UNKNOWN',
+                p_artifact_checksum_sha256: checksum,
+              });
+              if (isObject(reconciled) && reconciled.status === 'COMMITTED'
+                && reconciled.final_export_id === reservation.final_export_id
+                && reconciled.artifact_checksum_sha256 === checksum) {
+                return successResponse({
+                  export_id: reconciled.final_export_id,
+                  reservation_id: reservation.reservation_id,
+                  filename,
+                  file_path: filePath,
+                  checksum,
+                  label,
+                  idempotent_replay: true,
+                });
+              }
+              if (isObject(reconciled) && typeof reconciled.status === 'string') preservedStatus = reconciled.status;
+            } catch (reconcileError) {
+              console.error('Payroll export commit reconciliation failed:', reconcileError);
+            }
+          }
+          return errorResponse('EXPORT_COMMIT_UNKNOWN', 'Hasil commit export tidak dapat dipastikan dan harus direkonsiliasi.', 503, {
+            reservation_id: reservation.reservation_id,
+            final_export_id: reservation.final_export_id,
+            reservation_status: preservedStatus,
+          });
         }
         return successResponse({
           export_id: exportResult.export_id,
+          reservation_id: reservation.reservation_id,
           filename,
+          file_path: filePath,
           checksum,
           label,
+          idempotent_replay: exportResult.idempotent_replay,
         });
       }
 

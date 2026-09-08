@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ShiftType, Area, DutyRole } from '../../domain/types';
 import { shiftOptions, areaLabel } from '../../domain/rules';
 
@@ -15,6 +15,15 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
   const [area, setArea] = useState<Area>('BAR');
   const [duty, setDuty] = useState<DutyRole>('PRIMARY');
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [confirmOpen]);
 
   return (
     <div className="app-shell">
@@ -62,12 +71,13 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
                 key={s}
                 type="button"
                 className={`area-button${shift === s ? ' selected' : ''}`}
+                aria-pressed={shift === s}
                 onClick={() => setShift(s)}
                 style={{ textAlign: 'left', width: '100%' }}
               >
                 <div>
                   <strong>{shiftOptions[s].label}</strong>
-                  <small style={{ display: 'block', color: '#6b8378' }}>{shiftOptions[s].hours}</small>
+                  <small style={{ display: 'block', color: '#476058' }}>{shiftOptions[s].hours}</small>
                 </div>
               </button>
             ))}
@@ -87,6 +97,7 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
                 key={a}
                 type="button"
                 className={`area-button${area === a ? ' selected' : ''}`}
+                aria-pressed={area === a}
                 onClick={() => setArea(a)}
               >
                 <span className="area-symbol">{a === 'BAR' ? '◒' : '⌁'}</span>
@@ -96,13 +107,14 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
           </div>
 
           <div style={{ marginTop: '16px' }}>
-            <label style={{ fontSize: '12px', fontWeight: 600, color: '#6b8378', display: 'block', marginBottom: '6px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 600, color: '#476058', display: 'block', marginBottom: '6px' }}>
               Peran Tugas
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
               <button
                 type="button"
                 className={`segmented-btn ${duty === 'PRIMARY' ? 'active' : ''}`}
+                aria-pressed={duty === 'PRIMARY'}
                 onClick={() => setDuty('PRIMARY')}
                 style={{
                   padding: '10px',
@@ -119,6 +131,7 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
               <button
                 type="button"
                 className={`segmented-btn ${duty === 'HELPER' ? 'active' : ''}`}
+                aria-pressed={duty === 'HELPER'}
                 onClick={() => setDuty('HELPER')}
                 style={{
                   padding: '10px',
@@ -150,10 +163,10 @@ export function AssignmentScreen({ name, onClaim, loading, onLogout, onBack }: P
 
         {confirmOpen && (
           <div className="modal-backdrop" role="presentation">
-            <div className="modal" style={{ maxWidth: '400px' }}>
+            <div className="modal" role="dialog" aria-modal="true" aria-labelledby="assignment-confirm-title" style={{ maxWidth: '400px' }}>
               <div className="modal-head">
-                <h3>Konfirmasi Penugasan</h3>
-                <button className="close-button" onClick={() => setConfirmOpen(false)}>×</button>
+                <h3 id="assignment-confirm-title">Konfirmasi Penugasan</h3>
+                <button className="close-button" type="button" aria-label="Tutup konfirmasi penugasan" onClick={() => setConfirmOpen(false)}>×</button>
               </div>
               <p style={{ fontSize: '14px', margin: '16px 0', lineHeight: 1.5 }}>
                 Anda akan bertugas di <strong>{areaLabel(area)}</strong> ({shiftOptions[shift].label}) sebagai <strong>{duty === 'PRIMARY' ? 'Penanggung Jawab Utama' : 'Bantuan'}</strong>.

@@ -68,7 +68,7 @@ const styles: Record<string, CSSProperties> = {
   intro: { marginTop: '28px' },
   eyebrow: {
     margin: '0 0 7px',
-    color: '#789087',
+    color: '#476058',
     fontFamily: "'DM Mono', monospace",
     fontSize: '10px',
     fontWeight: 700,
@@ -140,7 +140,7 @@ const styles: Record<string, CSSProperties> = {
   miniLabel: {
     display: 'block',
     marginBottom: '5px',
-    color: '#789087',
+    color: '#476058',
     fontFamily: "'DM Mono', monospace",
     fontSize: '9px',
     letterSpacing: '.08em',

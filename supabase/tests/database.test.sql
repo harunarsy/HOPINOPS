@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(26);
+select plan(32);
 
 create temporary table required_functions (signature text primary key) on commit drop;
 insert into required_functions values
@@ -43,7 +43,10 @@ insert into required_functions values
   ('public.rpc_submit_daily_report(uuid,date,uuid,jsonb,text)'),
   ('public.rpc_review_daily_report(uuid,uuid,text,text)'),
   ('public.rpc_finalize_daily_bonus(uuid,uuid,numeric)'),
-  ('public.rpc_record_payroll_export(uuid,uuid,integer,text,text,text,jsonb)'),
+  ('public.rpc_reserve_payroll_export(uuid,uuid,integer,uuid)'),
+  ('public.rpc_commit_payroll_export(uuid,uuid,uuid,text)'),
+  ('public.rpc_reconcile_payroll_export(uuid,uuid,uuid,text,text)'),
+  ('public.rpc_get_payroll_export_reservation(uuid,uuid,uuid)'),
   ('public.rpc_reset_pin(uuid,uuid,text,text,text,integer)'),
   ('public.rpc_preview_payroll(uuid,uuid,text,integer)'),
   ('public.rpc_review_payroll(uuid,uuid,integer)'),
@@ -90,13 +93,56 @@ insert into required_functions values
   ('public.rpc_checklist_section_upsert(uuid,uuid,public.area_code,uuid,text,uuid)'),
   ('public.rpc_checklist_item_move(uuid,uuid,public.area_code,text,uuid,integer,integer,uuid)'),
   ('public.rpc_self_emergency_checkout(uuid,uuid,integer,uuid,text)'),
-  ('public.rpc_rate_limit_public_options(text)');
+  ('public.rpc_rate_limit_public_options(text)'),
+  ('public.rpc_catalog_get(uuid,uuid,public.area_code)'),
+  ('public.rpc_catalog_apply(uuid,uuid,public.area_code,integer,jsonb,jsonb,jsonb,text,uuid)'),
+  ('public.rpc_get_cycle_physical_baseline(uuid,uuid,uuid)'),
+  ('public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)');
 
 select ok(
   bool_and(to_regprocedure(signature) is not null),
   'protected functions resolve by exact regprocedure signature'
 )
 from required_functions;
+
+select ok(
+  exists (select 1 from pg_class where oid = 'public.pending_catalogs'::regclass and relrowsecurity)
+  and exists (select 1 from pg_class where oid = 'public.pending_catalog_ops'::regclass and relrowsecurity),
+  'pending catalog tables are RLS protected'
+);
+
+select ok(
+  exists (select 1 from pg_class where oid = 'public.cycle_physical_baselines'::regclass and relrowsecurity)
+  and exists (select 1 from pg_class where oid = 'public.cycle_physical_baseline_lines'::regclass and relrowsecurity)
+  and exists (select 1 from pg_class where oid = 'public.cycle_opening_references'::regclass and relrowsecurity),
+  'physical baseline and frozen reference tables are RLS protected'
+);
+
+select ok(
+  exists (select 1 from pg_class where oid = 'public.payroll_export_reservations'::regclass and relrowsecurity)
+  and exists (select 1 from pg_index where indexrelid = 'public.payroll_export_reservations_reconcile_idx'::regclass),
+  'payroll export reservation table is private and indexed for reconciliation'
+);
+
+select ok(
+  not has_function_privilege('anon', 'public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)', 'EXECUTE')
+  and has_function_privilege('service_role', 'public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)', 'EXECUTE'),
+  'physical baseline recorder is callable only by service_role'
+);
+
+select ok(
+  pg_get_functiondef('public.rpc_self_emergency_checkout(uuid,uuid,integer,uuid,text)'::regprocedure)
+    like '%request is canonical before attendance lookup%',
+  'self emergency resolves completed idempotency receipts before attendance lookup'
+);
+
+select ok(
+  not has_function_privilege('anon', 'public.rpc_catalog_get(uuid,uuid,public.area_code)', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.rpc_catalog_apply(uuid,uuid,public.area_code,integer,jsonb,jsonb,jsonb,text,uuid)', 'EXECUTE')
+  and has_function_privilege('service_role', 'public.rpc_catalog_apply(uuid,uuid,public.area_code,integer,jsonb,jsonb,jsonb,text,uuid)', 'EXECUTE'),
+  'catalog RPCs are callable only by service_role'
+);
 
 select ok(
   not exists (
@@ -150,7 +196,11 @@ insert into operational_tables values
   ('public.stock_reference_initializations'), ('public.stock_reference_initialization_lines'),
   ('public.workflow_idempotency'), ('public.stock_opening_drafts'),
   ('public.stock_closing_drafts'), ('public.daily_report_finance_drafts'),
-  ('public.daily_report_shares'), ('public.payroll_export_download_authorizations');
+  ('public.daily_report_shares'), ('public.payroll_export_download_authorizations'),
+   ('public.pending_catalogs'), ('public.pending_catalog_ops'),
+   ('public.cycle_opening_references'), ('public.cycle_opening_reference_lines'),
+   ('public.cycle_physical_baselines'), ('public.cycle_physical_baseline_lines'),
+   ('public.payroll_export_reservations');
 
 select ok(
   bool_and(not has_table_privilege('anon', relation, privilege)),

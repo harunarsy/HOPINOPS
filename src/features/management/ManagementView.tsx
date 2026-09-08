@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { api } from '../../lib/api';
-import { fmtRupiah, wibDate } from '../../domain/rules';
+import { fmtRupiah, wibDate, wibDateKey } from '../../domain/rules';
 import { CatalogManager } from './CatalogManager';
 
 type Tab = 'dashboard' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account' | 'catalog';
@@ -51,12 +51,38 @@ function Dialog({ titleId, title, onClose, children }: { titleId: string; title:
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseRef.current();
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusables = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    document.addEventListener('keydown', closeOnEscape);
-    return () => document.removeEventListener('keydown', closeOnEscape);
+    document.addEventListener('keydown', trapTab);
+    return () => {
+      document.removeEventListener('keydown', trapTab);
+      previouslyFocused?.focus?.();
+    };
   }, []);
 
   return (
@@ -102,8 +128,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   // Roster, attendance, overtime, and settings state
   const [roster, setRoster] = useState<any[]>([]);
-  const [rosterMonth, setRosterMonth] = useState(wibDate().slice(0, 7));
-  const [rosterDate, setRosterDate] = useState(wibDate());
+  const [rosterMonth, setRosterMonth] = useState(wibDateKey().slice(0, 7));
+  const [rosterDate, setRosterDate] = useState(wibDateKey());
   const [rosterShift, setRosterShift] = useState<'SIANG' | 'MALAM' | 'FULL'>('SIANG');
   const [rosterProfileId, setRosterProfileId] = useState('');
   const [rosterArea, setRosterArea] = useState<'' | 'BAR' | 'KITCHEN'>('');
@@ -111,13 +137,11 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [rosterReason, setRosterReason] = useState('');
   const [attendanceExceptions, setAttendanceExceptions] = useState<any[]>([]);
   const [overtime, setOvertime] = useState<any[]>([]);
-  const [reviewFrom, setReviewFrom] = useState(`${wibDate().slice(0, 8)}01`);
-  const [reviewTo, setReviewTo] = useState(wibDate());
+  const [reviewFrom, setReviewFrom] = useState(`${wibDateKey().slice(0, 8)}01`);
+  const [reviewTo, setReviewTo] = useState(wibDateKey());
   const [attendanceReview, setAttendanceReview] = useState<{ attendance: any; correction: any; decision: Decision } | null>(null);
   const [overtimeReview, setOvertimeReview] = useState<{ claim: any; decision: Decision } | null>(null);
   const [reviewNote, setReviewNote] = useState('');
-  const [prepReason, setPrepReason] = useState<Record<string, string>>({});
-  const [prepBusy, setPrepBusy] = useState('');
   const [emergencyTarget, setEmergencyTarget] = useState<any | null>(null);
   const [emergencyReason, setEmergencyReason] = useState('');
   const [emergencyResolutionTarget, setEmergencyResolutionTarget] = useState<any | null>(null);
@@ -126,19 +150,41 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
 
   // Payroll state
-  const [payrollPeriod, setPayrollPeriod] = useState(wibDate().slice(0, 7));
+  const [payrollPeriod, setPayrollPeriod] = useState(wibDateKey().slice(0, 7));
   const [payrollRun, setPayrollRun] = useState<any | null>(null);
   const [payrollEntries, setPayrollEntries] = useState<any[]>([]);
+  const [payrollLoadedPeriod, setPayrollLoadedPeriod] = useState<string | null>(null);
   // F05: stale-response guard — responses arriving out of order never overwrite newer period data.
   const payrollRequestRef = useRef(0);
+  // Export idempotency: one key per run+version, reused across retries until confirmed.
+  const exportKeyRef = useRef(new Map<string, string>());
   const [payrollAdjustments, setPayrollAdjustments] = useState<any[]>([]);
   const [payrollLoading, setPayrollLoading] = useState(false);
   const [paymentRef, setPaymentRef] = useState('');
   const [paymentReason, setPaymentReason] = useState('');
   const [voidReason, setVoidReason] = useState('');
-  const [showPayModal, setShowPayModal] = useState(false);
-  const [showVoidModal, setShowVoidModal] = useState(false);
-  const [showFinalizeModal, setShowFinalizeModal] = useState(false);
+  type PayrollModalScope = { period: string; runId: string; version: number };
+  const [payModal, setPayModal] = useState<PayrollModalScope | null>(null);
+  const [voidModal, setVoidModal] = useState<PayrollModalScope | null>(null);
+  const [finalizeModal, setFinalizeModal] = useState<PayrollModalScope | null>(null);
+  const payrollPeriodRef = useRef(payrollPeriod);
+
+  const closePayrollModals = () => {
+    setPayModal(null);
+    setVoidModal(null);
+    setFinalizeModal(null);
+    setAdjustmentTarget(null);
+  };
+
+  const snapshotPayrollScope = (): PayrollModalScope | null => {
+    if (!payrollRun || payrollLoadedPeriod !== payrollPeriod) return null;
+    return { period: payrollLoadedPeriod, runId: payrollRun.id, version: payrollRun.version };
+  };
+
+  const reloadPayrollIfCurrent = (scopePeriod: string, scopeRequest: number) => {
+    if (payrollRequestRef.current !== scopeRequest || payrollPeriodRef.current !== scopePeriod) return Promise.resolve();
+    return loadPayroll(scopePeriod);
+  };
   const [adjustmentTarget, setAdjustmentTarget] = useState<any | null>(null);
   const [adjustmentType, setAdjustmentType] = useState('OTHER');
   const [adjustmentAmount, setAdjustmentAmount] = useState('');
@@ -168,29 +214,6 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   const showToast = (message: string) => setReceipt({ message });
   const showError = (message: string) => setReceipt({ message, error: true });
-
-  const handlePrepBaseline = async (cycle: any) => {
-    const reason = (prepReason[cycle.id] ?? '').trim();
-    if (!reason) {
-      showError('Alasan penyiapan patokan wajib diisi.');
-      return;
-    }
-    if (!Number.isInteger(cycle.version) || cycle.version <= 0) {
-      showError('Versi cycle tidak valid. Muat ulang dashboard.');
-      return;
-    }
-    setPrepBusy(cycle.id);
-    try {
-      const res = await api.initializeOpeningReference(cycle.id, cycle.version, reason);
-      showToast(res.duplicate ? 'Patokan sudah disiapkan sebelumnya.' : 'Patokan awal cycle berhasil disiapkan. Staf dapat mulai menghitung.');
-      setPrepReason((prev) => ({ ...prev, [cycle.id]: '' }));
-      setDashboardData(await api.getDashboard());
-    } catch (err: any) {
-      showError(err?.message || 'Gagal menyiapkan patokan.');
-    } finally {
-      setPrepBusy('');
-    }
-  };
 
   const loadData = async () => {
     setLoading(true);
@@ -231,7 +254,6 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       setViewError(e.message || 'Gagal memuat data manajemen.');
     } finally {
       setLoading(false);
-      setPayrollLoading(false);
     }
   };
 
@@ -243,8 +265,10 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       const payroll = await api.getPayrollRun(period);
       // Drop stale responses: only the latest requested period may write state.
       if (payrollRequestRef.current !== requestId) return;
-      const { run, entries } = payroll;
-      setPayrollPeriod(period);
+       const { run, entries } = payroll;
+       setPayrollPeriod(period);
+       payrollPeriodRef.current = period;
+       setPayrollLoadedPeriod(period);
       setPayrollRun(run);
       setPayrollEntries(entries || []);
       setPayrollAdjustments((payroll as any).adjustments ?? (entries || []).flatMap(getPayrollAdjustments));
@@ -258,11 +282,14 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handlePreviewPayroll = async () => {
+    if (payrollLoadedPeriod !== payrollPeriod) return showError('Periode payroll masih dimuat. Tunggu sampai data periode terbaru tampil.');
+    const scopePeriod = payrollPeriod;
+    const scopeRequest = payrollRequestRef.current;
     setPayrollLoading(true);
     try {
-      const res = await api.previewPayroll(payrollPeriod, payrollRun?.version);
+      const res = await api.previewPayroll(scopePeriod, payrollRun?.version);
       showToast(`Draft Payroll berhasil dihitung (${res.entry_count} karyawan).`);
-      await loadPayroll(payrollPeriod);
+      await reloadPayrollIfCurrent(scopePeriod, scopeRequest);
     } catch (e: any) {
       showError(e.message || 'Gagal membuat draft payroll.');
     } finally {
@@ -271,12 +298,16 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handleReviewPayroll = async () => {
-    if (!payrollRun) return;
+    if (!payrollRun || payrollLoadedPeriod !== payrollPeriod) return;
+    const scopePeriod = payrollPeriod;
+    const scopeRequest = payrollRequestRef.current;
+    const scopeRunId = payrollRun.id;
+    const scopeVersion = payrollRun.version;
     setPayrollLoading(true);
     try {
-      await api.reviewPayroll(payrollRun.id, payrollRun.version);
+      await api.reviewPayroll(scopeRunId, scopeVersion);
       showToast('Payroll berhasil ditandai REVIEWED.');
-      await loadPayroll(payrollPeriod);
+      await reloadPayrollIfCurrent(scopePeriod, scopeRequest);
     } catch (e: any) {
       showError(e.message || 'Gagal menyelesaikan review payroll.');
     } finally {
@@ -285,13 +316,19 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handleFinalizePayroll = async () => {
-    if (!payrollRun) return;
+    const scope = finalizeModal;
+    if (!scope || !payrollRun || payrollRun.id !== scope.runId || payrollLoadedPeriod !== scope.period) {
+      setFinalizeModal(null);
+      showError('Periode payroll berubah saat dialog terbuka. Dialog ditutup; periksa ulang sebelum mengunci.');
+      return;
+    }
+    const scopeRequest = payrollRequestRef.current;
     setPayrollLoading(true);
     try {
-      await api.finalizePayroll(payrollRun.id, payrollRun.version);
-      setShowFinalizeModal(false);
-      showToast('Payroll dikunci. Data gaji tidak dapat dihitung ulang.');
-      await loadPayroll(payrollPeriod);
+      await api.finalizePayroll(scope.runId, scope.version);
+      setFinalizeModal(null);
+      showToast('Payroll dikunci. Data gaji tidak dapat dikhitung ulang.');
+      await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
       showError(e.message || 'Gagal mengunci payroll.');
     } finally {
@@ -300,18 +337,25 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handleMarkPaid = async () => {
-    if (!payrollRun || !paymentRef.trim() || !paymentReason.trim()) {
+    const scope = payModal;
+    if (!scope || !payrollRun || payrollRun.id !== scope.runId || payrollLoadedPeriod !== scope.period) {
+      setPayModal(null);
+      showToast('Periode payroll berubah saat dialog terbuka. Dialog ditutup; periksa ulang sebelum menyimpan.');
+      return;
+    }
+    if (!paymentRef.trim() || !paymentReason.trim()) {
       showToast('Referensi dan alasan pembayaran wajib diisi.');
       return;
     }
+    const scopeRequest = payrollRequestRef.current;
     setPayrollLoading(true);
     try {
-      await api.markPayrollPaid(payrollRun.id, payrollRun.version, paymentRef.trim(), paymentReason.trim());
+      await api.markPayrollPaid(scope.runId, scope.version, paymentRef.trim(), paymentReason.trim());
       showToast('Payroll berhasil ditandai PAID.');
-      setShowPayModal(false);
+      setPayModal(null);
       setPaymentRef('');
       setPaymentReason('');
-      await loadPayroll(payrollPeriod);
+      await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
       showError(e.message || 'Gagal menandai payroll dibayar.');
     } finally {
@@ -320,17 +364,24 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handleVoidPayroll = async () => {
-    if (!payrollRun || !voidReason.trim()) {
+    const scope = voidModal;
+    if (!scope || !payrollRun || payrollRun.id !== scope.runId || payrollLoadedPeriod !== scope.period) {
+      setVoidModal(null);
+      showToast('Periode payroll berubah saat dialog terbuka. Dialog ditutup; periksa ulang sebelum membatalkan.');
+      return;
+    }
+    if (!voidReason.trim()) {
       showToast('Alasan pembatalan (VOID) wajib diisi.');
       return;
     }
+    const scopeRequest = payrollRequestRef.current;
     setPayrollLoading(true);
     try {
-      await api.voidPayroll(payrollRun.id, payrollRun.version, voidReason.trim());
+      await api.voidPayroll(scope.runId, scope.version, voidReason.trim());
       showToast('Payroll telah di-VOID dan draft pengganti dibuat.');
-      setShowVoidModal(false);
+      setVoidModal(null);
       setVoidReason('');
-      await loadPayroll(payrollPeriod);
+      await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
       showError(e.message || 'Gagal membatalkan payroll.');
     } finally {
@@ -355,7 +406,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   const handleProposePayrollAdjustment = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!adjustmentTarget) return;
+    if (!adjustmentTarget || payrollLoadedPeriod !== payrollPeriod) return showError('Periode payroll sudah berubah. Muat ulang sebelum mengubah entri.');
     const amount = Number(adjustmentAmount);
     if (!Number.isSafeInteger(amount) || amount === 0) return showError('Jumlah penyesuaian wajib berupa Rupiah bulat dan tidak boleh nol.');
     if (!adjustmentReason.trim()) return showError('Alasan penyesuaian wajib diisi.');
@@ -394,6 +445,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   };
 
   const handleReviewPayrollAdjustment = async () => {
+    if (payrollLoadedPeriod !== payrollPeriod) return showError('Periode payroll sudah berubah. Muat ulang sebelum meninjau penyesuaian.');
     if (!adjustmentReview || !adjustmentReviewNote.trim()) return showError('Catatan keputusan wajib diisi.');
     setActionLoading('payroll-adjustment-review');
     try {
@@ -434,7 +486,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   }, [tab, rosterMonth, payrollPeriod]);
 
   const handleExportPayroll = async () => {
-    if (!payrollRun) {
+    if (!payrollRun || payrollLoadedPeriod !== payrollPeriod) {
       showToast('Belum ada payroll run untuk periode ini.');
       return;
     }
@@ -443,8 +495,15 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       return;
     }
     setPayrollLoading(true);
+    const exportScope = `${payrollRun.id}:${payrollRun.version}`;
+    let exportKey = exportKeyRef.current.get(exportScope);
+    if (!exportKey) {
+      exportKey = crypto.randomUUID();
+      exportKeyRef.current.set(exportScope, exportKey);
+    }
     try {
-      const res = await api.exportPayrollXlsx(payrollRun.id, payrollRun.version);
+      const res = await api.exportPayrollXlsx(payrollRun.id, payrollRun.version, exportKey);
+      exportKeyRef.current.delete(exportScope);
       const download = await api.downloadPayrollExport(res.export_id, payrollRun.version, crypto.randomUUID());
       const replayed = (res as { idempotent_replay?: boolean }).idempotent_replay === true;
       const link = document.createElement('a');
@@ -463,6 +522,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       setPayrollLoading(false);
     }
   };
+
+  const payrollActionsDisabled = payrollLoading || payrollLoadedPeriod !== payrollPeriod;
 
   const handleResetPin = async () => {
     if (!resetTarget) return;
@@ -527,7 +588,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       await api.emergencyCheckout(emergencyTarget.id, emergencyTarget.version, emergencyReason.trim(), crypto.randomUUID());
       setEmergencyTarget(null);
       setEmergencyReason('');
-      showToast('Emergency checkout tercatat. Ajukan dan selesaikan review attendance sebelum assignment dapat ditutup.');
+      showToast('Check-out darurat tercatat. Ajukan dan selesaikan peninjauan absensi sebelum penugasan dapat ditutup.');
       await loadData();
     } catch (err: any) {
       showError(err.message || 'Emergency checkout gagal dicatat.');
@@ -681,15 +742,15 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
         <nav className="tabs" aria-label="Navigasi manajemen">
           {!isInvestor ? <>
-            <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => setTab('dashboard')}>Ringkasan Shift</button>
-            <button className={tab === 'roster' ? 'active' : ''} onClick={() => setTab('roster')}>Atur Jadwal</button>
-            <button className={tab === 'exceptions' ? 'active' : ''} onClick={() => setTab('exceptions')}>Review Kehadiran</button>
-            <button className={tab === 'payroll' ? 'active' : ''} onClick={() => setTab('payroll')}>Kelola Payroll</button>
-            <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>Kelola Akun</button>
-            <button className={tab === 'catalog' ? 'active' : ''} onClick={() => setTab('catalog')}>Katalog</button>
-            <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Pengaturan</button>
-          </> : <button className={tab === 'reports' ? 'active' : ''} onClick={() => setTab('reports')}>Laporan</button>}
-          <button className={tab === 'account' ? 'active' : ''} onClick={() => setTab('account')}>Akun & Sesi</button>
+            <button className={tab === 'dashboard' ? 'active' : ''} aria-current={tab === 'dashboard' ? 'page' : undefined} onClick={() => setTab('dashboard')}>Ringkasan Shift</button>
+            <button className={tab === 'roster' ? 'active' : ''} aria-current={tab === 'roster' ? 'page' : undefined} onClick={() => setTab('roster')}>Atur Jadwal</button>
+            <button className={tab === 'exceptions' ? 'active' : ''} aria-current={tab === 'exceptions' ? 'page' : undefined} onClick={() => setTab('exceptions')}>Review Kehadiran</button>
+            <button className={tab === 'payroll' ? 'active' : ''} aria-current={tab === 'payroll' ? 'page' : undefined} onClick={() => setTab('payroll')}>Kelola Payroll</button>
+            <button className={tab === 'users' ? 'active' : ''} aria-current={tab === 'users' ? 'page' : undefined} onClick={() => setTab('users')}>Kelola Akun</button>
+            <button className={tab === 'catalog' ? 'active' : ''} aria-current={tab === 'catalog' ? 'page' : undefined} onClick={() => setTab('catalog')}>Katalog</button>
+            <button className={tab === 'settings' ? 'active' : ''} aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}>Pengaturan</button>
+          </> : <button className={tab === 'reports' ? 'active' : ''} aria-current={tab === 'reports' ? 'page' : undefined} onClick={() => setTab('reports')}>Laporan</button>}
+          <button className={tab === 'account' ? 'active' : ''} aria-current={tab === 'account' ? 'page' : undefined} onClick={() => setTab('account')}>Akun & Sesi</button>
         </nav>
 
         {receipt && (
@@ -741,34 +802,24 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                         <strong>{taskLabel(c.shift_code)} · {taskLabel(c.area_code)}</strong>
                         <span className={`tag ${c.status === 'COMPLETED' ? 'good' : 'neutral'}`}>{taskLabel(c.status)}</span>
                       </div>
-                      <small style={{ display: 'block', color: '#6b8378' }}>
+                      <small style={{ display: 'block', color: '#476058' }}>
                         PJ Utama: <b>{primary ? primary.profiles?.display_name : 'Belum Terisi'}</b>
                       </small>
                       {helpers.length > 0 && (
-                        <small style={{ display: 'block', color: '#6b8378', marginTop: '4px' }}>
+                        <small style={{ display: 'block', color: '#476058', marginTop: '4px' }}>
                           Bantuan: {helpers.map((h: any) => h.profiles?.display_name).join(', ')}
                         </small>
                       )}
-                      {c.status === 'ACTIVE' && (
-                        <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>
-                          <label style={{ fontSize: '11px', color: '#6b8378' }}>Alasan penyiapan patokan
-                            <input
-                              value={prepReason[c.id] ?? ''}
-                              onChange={(e) => setPrepReason((prev) => ({ ...prev, [c.id]: e.target.value }))}
-                              placeholder="Mis. awal shift, belum ada referensi"
-                              style={{ width: '100%', padding: '6px', marginTop: '4px' }}
-                              aria-label={`Alasan penyiapan patokan ${c.shift_code} ${c.area_code}`}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="outline-button"
-                            disabled={prepBusy === c.id || !(prepReason[c.id] ?? '').trim()}
-                            onClick={() => void handlePrepBaseline(c)}
-                            style={{ fontSize: '12px', padding: '6px 12px' }}
-                          >
-                            {prepBusy === c.id ? 'Menyiapkan...' : 'Siapkan patokan cycle'}
-                          </button>
+                        {c.status === 'ACTIVE' && onEnterOperatorMode && (
+                          <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>
+                            <button
+                              type="button"
+                              className="outline-button"
+                              onClick={onEnterOperatorMode}
+                              style={{ fontSize: '12px', padding: '6px 12px' }}
+                            >
+                              Buka form baseline fisik di workspace
+                            </button>
                         </div>
                       )}
                     </div>
@@ -815,7 +866,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               ) : (
                 <div className="table-responsive" style={{ marginTop: '16px' }}>
                   <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                    <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}>
+                    <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                       <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Status</th>
                     </tr></thead>
                     <tbody>{roster.map((entry) => (
@@ -868,7 +919,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada exception kehadiran pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
                 <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
+                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{attendanceExceptions.map((attendance) => {
                     const pending = (attendance.attendance_corrections ?? []).filter((correction: any) => correction.status === 'PENDING');
                     return (
@@ -876,7 +927,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                         <td style={{ padding: '8px' }}><strong>{attendance.profiles?.display_name ?? 'Pengguna'}</strong><br /><span className="muted">{attendance.work_date} · {taskLabel(attendance.status)}</span></td>
                         <td style={{ padding: '8px' }}>{taskLabel(attendance.lateness_status)}<br /><span className="muted">{taskLabel(attendance.exception_status)}</span></td>
                         <td style={{ padding: '8px' }}>{pending.length ? pending.map((correction: any) => <div key={correction.id}><strong>{taskLabel(correction.correction_type)}:</strong> {proposedLabel(correction)}</div>) : 'Belum ada permintaan koreksi'}</td>
-                        <td style={{ padding: '8px', color: '#6b8378' }}>{pending.map((correction: any) => <div key={correction.id}>{correction.reason}</div>)}</td>
+                        <td style={{ padding: '8px', color: '#476058' }}>{pending.map((correction: any) => <div key={correction.id}>{correction.reason}</div>)}</td>
                         <td style={{ padding: '8px' }}>
                           {pending.map((correction: any) => correction.requested_by === user.id || attendance.profile_id === user.id ? <span key={correction.id} className="muted">Reviewer lain diperlukan</span> : <div key={correction.id} style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setAttendanceReview({ attendance, correction, decision: 'APPROVED' }); }} style={{ padding: '5px 8px', fontSize: '11px' }}>Setujui</button><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setAttendanceReview({ attendance, correction, decision: 'REJECTED' }); }} style={{ padding: '5px 8px', fontSize: '11px', color: '#b91c1c', borderColor: '#fecaca' }}>Tolak</button></div>)}
                           {attendance.status === 'REVIEW_REQUIRED' && pending.length === 0 && attendance.profile_id !== user.id && (user.role === 'OWNER' || attendance.profiles?.role === 'OPERATOR') && (
@@ -896,7 +947,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada catatan lembur pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
                 <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Durasi terdeteksi</th><th style={{ padding: '8px' }}>Kredit</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
+                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Durasi terdeteksi</th><th style={{ padding: '8px' }}>Kredit</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{overtime.map((claim) => {
                     const attendance = claim.attendance_records;
                     return <tr key={claim.id} style={{ borderBottom: '1px solid #eef3f0' }}><td style={{ padding: '8px', fontWeight: 600 }}>{attendance?.profiles?.display_name ?? 'Pengguna'}</td><td style={{ padding: '8px' }}>{attendance?.work_date}</td><td style={{ padding: '8px' }}>{claim.raw_extra_minutes} menit</td><td style={{ padding: '8px' }}>{claim.credited_hours} jam</td><td style={{ padding: '8px' }}><span className={`tag ${claim.status === 'APPROVED' ? 'good' : claim.status === 'REJECTED' ? 'neutral' : 'warn'}`}>{taskLabel(claim.status)}</span></td><td style={{ padding: '8px' }}>{claim.status === 'CANDIDATE' && (attendance?.profile_id === user.id ? <span className="muted">Reviewer lain diperlukan</span> : <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setOvertimeReview({ claim, decision: 'APPROVED' }); }} style={{ padding: '5px 8px', fontSize: '11px' }}>Setujui</button><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setOvertimeReview({ claim, decision: 'REJECTED' }); }} style={{ padding: '5px 8px', fontSize: '11px', color: '#b91c1c', borderColor: '#fecaca' }}>Tolak</button></div>)}</td></tr>;
@@ -916,11 +967,24 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                 <h2>Payroll Evidence & Lifecycle</h2>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <label style={{ fontSize: '13px', fontWeight: 600 }}>Periode:</label>
+                <label htmlFor="payroll-period" style={{ fontSize: '13px', fontWeight: 600 }}>Periode:</label>
                 <input
+                  id="payroll-period"
                   type="month"
                   value={payrollPeriod}
-                  onChange={(e) => setPayrollPeriod(e.target.value)}
+                   disabled={payrollLoading || payModal !== null || voidModal !== null || finalizeModal !== null}
+                   onChange={(e) => {
+                     payrollPeriodRef.current = e.target.value;
+                     setPayrollPeriod(e.target.value);
+                     setPayrollLoadedPeriod(null);
+                     setPayrollRun(null);
+                     setPayrollEntries([]);
+                     setPayrollAdjustments([]);
+                     closePayrollModals();
+                     setPaymentRef('');
+                     setPaymentReason('');
+                     setVoidReason('');
+                   }}
                   style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cddcd4', fontSize: '13px' }}
                 />
               </div>
@@ -930,7 +994,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             <div style={{ margin: '16px 0', padding: '16px', background: '#f8faf9', borderRadius: '8px', border: '1px solid #e0ece6' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                 <div>
-                  <span style={{ fontSize: '12px', color: '#6b8378', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Status Siklus:</span>
+                  <span style={{ fontSize: '12px', color: '#476058', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Status Siklus:</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
                     <span className={`tag ${
                       payrollRun?.status === 'PAID' ? 'good' :
@@ -941,8 +1005,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                       {payrollRun ? taskLabel(payrollRun.status) : 'Belum dibuat'}
                     </span>
                     {payrollRun && (
-                      <span style={{ fontSize: '12px', color: '#6b8378' }}>
-                        (Versi {payrollRun.version} • {payrollEntries.length} Karyawan)
+                      <span style={{ fontSize: '12px', color: '#476058' }}>
+                         (Periode dimuat {payrollLoadedPeriod} • Versi {payrollRun.version} • {payrollEntries.length} Karyawan)
                       </span>
                     )}
                   </div>
@@ -956,7 +1020,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                       type="button"
                       className="primary-button"
                       onClick={handlePreviewPayroll}
-                      disabled={payrollLoading}
+                       disabled={payrollActionsDisabled}
                       style={{ fontSize: '12px', padding: '6px 12px' }}
                     >
                       {payrollLoading ? 'Menghitung...' : payrollRun ? 'Hitung Ulang Draft' : 'Buat Draft Payroll'}
@@ -969,7 +1033,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                       type="button"
                       className="outline-button"
                       onClick={handleReviewPayroll}
-                      disabled={payrollLoading}
+                       disabled={payrollActionsDisabled}
                       style={{ fontSize: '12px', padding: '6px 12px', borderColor: '#2563eb', color: '#2563eb' }}
                     >
                       Selesaikan Review
@@ -981,8 +1045,12 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     <button
                       type="button"
                       className="primary-button"
-                      onClick={() => setShowFinalizeModal(true)}
-                      disabled={payrollLoading}
+                      onClick={() => {
+                        const scope = snapshotPayrollScope();
+                        if (!scope) return showError('Muat ulang periode payroll sebelum mengunci.');
+                        setFinalizeModal(scope);
+                      }}
+                       disabled={payrollActionsDisabled}
                       style={{ fontSize: '12px', padding: '6px 12px', background: '#059669' }}
                     >
                       Kunci Payroll
@@ -994,8 +1062,12 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     <button
                       type="button"
                       className="primary-button"
-                      onClick={() => setShowPayModal(true)}
-                      disabled={payrollLoading}
+                      onClick={() => {
+                        const scope = snapshotPayrollScope();
+                        if (!scope) return showError('Muat ulang periode payroll sebelum mencatat pembayaran.');
+                        setPayModal(scope);
+                      }}
+                       disabled={payrollActionsDisabled}
                       style={{ fontSize: '12px', padding: '6px 12px', background: '#0d9488' }}
                     >
                       Tandai Sudah Dibayar
@@ -1007,8 +1079,12 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     <button
                       type="button"
                       className="outline-button"
-                      onClick={() => setShowVoidModal(true)}
-                      disabled={payrollLoading}
+                      onClick={() => {
+                        const scope = snapshotPayrollScope();
+                        if (!scope) return showError('Muat ulang periode payroll sebelum membatalkan.');
+                        setVoidModal(scope);
+                      }}
+                       disabled={payrollActionsDisabled}
                       style={{ fontSize: '12px', padding: '6px 12px', borderColor: '#dc2626', color: '#dc2626' }}
                     >
                       Batalkan Payroll
@@ -1020,7 +1096,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     type="button"
                     className="outline-button"
                     onClick={handleExportPayroll}
-                    disabled={payrollLoading || !payrollRun || !['REVIEWED', 'FINALIZED', 'PAID'].includes(payrollRun.status)}
+                    disabled={payrollActionsDisabled || !payrollRun || !['REVIEWED', 'FINALIZED', 'PAID'].includes(payrollRun.status)}
                     style={{ fontSize: '12px', padding: '6px 12px' }}
                   >
                     Ekspor XLSX
@@ -1029,7 +1105,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               </div>
 
               {payrollRun?.payload_checksum && (
-                <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#6b8378', fontFamily: 'monospace' }}>
+                <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#476058', fontFamily: 'monospace' }}>
                   Checksum SHA-256: {payrollRun.payload_checksum.slice(0, 24)}...
                 </p>
               )}
@@ -1040,7 +1116,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               <div className="table-responsive" style={{ marginTop: '16px' }}>
                 <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
-                    <tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}>
+                    <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                       <th style={{ padding: '8px' }}>Karyawan</th>
                       <th style={{ padding: '8px' }}>Jabatan</th>
                       <th style={{ padding: '8px', textAlign: 'right' }}>Gaji Pokok</th>
@@ -1079,7 +1155,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                             ))}
                           </div>}
                         </td>
-                        <td style={{ padding: '8px', color: '#6b8378' }}>{e.profiles?.job_title || 'STAFF'}</td>
+                        <td style={{ padding: '8px', color: '#476058' }}>{e.profiles?.job_title || 'STAFF'}</td>
                         <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.base_amount)}</td>
                         <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.approved_overtime_amount)}</td>
                         <td style={{ padding: '8px', textAlign: 'right', color: Number(e.absence_deduction) > 0 ? '#dc2626' : undefined }}>
@@ -1095,7 +1171,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                             {taskLabel(e.status)}
                           </span>
                         </td>
-                        <td style={{ padding: '8px' }}>{payrollRun?.status === 'DRAFT' && e.status === 'DRAFT' && e.profile_id !== user.id ? <button type="button" className="outline-button" onClick={() => { setAdjustmentTarget(e); setAdjustmentType('OTHER'); setAdjustmentAmount(''); setAdjustmentReason(''); }} disabled={payrollLoading || actionLoading === 'payroll-adjustment'} style={{ padding: '5px 8px', fontSize: '11px' }}>Ajukan Penyesuaian</button> : <span className="muted">-</span>}</td>
+                         <td style={{ padding: '8px' }}>{payrollRun?.status === 'DRAFT' && e.status === 'DRAFT' && e.profile_id !== user.id ? <button type="button" className="outline-button" onClick={() => { setAdjustmentTarget(e); setAdjustmentType('OTHER'); setAdjustmentAmount(''); setAdjustmentReason(''); }} disabled={payrollActionsDisabled || actionLoading === 'payroll-adjustment'} style={{ padding: '5px 8px', fontSize: '11px' }}>Ajukan Penyesuaian</button> : <span className="muted">-</span>}</td>
                       </tr>;
                     })}
                   </tbody>
@@ -1110,8 +1186,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             {payrollLoading && <p role="status" className="muted" style={{ padding: '12px', textAlign: 'center' }}>Memproses payroll...</p>}
 
             {/* Modal Mark Paid */}
-            {showPayModal && (
-              <Dialog titleId="payroll-paid-title" title="Catat Payroll Sudah Dibayar" onClose={() => setShowPayModal(false)}>
+            {payModal && (
+              <Dialog titleId="payroll-paid-title" title={`Catat Payroll Sudah Dibayar (${payModal.period})`} onClose={() => setPayModal(null)}>
                   <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
                     Pastikan seluruh transfer telah berhasil dieksekusi sebelum mencatat bukti pembayaran.
                   </p>
@@ -1134,8 +1210,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     style={{ ...inputStyle, marginBottom: '16px', resize: 'vertical' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button type="button" className="outline-button" onClick={() => setShowPayModal(false)}>Batal</button>
-                    <button type="button" className="primary-button" onClick={handleMarkPaid} disabled={payrollLoading}>
+                    <button type="button" className="outline-button" onClick={() => setPayModal(null)}>Batal</button>
+                    <button type="button" className="primary-button" onClick={handleMarkPaid} disabled={payrollActionsDisabled}>
                       {payrollLoading ? 'Menyimpan...' : 'Simpan Bukti Pembayaran'}
                     </button>
                   </div>
@@ -1143,8 +1219,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             )}
 
             {/* Modal Void */}
-            {showVoidModal && (
-              <Dialog titleId="payroll-void-title" title="Batalkan Payroll" onClose={() => setShowVoidModal(false)}>
+            {voidModal && (
+              <Dialog titleId="payroll-void-title" title={`Batalkan Payroll (${voidModal.period})`} onClose={() => setVoidModal(null)}>
                   <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
                     Payroll saat ini akan dinonaktifkan secara permanen dan sistem akan membuat satu draft pengganti baru.
                   </p>
@@ -1158,18 +1234,18 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                     style={{ ...inputStyle, marginBottom: '16px', resize: 'vertical' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                    <button type="button" className="outline-button" onClick={() => setShowVoidModal(false)}>Batal</button>
-                    <button type="button" className="primary-button" onClick={handleVoidPayroll} disabled={payrollLoading} style={{ background: '#dc2626' }}>
+                    <button type="button" className="outline-button" onClick={() => setVoidModal(null)}>Batal</button>
+                    <button type="button" className="primary-button" onClick={handleVoidPayroll} disabled={payrollActionsDisabled} style={{ background: '#dc2626' }}>
                       {payrollLoading ? 'Membatalkan...' : 'Batalkan dan Buat Draft Pengganti'}
                     </button>
                   </div>
               </Dialog>
             )}
 
-            {showFinalizeModal && (
-              <Dialog titleId="payroll-finalize-title" title="Kunci Payroll?" onClose={() => setShowFinalizeModal(false)}>
-                <p className="muted" style={{ fontSize: '13px', margin: '0 0 18px' }}>Seluruh entri dan nilai gaji periode {payrollPeriod} akan dikunci. Tindakan ini tidak dapat dibatalkan lewat hitung ulang.</p>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}><button type="button" className="outline-button" onClick={() => setShowFinalizeModal(false)}>Kembali</button><button type="button" className="primary-button" onClick={handleFinalizePayroll} disabled={payrollLoading}>{payrollLoading ? 'Mengunci...' : 'Ya, Kunci Payroll'}</button></div>
+            {finalizeModal && (
+              <Dialog titleId="payroll-finalize-title" title={`Kunci Payroll ${finalizeModal.period}?`} onClose={() => setFinalizeModal(null)}>
+                <p className="muted" style={{ fontSize: '13px', margin: '0 0 18px' }}>Seluruh entri dan nilai gaji periode {payrollLoadedPeriod} akan dikunci. Tindakan ini tidak dapat dibatalkan lewat hitung ulang.</p>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}><button type="button" className="outline-button" onClick={() => setFinalizeModal(null)}>Kembali</button><button type="button" className="primary-button" onClick={handleFinalizePayroll} disabled={payrollActionsDisabled}>{payrollLoading ? 'Mengunci...' : 'Ya, Kunci Payroll'}</button></div>
               </Dialog>
             )}
           </div>
@@ -1206,7 +1282,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
             ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
               <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
-                  <tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}>
+                  <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                     <th style={{ padding: '8px' }}>Nama Lengkap</th>
                     <th style={{ padding: '8px' }}>Username</th>
                     <th style={{ padding: '8px' }}>Akses & jabatan</th>
@@ -1414,7 +1490,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                         <div>
                           <strong>{rep.work_date}</strong>
-                          <span style={{ marginLeft: '8px', fontSize: '12px', color: '#6b8378' }}>
+                          <span style={{ marginLeft: '8px', fontSize: '12px', color: '#476058' }}>
                             Revisi #{rep.current_revision} ({rev?.public_id || 'HOP-R01'})
                           </span>
                         </div>

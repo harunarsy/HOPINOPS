@@ -20,6 +20,7 @@ vi.mock('../lib/api', () => ({
     getDashboard: vi.fn(),
     getStockDrafts: vi.fn(),
     getChecklistLayout: vi.fn(),
+    selfEmergencyCheckout: vi.fn(),
   },
 }));
 
@@ -411,14 +412,14 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     expect(api.logout).toHaveBeenCalled();
   });
 
-  it('allows supervisor to initialize opening reference via canManage (F02)', async () => {
+  it('allows supervisor to enter an explicit physical baseline via canManage (F02/B06)', async () => {
     vi.mocked(api.getCurrentUser).mockResolvedValue(supervisorUser);
     vi.mocked(api.bootstrap).mockResolvedValue({
       user: supervisorUser,
       outlet: defaultOutlet,
       settings: defaultSettings,
       items: [
-        { id: 'item-1', name: 'Sirup Gula', active: true, area: 'BAR' },
+        { id: 'item-1', name: 'Sirup Gula', unit_code: 'botol', active: true, area_code: 'BAR' },
       ],
       shifts: [],
       onboarding: null,
@@ -454,7 +455,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
       warning_code: null,
       source_type: null,
       source_id: null,
-      lines: [],
+      lines: [{ item_id: 'item-1', reference_qty: null }],
     });
 
     vi.mocked(api.getDashboard).mockResolvedValue({
@@ -474,12 +475,13 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     const stokAwalTab = await screen.findByRole('button', { name: 'Stok Awal' });
     await user.click(stokAwalTab);
 
-    // Supervisor in StockWorkspace should have canManage=true
-    // So "Inisialisasi Patokan 0" button must appear, NOT "Diblokir: Owner/Supervisor..."
+    // Supervisor in StockWorkspace should have canManage=true and must enter a
+    // physical count. The old synthetic-zero initialization must not return.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /inisialisasi patokan 0/i })).toBeDefined();
+      expect(screen.getByLabelText(/jumlah fisik stok awal sirup gula/i)).toBeDefined();
+      expect(screen.getByRole('button', { name: /simpan baseline fisik/i })).toBeDefined();
     });
-    expect(screen.queryByText(/diblokir: owner\/supervisor harus membuka workspace/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /inisialisasi patokan 0/i })).toBeNull();
   });
 
   it('handles server logout failure: warns user, retains session on client, and allows retry', async () => {
@@ -693,6 +695,66 @@ describe('Staff Flow & Onboarding UI Regression', () => {
       expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
     });
     expect(api.logout).toHaveBeenCalled();
+  });
+
+  it('blocks the workspace immediately after successful self emergency checkout even when refresh fails (B05)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getCurrentUser).mockResolvedValue(operatorUser);
+    vi.mocked(api.bootstrap)
+      .mockResolvedValueOnce({
+        user: operatorUser,
+        outlet: defaultOutlet,
+        settings: defaultSettings,
+        items: [{ id: 'item-1', name: 'Kopi Susu', unit_code: 'kg', active: true, area_code: 'BAR' }],
+        shifts: [],
+        onboarding: {
+          profile_id: operatorUser.id,
+          onboarding_version: 1,
+          completed_at: '2026-09-06T10:00:00Z',
+        },
+        activeAssignment: {
+          id: 'asg-1',
+          cycle_id: 'cycle-1',
+          duty_role: 'PRIMARY',
+          status: 'ACTIVE',
+          work_cycles: { area_code: 'BAR', shift_code: 'SIANG', version: 1 },
+        },
+        activeAttendance: { id: 'att-1', status: 'CHECKED_IN', version: 1 },
+        workDate: '2026-09-06',
+      })
+      .mockRejectedValueOnce(new Error('Network down'));
+    vi.mocked(api.getCycle).mockResolvedValue({
+      cycle: { id: 'cycle-1', area_code: 'BAR', shift_code: 'SIANG', version: 1, status: 'OPEN' },
+      movements: [],
+    });
+    vi.mocked(api.selfEmergencyCheckout).mockResolvedValue({
+      attendance_id: 'att-1',
+      event_id: 'evt-1',
+      status: 'REVIEW_REQUIRED',
+      exception_status: 'PENDING_REVIEW',
+      version: 2,
+      idempotent_replay: false,
+    });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /workspace bar/i })).toBeDefined();
+    });
+
+    const menuSummary = container.querySelector('details.account-menu summary') as HTMLElement;
+    expect(menuSummary).toBeDefined();
+    fireEvent.click(menuSummary);
+    await user.click(screen.getByRole('button', { name: /check-out darurat/i }));
+    fireEvent.change(screen.getByLabelText(/alasan check-out darurat/i), {
+      target: { value: 'Harus pulang mendadak' },
+    });
+    await user.click(screen.getByRole('button', { name: /catat check-out darurat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/checkout dalam review/i)).toBeDefined();
+    });
+    expect(screen.queryByRole('heading', { name: /workspace bar/i })).toBeNull();
   });
 
   it('enforces transient PIN masking: max 1 digit visible, group blur masks immediately', async () => {

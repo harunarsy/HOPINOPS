@@ -34,11 +34,12 @@ type ReportSnapshot = {
 type LoadState = 'checking' | 'not-applicable' | 'loading' | 'success' | 'error';
 type OperationState = 'idle' | 'loading' | 'success' | 'error';
 
+// Blank until server finance loads: never render synthetic zeros as real figures.
 const emptyFinance: FinanceDraft = {
-  cash_real: '0',
-  cash_app: '0',
-  qris_mandiri: '0',
-  debit_mandiri: '0',
+  cash_real: '',
+  cash_app: '',
+  qris_mandiri: '',
+  debit_mandiri: '',
 };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -118,6 +119,10 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const [shareMessage, setShareMessage] = useState('');
   const [recipientId, setRecipientId] = useState('');
   const [shareReason, setShareReason] = useState('');
+  const [bonusPreview, setBonusPreview] = useState<{ recorded_total: number; tier_percent: number; pool_amount: number; participant_count: number } | null>(null);
+  const [bonusBlockers, setBonusBlockers] = useState<string[]>([]);
+  const [bonusState, setBonusState] = useState<OperationState>('idle');
+  const [bonusStale, setBonusStale] = useState(false);
   const draftIdempotencyKeyRef = useRef<string | null>(null);
   const draftInFlightRef = useRef(false);
   const shareIdempotencyKeyRef = useRef<string | null>(null);
@@ -143,6 +148,10 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setShareMessage('');
     setRecipientId('');
     setShareReason('');
+    setBonusPreview(null);
+    setBonusBlockers([]);
+    setBonusState('loading');
+    setBonusStale(false);
     draftIdempotencyKeyRef.current = null;
     shareIdempotencyKeyRef.current = null;
 
@@ -153,7 +162,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         const financeSource = financeFromSnapshot(snapshot);
         const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
         if (financeSource !== null && !hydratedFinance) {
-          throw new Error('Finance server tidak valid dan tidak dapat dimuat dengan aman.');
+          throw new Error('Data keuangan server tidak valid dan tidak dapat dimuat dengan aman.');
         }
         if (snapshot.finance_draft && (!Number.isInteger(snapshot.finance_draft.version) || snapshot.finance_draft.version <= 0)) {
           throw new Error('Versi draft finance dari server tidak valid.');
@@ -165,6 +174,21 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         setDraftVersion(snapshot.finance_draft?.version ?? null);
         setReceipt(receiptFromReport(snapshot));
         setReportLoadState('success');
+        try {
+          if (typeof api.previewBonus !== 'function') {
+            setBonusState('success');
+            return;
+          }
+          const preview = await api.previewBonus(workDate);
+          if (!active) return;
+          setBonusPreview(preview.preview ?? null);
+          setBonusBlockers((preview.blockers ?? []).map((blocker: any) => typeof blocker === 'string' ? blocker : blocker?.message || blocker?.code || 'Kesiapan bonus belum terpenuhi.'));
+          setBonusState('success');
+        } catch (error) {
+          if (!active) return;
+          setBonusState('error');
+          setBonusBlockers([messageFrom(error, 'Preview bonus belum tersedia.')]);
+        }
       } catch (error) {
         if (!active) return;
         if (codeFrom(error) === 'NOT_FOUND') {
@@ -250,6 +274,15 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const recipientIsValid = uuidPattern.test(recipientId.trim());
   const reasonIsValid = shareReason.trim().length > 0 && shareReason.trim().length <= 1000;
   const canShareReport = Boolean(isManager && reportSnapshot?.revision && reportSnapshot.report && recipientIsValid && reasonIsValid);
+  const stockAreas = new Set((reportSnapshot?.stock_lines ?? []).map((line: any) => line.area_code));
+  const closingReady = stockAreas.has('BAR') && stockAreas.has('KITCHEN');
+  const readinessMessage = reportIsImmutable
+    ? 'Laporan sudah ditutup dan tidak dapat diubah.'
+    : !closingReady
+      ? 'Menunggu closing terkonfirmasi dari Bar dan Kitchen.'
+      : financeDirty
+        ? 'Finance berubah di perangkat. Simpan draft atau kirim untuk meminta validasi server.'
+        : 'Finance siap diminta validasi server.';
   const fieldsDisabled = reportLoadState !== 'success' || draftState === 'loading' || submitState === 'loading' || submitState === 'success' || reportIsImmutable || !isFinalizer;
   const submitDisabledReason = submitState === 'loading'
     ? 'Pengiriman sedang diproses oleh server.'
@@ -263,6 +296,8 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
             ? 'Laporan server gagal dimuat. Perbaiki kesalahan pemuatan sebelum mengirim.'
             : reportIsImmutable
               ? 'Laporan terkini sudah dikunci setelah dikirim.'
+        : !closingReady
+          ? 'Menunggu closing terkonfirmasi dari Bar dan Kitchen.'
         : !financeIsValid
           ? 'Perbaiki semua nilai keuangan sebelum mengirim.'
           : '';
@@ -279,6 +314,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       setDraftVersion(saved.version);
       setServerDraftFinance(parsedFinance);
       setFinanceDirty(false);
+      setBonusStale(true);
       setReportSnapshot((current) => current ? {
         ...current,
         finance_draft: { ...(current.finance_draft ?? {}), ...saved, finance_json: parsedFinance },
@@ -294,8 +330,32 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     }
   };
 
+  const reloadBonusPreview = async () => {
+    setBonusState('loading');
+    setBonusBlockers([]);
+    try {
+      if (typeof api.previewBonus !== 'function') {
+        setBonusState('success');
+        return;
+      }
+      const preview = await api.previewBonus(workDate);
+      setBonusPreview(preview.preview ?? null);
+      setBonusBlockers((preview.blockers ?? []).map((blocker: any) => typeof blocker === 'string' ? blocker : blocker?.message || blocker?.code || 'Kesiapan bonus belum terpenuhi.'));
+      setBonusState('success');
+      setBonusStale(false);
+    } catch (error) {
+      setBonusState('error');
+      setBonusBlockers([messageFrom(error, 'Preview bonus belum tersedia.')]);
+    }
+  };
+
+  const handleBack = () => {
+    if (financeDirty && !window.confirm('Perubahan finance belum disimpan ke server. Kembali dan buang ketikan?')) return;
+    onBack();
+  };
+
   const handleSubmitReport = async () => {
-    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || submitState === 'loading' || submitState === 'success') return;
+    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || !closingReady || submitState === 'loading' || submitState === 'success') return;
 
     const financeToSubmit = !financeDirty && serverDraftFinance ? serverDraftFinance : parsedFinance;
 
@@ -315,13 +375,14 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
     setReceipt(serverReceipt);
     setSubmitState('success');
+    setBonusStale(true);
     setSubmitMessage('Laporan diterima server. Simpan receipt berikut sebagai bukti pengiriman.');
 
     try {
       const snapshot = await api.getReport(workDate) as ReportSnapshot;
       const financeSource = financeFromSnapshot(snapshot);
       const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
-      if (financeSource !== null && !hydratedFinance) throw new Error('Finance server tidak valid setelah submit.');
+      if (financeSource !== null && !hydratedFinance) throw new Error('Data keuangan server tidak valid setelah submit.');
       setReportSnapshot(snapshot);
       setFinance(hydratedFinance ? financeToInputs(hydratedFinance) : financeToInputs(financeToSubmit));
       setServerDraftFinance(snapshot.finance_draft ? hydratedFinance : null);
@@ -403,7 +464,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           <h1>Laporan Harian</h1>
           <p className="muted">Rekonsiliasi keuangan untuk tanggal kerja {workDate}.</p>
         </div>
-        <button className="outline-button" onClick={onBack}>
+        <button className="outline-button" onClick={handleBack}>
           Kembali ke Workspace
         </button>
       </section>
@@ -491,6 +552,17 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         )}
       </section>
 
+      <section className="section-card" aria-labelledby="readiness-title" style={{ marginTop: '16px' }}>
+        <p className="eyebrow">KONTROL PENUTUPAN</p>
+        <h2 id="readiness-title">Kesiapan Laporan</h2>
+        <p role="status" style={{ margin: '12px 0 0' }}>{readinessMessage}</p>
+        <ul style={{ margin: '12px 0 0', paddingLeft: '20px' }}>
+          <li>Closing Bar: {stockAreas.has('BAR') ? 'terbaca dari snapshot server' : 'belum tersedia'}</li>
+          <li>Closing Kitchen: {stockAreas.has('KITCHEN') ? 'terbaca dari snapshot server' : 'belum tersedia'}</li>
+          <li>Finance: {financeIsValid ? 'format valid' : 'perlu diperbaiki'}</li>
+        </ul>
+      </section>
+
       <section className="section-card" aria-labelledby="finance-title" style={{ marginTop: '16px' }}>
         <div className="section-heading">
           <div>
@@ -524,7 +596,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
               const errorId = `${inputId}-error`;
               return (
                 <div key={key}>
-                  <label htmlFor={inputId} style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>
+                  <label htmlFor={inputId} style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>
                     {label}
                   </label>
                   <input
@@ -537,11 +609,12 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                     required
                     value={finance[key]}
                     disabled={fieldsDisabled}
-                    aria-invalid={Boolean(financeErrors[key])}
-                    aria-describedby={financeErrors[key] ? errorId : undefined}
+                    aria-invalid={Boolean(financeDirty && financeErrors[key])}
+                    aria-describedby={financeDirty && financeErrors[key] ? errorId : undefined}
                     onChange={(event) => {
                       setFinance((current) => ({ ...current, [key]: event.target.value }));
                       setFinanceDirty(true);
+                      setBonusStale(true);
                       setDraftState('idle');
                       setDraftMessage('');
                       setSubmitState('idle');
@@ -550,9 +623,9 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                     }}
                     placeholder="0"
                     title={help}
-                    style={{ width: '100%', padding: '8px', borderRadius: '8px', border: financeErrors[key] ? '1px solid #b95745' : '1px solid #cddcd4' }}
+                    style={{ width: '100%', padding: '8px', borderRadius: '8px', border: financeDirty && financeErrors[key] ? '1px solid #b95745' : '1px solid #cddcd4' }}
                   />
-                  {financeErrors[key] && (
+                  {financeDirty && financeErrors[key] && (
                     <p id={errorId} style={{ margin: '4px 0 0', color: '#8f3f34', fontSize: '11px' }}>
                       {financeErrors[key]}
                     </p>
@@ -564,15 +637,15 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
           <div style={{ marginTop: '20px', padding: '16px', background: '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '6px 12px', marginBottom: '8px' }}>
-              <span style={{ color: '#6b8378' }}>Total Transaksi Tercatat:</span>
+              <span style={{ color: '#476058' }}>Total Transaksi Tercatat:</span>
               <strong>{recordedTotal === null ? 'Nilai belum valid' : fmtRupiah(recordedTotal)}</strong>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '6px 12px', marginBottom: '8px' }}>
-              <span style={{ color: '#6b8378' }}>Total Uang Masuk Aktual:</span>
+              <span style={{ color: '#476058' }}>Total Uang Masuk Aktual:</span>
               <strong>{receivedTotal === null ? 'Nilai belum valid' : fmtRupiah(receivedTotal)}</strong>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '6px 12px', borderTop: '1px dashed #cddcd4', paddingTop: '8px' }}>
-              <span style={{ color: '#6b8378' }}>Selisih Kas Fisik:</span>
+              <span style={{ color: '#476058' }}>Selisih Kas Fisik:</span>
               <strong style={{ color: cashDiff !== null && cashDiff < 0 ? '#b91c1c' : '#1e5b48' }}>
                 {cashDiff === null ? 'Nilai belum valid' : `${cashDiff < 0 ? '-' : '+'}${fmtRupiah(Math.abs(cashDiff))}`}
               </strong>
@@ -635,7 +708,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         {receipt && (
           <section aria-labelledby="receipt-title" style={{ marginTop: '16px', padding: '16px', borderRadius: '10px', border: '1px solid #c6dfd0', background: '#f8faf9' }}>
             <p className="eyebrow">BUKTI DARI SERVER</p>
-            <h3 id="receipt-title">Receipt Pengiriman</h3>
+            <h3 id="receipt-title">Bukti Pengiriman</h3>
             {receiptFields.length > 0 ? (
               <dl style={{ display: 'grid', gridTemplateColumns: 'minmax(100px, auto) minmax(0, 1fr)', gap: '8px 12px', margin: '12px 0 0' }}>
                 {receipt.report_id && <><dt>ID laporan</dt><dd style={{ margin: 0, overflowWrap: 'anywhere' }}>{receipt.report_id}</dd></>}
@@ -651,13 +724,38 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           </section>
         )}
 
+        <section aria-labelledby="bonus-preview-title" style={{ marginTop: '16px', padding: '16px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9' }}>
+          <p className="eyebrow">PREVIEW FINANCE</p>
+          <h3 id="bonus-preview-title">Preview Bonus</h3>
+          {bonusState === 'loading' && <p role="status" className="muted">Memuat preview dari server...</p>}
+          {bonusState === 'error' && <p role="alert" className="form-error">Preview belum tersedia. Laporan tetap dapat diperiksa dan dikirim sesuai hak akses.</p>}
+          {bonusStale && bonusState === 'success' && (
+            <div role="status" style={{ margin: '8px 0', padding: '10px 12px', borderRadius: '8px', border: '1px solid #f0d8a9', background: '#fff3dd', color: '#7d5b2b', fontSize: '12px' }}>
+              Preview mungkin kedaluwarsa setelah perubahan finance.
+              <button type="button" className="outline-button" onClick={() => void reloadBonusPreview()} style={{ marginLeft: '8px', width: 'auto', padding: '4px 8px' }}>
+                Muat ulang preview
+              </button>
+            </div>
+          )}
+          {bonusState === 'success' && bonusPreview && (
+            <dl className="report-preview-grid">
+              <dt>Total tercatat</dt><dd>{fmtRupiah(bonusPreview.recorded_total)}</dd>
+              <dt>Tier</dt><dd>{bonusPreview.tier_percent}%</dd>
+              <dt>Pool</dt><dd>{fmtRupiah(bonusPreview.pool_amount)}</dd>
+              <dt>Peserta</dt><dd>{bonusPreview.participant_count}</dd>
+            </dl>
+          )}
+          {bonusState === 'success' && !bonusPreview && <p className="muted">Preview belum dapat dihitung.</p>}
+          {bonusBlockers.length > 0 && <ul className="report-blockers">{bonusBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
+        </section>
+
         {isManager && reportSnapshot?.revision && reportSnapshot.report && (
           <section aria-labelledby="share-report-title" style={{ marginTop: '16px', padding: '16px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9' }}>
             <p className="eyebrow">AKSES LAPORAN</p>
             <h3 id="share-report-title">Bagikan Revisi Server</h3>
             <div style={{ display: 'grid', gap: '12px', marginTop: '12px' }}>
               <div>
-                <label htmlFor="report-share-recipient" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>
+                <label htmlFor="report-share-recipient" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>
                   UUID Penerima
                 </label>
                 <input
@@ -677,7 +775,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                 {recipientId && !recipientIsValid && <p style={{ margin: '4px 0 0', color: '#8f3f34', fontSize: '11px' }}>UUID penerima wajib valid.</p>}
               </div>
               <div>
-                <label htmlFor="report-share-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>
+                <label htmlFor="report-share-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>
                   Alasan
                 </label>
                 <textarea

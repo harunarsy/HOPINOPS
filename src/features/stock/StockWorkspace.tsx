@@ -75,6 +75,8 @@ export function StockWorkspace({
   const [toast, setToast] = useState('');
   const [criticalError, setCriticalError] = useState('');
   const [queueStateLoaded, setQueueStateLoaded] = useState(false);
+  const [queueError, setQueueError] = useState('');
+  const [queueReload, setQueueReload] = useState(0);
   const [queueSummary, setQueueSummary] = useState({ pending: 0, sending: 0, conflict: 0, failed: 0 });
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [handoverCompleted, setHandoverCompleted] = useState(false);
@@ -85,8 +87,12 @@ export function StockWorkspace({
   const [openingReferenceReload, setOpeningReferenceReload] = useState(0);
   const [layoutSections, setLayoutSections] = useState<{ id: string; name: string; position: number }[]>([]);
   const [layoutPlacements, setLayoutPlacements] = useState<{ item_id: string; section_id: string; position: number }[]>([]);
-  const [initializationDialogOpen, setInitializationDialogOpen] = useState(false);
-  const [initializationReason, setInitializationReason] = useState('');
+  const [layoutVersion, setLayoutVersion] = useState<number | null>(null);
+  const [layoutReload, setLayoutReload] = useState(0);
+  const [layoutLoading, setLayoutLoading] = useState(true);
+  const [layoutError, setLayoutError] = useState('');
+  const [baselineReason, setBaselineReason] = useState('');
+  const [baselineSubmitting, setBaselineSubmitting] = useState(false);
   const [bulkMatchTarget, setBulkMatchTarget] = useState<'OPENING' | 'CLOSING' | null>(null);
   const [conflictDiscardItem, setConflictDiscardItem] = useState<QueueItem | null>(null);
   const [correctionMovement, setCorrectionMovement] = useState<any | null>(null);
@@ -97,24 +103,32 @@ export function StockWorkspace({
   const activeScopeRef = useRef('');
   const cycleVersionRef = useRef(0);
   const cycleVersionScopeRef = useRef('');
+  const localInputDirtyRef = useRef(false);
 
   // Server-owned checklist order (E1): staff and Supervisor see the same snapshot.
-  // Falls back to item prop order when layout is unavailable; never re-sorts by name locally.
   useEffect(() => {
     let active = true;
+    setLayoutLoading(true);
+    setLayoutError('');
     void api.getChecklistLayout(area)
       .then((layout) => {
         if (!active) return;
         setLayoutSections(layout.sections);
         setLayoutPlacements(layout.placements);
+        setLayoutVersion(Number.isInteger(layout.version) ? layout.version : null);
       })
-      .catch(() => {
+      .catch((error: any) => {
         if (!active) return;
         setLayoutSections([]);
         setLayoutPlacements([]);
+        setLayoutVersion(null);
+        setLayoutError(`Urutan checklist gagal dimuat (${error?.code || 'LAYOUT_LOAD_FAILED'}). Coba muat ulang.`);
+      })
+      .finally(() => {
+        if (active) setLayoutLoading(false);
       });
     return () => { active = false; };
-  }, [area, outletId]);
+  }, [area, outletId, cycleData?.cycle?.version, layoutReload]);
 
   const sectionNameOf = (itemId: string): string | null => {
     const placement = layoutPlacements.find((p) => p.item_id === itemId);
@@ -123,7 +137,7 @@ export function StockWorkspace({
   };
 
   const orderedItems = useMemo(() => {
-    if (layoutPlacements.length === 0) return items;
+    if (layoutLoading || layoutError || layoutPlacements.length === 0) return items;
     const sectionPos = new Map(layoutSections.map((s) => [s.id, s.position]));
     const placePos = new Map(layoutPlacements.map((p) => [p.item_id, p]));
     return [...items].sort((a, b) => {
@@ -134,7 +148,7 @@ export function StockWorkspace({
       if (sa !== sb) return sa - sb;
       return (pa?.position ?? 999) - (pb?.position ?? 999);
     });
-  }, [items, layoutSections, layoutPlacements]);
+  }, [items, layoutSections, layoutPlacements, layoutLoading, layoutError]);
 
   // Opening state
   const openingRecord = cycleData?.opening;
@@ -200,6 +214,7 @@ export function StockWorkspace({
   };
 
   useEffect(() => {
+    localInputDirtyRef.current = false;
     setOpeningCounts({});
     setOpeningReasons({});
     setOpeningNotes({});
@@ -207,7 +222,6 @@ export function StockWorkspace({
     setClosingReasons({});
     setClosingNotes({});
     setCriticalError('');
-    setInitializationDialogOpen(false);
     setBulkMatchTarget(null);
     setConflictDiscardItem(null);
     setCorrectionMovement(null);
@@ -225,7 +239,7 @@ export function StockWorkspace({
     void api.getStockDrafts(cycleId)
       .then(({ opening_draft: openingDraft, closing_draft: closingDraft }) => {
         if (!active || activeScopeRef.current !== scopeSignature) return;
-        if (openingDraft && !isOpeningConfirmed) {
+        if (openingDraft && !isOpeningConfirmed && !localInputDirtyRef.current) {
           const counts: Record<string, string> = {};
           const reasons: Record<string, string> = {};
           const notes: Record<string, string> = {};
@@ -244,7 +258,7 @@ export function StockWorkspace({
             receipt: null,
           });
         }
-        if (closingDraft && !isClosingConfirmed && !closingCompleted) {
+        if (closingDraft && !isClosingConfirmed && !closingCompleted && !localInputDirtyRef.current) {
           const counts: Record<string, string> = {};
           const reasons: Record<string, string> = {};
           const notes: Record<string, string> = {};
@@ -301,20 +315,19 @@ export function StockWorkspace({
   }, [scopeSignature, openingRecord?.id, openingReferenceReload]);
 
   useEffect(() => {
-    const hasDialog = movementModalOpen || initializationDialogOpen || bulkMatchTarget !== null
+    const hasDialog = movementModalOpen || bulkMatchTarget !== null
       || conflictDiscardItem !== null || correctionMovement !== null;
     if (!hasDialog) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || loading) return;
       setMovementModalOpen(false);
-      setInitializationDialogOpen(false);
       setBulkMatchTarget(null);
       setConflictDiscardItem(null);
       setCorrectionMovement(null);
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [movementModalOpen, initializationDialogOpen, bulkMatchTarget, conflictDiscardItem, correctionMovement, loading]);
+  }, [movementModalOpen, bulkMatchTarget, conflictDiscardItem, correctionMovement, loading]);
 
   const queueScope = { profileId, outletId, aggregateId: cycleId };
 
@@ -420,6 +433,7 @@ export function StockWorkspace({
   useEffect(() => {
     let active = true;
     setQueueStateLoaded(false);
+    setQueueError('');
     setQueueItems([]);
     setHandoverCompleted(false);
     setClosingCompleted(false);
@@ -432,6 +446,9 @@ export function StockWorkspace({
         await syncQueue();
       } catch (e) {
         console.error('Queue initialization error', e);
+        if (active && activeScopeRef.current === scopeSignature) {
+          setQueueError('Penyimpanan perangkat tidak dapat dibaca sehingga status antrean belum diketahui. Transaksi penting dinonaktifkan sampai antrean berhasil dimuat.');
+        }
       }
     };
     const handleOnline = () => void syncQueue();
@@ -443,7 +460,7 @@ export function StockWorkspace({
       clearInterval(interval);
       window.removeEventListener('online', handleOnline);
     };
-  }, [profileId, outletId, cycleId]);
+  }, [profileId, outletId, cycleId, queueReload]);
 
   const movements = cycleData?.movements ?? [];
   const correctedMovementIds = useMemo(
@@ -457,22 +474,28 @@ export function StockWorkspace({
       );
     }
     if (openingReference?.state !== 'AVAILABLE') return new Map<string, number>();
-    return new Map(openingReference.lines.map((line) => [line.item_id, Number(line.reference_qty)]));
+    return new Map(
+      openingReference.lines
+        .filter((line) => line.reference_qty !== null && Number.isFinite(Number(line.reference_qty)))
+        .map((line) => [line.item_id, Number(line.reference_qty)]),
+    );
   }, [openingRecord, openingReference]);
   const openingReferenceReady = Boolean(openingRecord) || openingReference?.state === 'AVAILABLE';
-  const missingOpeningReferences = openingReferenceReady
-    ? items.filter((item) => {
-      const reference = openingReferenceByItem.get(item.id);
-      return reference === undefined || !Number.isFinite(reference) || reference < 0;
-    })
-    : [];
+  const missingOpeningReferences = openingReference?.state === 'INITIALIZATION_REQUIRED'
+    ? items.filter((item) => !openingReferenceByItem.has(item.id))
+    : openingReferenceReady
+      ? items.filter((item) => {
+        const reference = openingReferenceByItem.get(item.id);
+        return reference === undefined || !Number.isFinite(reference) || reference < 0;
+        })
+      : [];
   const openingSourceType = openingRecord?.reference_source_type ?? openingReference?.source_type ?? null;
   const openingSourceLabel = openingSourceType === 'HANDOVER'
     ? 'handover shift siang hari ini'
     : openingSourceType === 'CLOSING'
       ? 'closing terakhir yang dikonfirmasi'
       : openingSourceType === 'INITIALIZATION'
-        ? 'inisialisasi 0 yang disetujui manajemen'
+        ? 'baseline fisik yang disetujui'
         : null;
   const openingWarningCode = openingRecord?.reference_warning_code
     ?? openingRecord?.warning_code
@@ -505,8 +528,11 @@ export function StockWorkspace({
 
   const markOpeningCount = (itemId: string, value: string) => {
     const reference = openingReferenceByItem.get(itemId);
-    if (isOpeningConfirmed || reference === undefined) return;
+    const canEnterBaseline = openingReference?.state === 'INITIALIZATION_REQUIRED'
+      && missingOpeningReferences.some((item) => item.id === itemId);
+    if (isOpeningConfirmed || (reference === undefined && !canEnterBaseline)) return;
     const next = { ...openingCounts, [itemId]: value };
+    localInputDirtyRef.current = true;
     setOpeningCounts(next);
     if (value.trim() !== '' && Number(value) === reference) {
       // matches system -> no variance -> clear stale reason/notes
@@ -540,6 +566,7 @@ export function StockWorkspace({
 
   const markClosingCount = (itemId: string, value: string) => {
     if (isClosingConfirmed || closingCompleted || itemBalances[itemId]?.system === null) return;
+    localInputDirtyRef.current = true;
     setClosingCounts((current) => ({ ...current, [itemId]: value }));
     if (value.trim() !== '' && Number(value) === itemBalances[itemId]?.system) {
       setClosingReasons((current) => {
@@ -569,41 +596,53 @@ export function StockWorkspace({
     showToast('Semua stok akhir disamakan dengan sisa catatan.');
   };
 
-  const handleInitializeOpeningReference = async () => {
-    const reason = initializationReason.trim();
+  const handleRecordPhysicalBaseline = async () => {
+    const reason = baselineReason.trim();
     const expectedVersion = cycleVersionRef.current;
     setCriticalError('');
-    if (!canManage) {
-      showCriticalError('Inisialisasi ditolak di tampilan: hak Owner/Supervisor belum tersedia.');
+    if (!isPrimary && !canManage) {
+      showCriticalError('Baseline fisik hanya dapat direkam oleh PRIMARY atau manajemen.');
       return;
     }
     if (!reason) {
-      showCriticalError('Alasan inisialisasi wajib diisi.');
+      showCriticalError('Alasan pencatatan baseline wajib diisi.');
       return;
     }
     if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
-      showCriticalError('Versi cycle tidak valid. Muat ulang sebelum inisialisasi.');
+       showCriticalError('Versi cycle tidak valid. Muat ulang sebelum mencatat baseline.');
       return;
     }
 
-    setLoading(true);
+    const missingCount = missingOpeningReferences.find((item) => {
+      const value = openingCounts[item.id]?.trim();
+      return !value || !Number.isFinite(Number(value)) || Number(value) < 0;
+    });
+    if (missingCount) {
+      showCriticalError(`Jumlah fisik "${missingCount.name}" wajib diisi dan tidak boleh negatif.`);
+      return;
+    }
+
+    setBaselineSubmitting(true);
     try {
-      await api.initializeOpeningReference(cycleId, expectedVersion, reason);
+      const lines = missingOpeningReferences.map((item) => ({
+        item_id: item.id,
+        counted_qty: Number(openingCounts[item.id]),
+      }));
+      await api.recordCyclePhysicalBaseline(cycleId, expectedVersion, lines, reason, crypto.randomUUID());
       const reference = await api.getOpeningReference(cycleId);
       if (reference.state !== 'AVAILABLE') throw Object.assign(new Error('Referensi belum tersedia.'), { code: 'REFERENCE_NOT_AVAILABLE' });
       setOpeningReference(reference);
       setOpeningReferenceError('');
-      setInitializationReason('');
-      setInitializationDialogOpen(false);
-      showToast('Referensi stok awal berhasil diinisialisasi. Semua patokan awal kini 0.');
+      setBaselineReason('');
+      showToast('Baseline fisik tersimpan. Patokan stok awal telah dimuat ulang.');
       const refreshed = await onRefresh();
       if (!refreshed) {
         showCriticalError('Referensi berhasil dibuat, tetapi data cycle gagal dimuat ulang.');
       }
     } catch (err: any) {
-      showCriticalError(`Gagal menginisialisasi referensi (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
+      showCriticalError(`Gagal mencatat baseline fisik (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
     } finally {
-      setLoading(false);
+      setBaselineSubmitting(false);
     }
   };
 
@@ -798,6 +837,10 @@ export function StockWorkspace({
   };
 
   const verifyEmptyQueue = async (actionLabel: string) => {
+    if (queueError) {
+      showCriticalError(`Status antrean perangkat bermasalah. Perbaiki lewat tombol Coba lagi sebelum ${actionLabel}.`);
+      return false;
+    }
     if (!queueStateLoaded) {
       showCriticalError(`Status antrean masih dimuat. Tunggu sebelum ${actionLabel}.`);
       return false;
@@ -1098,10 +1141,36 @@ export function StockWorkspace({
               ? 'Catat perubahan stok masuk dan keluar secara real-time.'
               : 'Konfirmasi stok awal sebelum mencatat transaksi.'}
           </p>
-          {!queueStateLoaded && (
-            <p style={{ color: '#6b8378', fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>
+          {!queueStateLoaded && !queueError && (
+            <p style={{ color: '#476058', fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>
               Memuat status antrean perangkat...
             </p>
+          )}
+          {queueError && !queueStateLoaded && (
+            <div role="alert" className="form-error" style={{ marginTop: '8px' }}>
+              {queueError}
+              <button type="button" className="outline-button" onClick={() => setQueueReload((value) => value + 1)} style={{ marginLeft: '8px', width: 'auto', padding: '4px 8px' }}>
+                Coba lagi
+              </button>
+            </div>
+          )}
+          {layoutLoading && (
+            <p role="status" style={{ color: '#476058', fontSize: '12px', marginTop: '4px' }}>
+              Memuat urutan checklist dari server...
+            </p>
+          )}
+          {!layoutLoading && !layoutError && layoutVersion !== null && (
+            <p className="muted" style={{ fontSize: '11px', marginTop: '4px' }}>
+              Snapshot checklist server v{layoutVersion}.
+            </p>
+          )}
+          {layoutError && (
+            <div role="alert" className="form-error" style={{ marginTop: '8px' }}>
+              {layoutError}
+              <button type="button" className="outline-button" onClick={() => setLayoutReload((value) => value + 1)} style={{ marginLeft: '8px', width: 'auto', padding: '4px 8px' }}>
+                Coba lagi
+              </button>
+            </div>
           )}
           {queueStateLoaded && unresolvedCount > 0 && (
             <div role="status" style={{ color: '#b45309', fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>
@@ -1150,11 +1219,11 @@ export function StockWorkspace({
       )}
 
       <nav className="tabs" aria-label="Navigasi operasi">
-        <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Ringkasan</button>
-        <button className={tab === 'opening' ? 'active' : ''} onClick={() => setTab('opening')}>Stok Awal</button>
-        <button className={tab === 'movement' ? 'active' : ''} disabled={!isOpeningConfirmed} onClick={() => setTab('movement')}>Perubahan</button>
+        <button className={tab === 'overview' ? 'active' : ''} aria-current={tab === 'overview' ? 'page' : undefined} onClick={() => setTab('overview')}>Ringkasan</button>
+        <button className={tab === 'opening' ? 'active' : ''} aria-current={tab === 'opening' ? 'page' : undefined} onClick={() => setTab('opening')}>Stok Awal</button>
+        <button className={tab === 'movement' ? 'active' : ''} aria-current={tab === 'movement' ? 'page' : undefined} disabled={!isOpeningConfirmed} onClick={() => setTab('movement')}>Perubahan</button>
         {isNightOrFull && (
-          <button className={tab === 'closing' ? 'active' : ''} disabled={!isOpeningConfirmed} onClick={() => setTab('closing')}>Stok Akhir</button>
+          <button className={tab === 'closing' ? 'active' : ''} aria-current={tab === 'closing' ? 'page' : undefined} disabled={!isOpeningConfirmed} onClick={() => setTab('closing')}>Stok Akhir</button>
         )}
       </nav>
 
@@ -1171,7 +1240,7 @@ export function StockWorkspace({
             <div className="table-responsive" style={{ marginTop: '12px' }}>
               <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
-                  <tr style={{ borderBottom: '1px solid #cddcd4', color: '#6b8378' }}>
+                  <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                     <th style={{ padding: '8px' }}>Item</th>
                     <th style={{ padding: '8px' }}>Awal</th>
                     <th style={{ padding: '8px' }}>Masuk</th>
@@ -1229,16 +1298,7 @@ export function StockWorkspace({
               </>
             ) : openingReference?.state === 'INITIALIZATION_REQUIRED' ? (
               <>
-                <strong>Patokan stok awal belum disiapkan.</strong> Supervisor dapat menyiapkannya dari dashboard. Setelah itu, hitung stok fisik di area Anda. Kolom kosong berarti belum dihitung, bukan nol.
-                {canManage ? (
-                  <button type="button" className="primary-button" onClick={() => setInitializationDialogOpen(true)} style={{ marginLeft: '10px' }}>
-                    Inisialisasi Patokan 0
-                  </button>
-                ) : (
-                  <span style={{ display: 'block', marginTop: '8px', fontWeight: 700 }}>
-                    Diblokir: Owner/Supervisor harus membuka workspace dengan izin manajemen untuk menginisialisasi patokan.
-                  </span>
-                )}
+                <strong>Referensi stok awal belum tersedia.</strong> Masukkan jumlah fisik eksplisit untuk setiap item yang belum memiliki referensi. Kolom kosong berarti belum dihitung, bukan nol.
               </>
             ) : missingOpeningReferences.length > 0 ? (
               <strong>Patokan server tidak lengkap untuk {missingOpeningReferences.map((item) => item.name).join(', ')}. Konfirmasi diblokir.</strong>
@@ -1292,7 +1352,7 @@ export function StockWorkspace({
                         <small style={{ display: 'block', color: '#1e5b48', fontWeight: 700 }}>{sectionNameOf(it.id)}</small>
                       )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
-                      <small style={{ display: 'block', color: '#6b8378' }}>
+                      <small style={{ display: 'block', color: '#476058' }}>
                         Patokan Server: {refVal === null ? 'Belum tersedia' : `${fmtNumber(refVal)} ${it.unit_code}`}
                       </small>
                       <small style={{ display: 'block', color: countState === 'VARIANCE' ? '#b45309' : '#496b5d', fontWeight: 700 }}>
@@ -1303,16 +1363,16 @@ export function StockWorkspace({
                       <button
                         type="button"
                         onClick={() => refVal !== null && markOpeningCount(it.id, String(refVal))}
-                        disabled={isOpeningConfirmed || refVal === null}
-                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                         disabled={isOpeningConfirmed || refVal === null}
+                        style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         Sesuai
                       </button>
                       <button
                         type="button"
                         onClick={() => markOpeningCount(it.id, '0')}
-                        disabled={isOpeningConfirmed || refVal === null}
-                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                         disabled={isOpeningConfirmed || refVal === null}
+                        style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         0
                       </button>
@@ -1321,7 +1381,7 @@ export function StockWorkspace({
                         type="number"
                         min="0"
                         step="any"
-                        disabled={isOpeningConfirmed || refVal === null}
+                         disabled={isOpeningConfirmed || (refVal === null && openingReference?.state !== 'INITIALIZATION_REQUIRED')}
                         value={val}
                         placeholder="Custom"
                         aria-label={`Jumlah fisik stok awal ${it.name}`}
@@ -1391,7 +1451,25 @@ export function StockWorkspace({
             </div>
           )}
 
-          {!isOpeningConfirmed && (
+           {openingReference?.state === 'INITIALIZATION_REQUIRED' && !isOpeningConfirmed && (
+             <div style={{ marginTop: '20px', padding: '12px', border: '1px solid #e0ece6', borderRadius: '10px', background: '#f8faf9' }}>
+               <strong style={{ display: 'block', marginBottom: '8px' }}>Simpan baseline fisik</strong>
+               <label htmlFor="baseline-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Alasan (wajib)</label>
+               <textarea
+                 id="baseline-reason"
+                 value={baselineReason}
+                 onChange={(event) => setBaselineReason(event.target.value)}
+                 maxLength={1000}
+                 placeholder="Contoh: outlet baru, belum ada stok historis"
+                 style={{ width: '100%', minHeight: '72px', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', resize: 'vertical' }}
+               />
+               <button type="button" className="primary-button" onClick={() => void handleRecordPhysicalBaseline()} disabled={baselineSubmitting || !baselineReason.trim() || !isPrimary && !canManage} style={{ marginTop: '10px', width: '100%' }}>
+                 {baselineSubmitting ? 'Menyimpan Baseline...' : 'Simpan Baseline Fisik'}
+               </button>
+             </div>
+           )}
+
+           {!isOpeningConfirmed && (
             <button
               className="primary-button"
               onClick={handleConfirmOpening}
@@ -1431,11 +1509,11 @@ export function StockWorkspace({
                     <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', padding: '10px 14px', background: '#f8faf9', borderRadius: '8px', border: '1px solid #e0ece6' }}>
                       <div>
                         <strong>{it?.name || m.item_id}</strong>
-                        <small style={{ display: 'block', color: '#6b8378' }}>
+                        <small style={{ display: 'block', color: '#476058' }}>
                           {movementCategoryLabel(m.category)} · {new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' }).format(new Date(m.server_occurred_at))} WIB
                         </small>
                         {isCorrection && <small style={{ display: 'block', color: '#b45309', fontWeight: 700 }}>Koreksi untuk {String(m.correction_of_id).slice(0, 8)} · {m.correction_reason}</small>}
-                        {isCorrected && <small style={{ display: 'block', color: '#6b8378', fontWeight: 700 }}>Sudah dikoreksi</small>}
+                        {isCorrected && <small style={{ display: 'block', color: '#476058', fontWeight: 700 }}>Sudah dikoreksi</small>}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <div style={{ fontWeight: 700, fontSize: '15px', color: isInc ? '#1e5b48' : '#b91c1c' }}>
@@ -1516,7 +1594,7 @@ export function StockWorkspace({
                         <small style={{ display: 'block', color: '#1e5b48', fontWeight: 700 }}>{sectionNameOf(it.id)}</small>
                       )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
-                      <small style={{ display: 'block', color: '#6b8378' }}>Sisa Catatan: {sysVal === null ? 'Belum tersedia' : `${fmtNumber(sysVal)} ${it.unit_code}`}</small>
+                      <small style={{ display: 'block', color: '#476058' }}>Sisa Catatan: {sysVal === null ? 'Belum tersedia' : `${fmtNumber(sysVal)} ${it.unit_code}`}</small>
                       <small style={{ display: 'block', color: countState === 'VARIANCE' ? '#b45309' : '#496b5d', fontWeight: 700 }}>
                         Status: {countStateLabel[countState]}
                       </small>
@@ -1526,7 +1604,7 @@ export function StockWorkspace({
                         type="button"
                         onClick={() => sysVal !== null && markClosingCount(it.id, String(sysVal))}
                         disabled={isClosingConfirmed || closingCompleted || sysVal === null}
-                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                        style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         Sesuai
                       </button>
@@ -1534,7 +1612,7 @@ export function StockWorkspace({
                         type="button"
                         onClick={() => markClosingCount(it.id, '0')}
                         disabled={isClosingConfirmed || closingCompleted || sysVal === null}
-                        style={{ padding: '4px 8px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
+                        style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         0
                       </button>
@@ -1647,22 +1725,24 @@ export function StockWorkspace({
               <button
                 type="button"
                 className={`segmented-btn ${mvType === 'Masuk' ? 'active' : ''}`}
+                aria-pressed={mvType === 'Masuk'}
                 onClick={() => { setMvType('Masuk'); setMvCat('PURCHASE'); }}
-                style={{ padding: '8px', borderRadius: '6px', background: mvType === 'Masuk' ? '#1e5b48' : '#eee', color: mvType === 'Masuk' ? '#fff' : '#000' }}
+                style={{ padding: '8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', background: mvType === 'Masuk' ? '#1e5b48' : '#eee', color: mvType === 'Masuk' ? '#fff' : '#000' }}
               >
                 ↑ Masuk
               </button>
               <button
                 type="button"
                 className={`segmented-btn ${mvType === 'Keluar' ? 'active' : ''}`}
+                aria-pressed={mvType === 'Keluar'}
                 onClick={() => { setMvType('Keluar'); setMvCat('USAGE'); }}
-                style={{ padding: '8px', borderRadius: '6px', background: mvType === 'Keluar' ? '#1e5b48' : '#eee', color: mvType === 'Keluar' ? '#fff' : '#000' }}
+                style={{ padding: '8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', background: mvType === 'Keluar' ? '#1e5b48' : '#eee', color: mvType === 'Keluar' ? '#fff' : '#000' }}
               >
                 ↓ Keluar
               </button>
             </div>
 
-            <label htmlFor="movement-item" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>Item</label>
+            <label htmlFor="movement-item" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>Item</label>
             <select
               id="movement-item"
               value={mvItem}
@@ -1674,7 +1754,7 @@ export function StockWorkspace({
               ))}
             </select>
 
-            <label htmlFor="movement-quantity" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>Jumlah</label>
+            <label htmlFor="movement-quantity" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>Jumlah</label>
             <input
               id="movement-quantity"
               type="number"
@@ -1686,7 +1766,7 @@ export function StockWorkspace({
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px', border: '1px solid #cddcd4' }}
             />
 
-            <label htmlFor="movement-category" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#6b8378', marginBottom: '4px' }}>Kategori</label>
+            <label htmlFor="movement-category" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>Kategori</label>
             <select
               id="movement-category"
               value={mvCat}
@@ -1712,37 +1792,6 @@ export function StockWorkspace({
               <button type="button" className="outline-button" onClick={() => setMovementModalOpen(false)}>Batal</button>
               <button type="button" className="primary-button" onClick={handleAddMovement} disabled={loading}>
                 Simpan
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {initializationDialogOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="initialization-dialog-title" style={{ maxWidth: '460px' }}>
-            <div className="modal-head">
-              <h3 id="initialization-dialog-title">Inisialisasi Patokan Stok 0</h3>
-              <button type="button" className="close-button" aria-label="Tutup dialog" onClick={() => setInitializationDialogOpen(false)} disabled={loading}>×</button>
-            </div>
-            <p className="muted" style={{ margin: '12px 0' }}>
-              Tindakan ini membuat referensi 0 untuk semua item aktif. Hanya gunakan saat belum pernah ada stok sebelumnya.
-            </p>
-            {criticalError && <p className="form-error" role="alert">{criticalError}</p>}
-            <label htmlFor="initialization-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Alasan (wajib)</label>
-            <textarea
-              id="initialization-reason"
-              autoFocus
-              maxLength={1000}
-              value={initializationReason}
-              onChange={(event) => setInitializationReason(event.target.value)}
-              placeholder="Contoh: outlet baru, belum ada stok historis"
-              style={{ width: '100%', minHeight: '88px', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', resize: 'vertical' }}
-            />
-            <div className="modal-actions" style={{ marginTop: '16px' }}>
-              <button type="button" className="outline-button" onClick={() => setInitializationDialogOpen(false)} disabled={loading}>Batal</button>
-              <button type="button" className="primary-button" onClick={() => void handleInitializeOpeningReference()} disabled={loading || !initializationReason.trim()}>
-                {loading ? 'Menyimpan...' : 'Inisialisasi Patokan 0'}
               </button>
             </div>
           </div>
@@ -1799,7 +1848,7 @@ export function StockWorkspace({
         <div className="modal-backdrop" role="presentation">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="correction-dialog-title" style={{ maxWidth: '460px' }}>
             <div className="modal-head">
-              <h3 id="correction-dialog-title">Koreksi Movement</h3>
+              <h3 id="correction-dialog-title">Koreksi Perubahan Stok</h3>
               <button type="button" className="close-button" aria-label="Tutup dialog" onClick={() => setCorrectionMovement(null)} disabled={loading}>×</button>
             </div>
             <p className="muted" style={{ margin: '12px 0' }}>

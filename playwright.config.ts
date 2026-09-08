@@ -1,7 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PORT ?? 4173);
-const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+const explicitBaseUrl = process.env.E2E_BASE_URL;
+if (process.env.E2E_MUTATIONS === '1' && !explicitBaseUrl) {
+  throw new Error('Mutating E2E memerlukan E2E_BASE_URL eksplisit ke vercel dev staging; vite preview tidak punya /api.');
+}
+const baseURL = explicitBaseUrl ?? `http://localhost:${PORT}`;
 const e2eClientIp = process.env.E2E_CLIENT_IP;
 
 export default defineConfig({

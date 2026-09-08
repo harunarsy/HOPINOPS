@@ -24,11 +24,21 @@ async function constantTimeEqual(actual: string, expected: string): Promise<bool
   return mismatch === 0;
 }
 
-function jsonResponse(ok: boolean, status: number, extraHeaders: Record<string, string> = {}) {
-  return new Response(JSON.stringify({ ok }), {
+function jsonResponse(ok: boolean, status: number, extra: Record<string, unknown> = {}, extraHeaders: Record<string, string> = {}) {
+  return new Response(JSON.stringify({ ok, ...extra }), {
     status,
     headers: { ...responseHeaders, ...extraHeaders },
   });
+}
+
+function supabaseProjectRef(supabaseUrl: string): string | null {
+  try {
+    const host = new URL(supabaseUrl).hostname;
+    const ref = host.split('.')[0];
+    return /^[a-z0-9]{20}$/.test(ref) ? ref : null;
+  } catch {
+    return null;
+  }
 }
 
 export default {
@@ -64,7 +74,8 @@ export default {
         .select('id', { count: 'exact', head: true })
         .limit(1);
 
-      return error ? jsonResponse(false, 503) : jsonResponse(true, 200);
+      if (error) return jsonResponse(false, 503);
+      return jsonResponse(true, 200, { projectRef: supabaseProjectRef(supabaseUrl) });
     } catch {
       return jsonResponse(false, 503);
     }

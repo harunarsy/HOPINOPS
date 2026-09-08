@@ -96,6 +96,21 @@ describe('E2: conflict queue is never deleted on failed refresh', () => {
     expect(alerts.some((a) => /tetap tersimpan/i.test(a.textContent ?? ''))).toBe(true);
   });
 
+  it('shows a storage error with retry instead of endless loading when IndexedDB fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(idbQueue.recoverSending).mockRejectedValueOnce(new Error('IDB blocked'));
+    renderWorkspace(vi.fn().mockResolvedValue(true));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/penyimpanan perangkat/i);
+    expect(screen.queryByText(/memuat status antrean/i)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /^coba lagi$/i }));
+    await waitFor(() => {
+      expect(screen.queryByText(/penyimpanan perangkat/i)).toBeNull();
+    });
+  });
+
   it('deletes the queue entry only after fresh data is confirmed loaded', async () => {
     const user = userEvent.setup();
     const onRefresh = vi.fn().mockResolvedValue(true);

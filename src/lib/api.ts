@@ -14,6 +14,9 @@ type LocationSample = { latitude: number; longitude: number; accuracy_m: number;
 type LocationFailure = 'DENIED' | 'TIMEOUT' | 'UNAVAILABLE';
 type DraftLine = { item_id: string; counted_qty: number; reason_code?: string | null; notes?: string | null };
 type ReportFinance = { cash_real: number; cash_app: number; qris_mandiri: number; debit_mandiri: number };
+type StockSnapshotLine = { item_id: string; counted_qty: number; reason_code?: string | null; notes?: string | null };
+type PhysicalBaselineLine = { item_id: string; counted_qty: number };
+type PayrollExportReceipt = { export_id: string; filename: string; file_path?: string; checksum: string; label: 'DRAFT' | 'FINALIZED'; idempotent_replay?: boolean };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const EXPORT_TIMEOUT_MS = 60_000;
@@ -73,6 +76,13 @@ async function request<T = any>(path: string, options: RequestOptions = {}): Pro
       throw err;
     }
 
+    if (!json || typeof json !== 'object' || Array.isArray(json)) {
+      const err = new Error('Respons server tidak valid.') as any;
+      err.code = 'INVALID_JSON_RESPONSE';
+      err.status = res.status;
+      throw err;
+    }
+
     if (!res.ok || json.ok === false) {
       const message = json.error?.message || json.error || 'Terjadi kesalahan pada request.';
       const err = new Error(message) as any;
@@ -86,6 +96,12 @@ async function request<T = any>(path: string, options: RequestOptions = {}): Pro
       throw err;
     }
 
+    if (json.ok !== undefined && json.ok !== true) {
+      const err = new Error('Respons server tidak valid.') as any;
+      err.code = 'INVALID_API_RESPONSE';
+      err.status = res.status;
+      throw err;
+    }
     return (json.data ?? json) as T;
   } catch (err: any) {
     if (timedOut) {
@@ -143,7 +159,7 @@ export const api = {
   operatorArchiveItem: (id: string, reason: string) => request('/api/app?action=items.operatorArchive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
 
   // Checklist layout server-owned
-  getChecklistLayout: (area_code: 'BAR' | 'KITCHEN') => request<{ version: number; sections: { id: string; name: string; position: number; active: boolean }[]; placements: { item_id: string; section_id: string; position: number }[] }>(`/api/app?action=checklist.layout&area_code=${area_code}`),
+  getChecklistLayout: (area_code: 'BAR' | 'KITCHEN') => request<{ version: number; pending?: boolean; pending_version?: number | null; effective_next_cycle?: boolean; sections: { id: string; name: string; position: number; active: boolean }[]; placements: { item_id: string; section_id: string; position: number }[] }>(`/api/app?action=checklist.layout&area_code=${area_code}`),
   upsertChecklistSection: (area_code: 'BAR' | 'KITCHEN', name: string, section_id: string | null, idempotency_key: string) =>
     request<{ section: any; idempotent_replay: boolean }>('/api/app?action=checklist.section.upsert', { method: 'POST', body: JSON.stringify({ area_code, name, section_id, idempotency_key }) }),
   moveChecklistItem: (area_code: 'BAR' | 'KITCHEN', item_id: string, section_id: string, position: number, expected_layout_version: number, idempotency_key: string) =>
@@ -198,12 +214,14 @@ export const api = {
 
   // Stock Cycles
   getCycle: (cycle_id: string) => request<any>(`/api/app?action=cycle.get&cycle_id=${cycle_id}`),
+  getCyclePhysicalBaseline: (cycle_id: string) => request<{ cycle_id: string; state: 'AVAILABLE' | 'REQUIRED' | 'PENDING_REVIEW'; lines: StockSnapshotLine[] }>(`/api/app?action=cycle.baseline&cycle_id=${encodeURIComponent(cycle_id)}`),
+  recordCyclePhysicalBaseline: (cycle_id: string, expected_version: number, lines: PhysicalBaselineLine[], reason: string, idempotency_key: string) =>
+    request<{ cycle_id: string; version: number; idempotent_replay: boolean }>('/api/app?action=cycle.baseline.record', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, lines, reason, idempotency_key }) }),
   getStockDrafts: (cycle_id: string) => request<{ opening_draft: { id: string; lines: DraftLine[]; version: number; updated_at: string } | null; closing_draft: { id: string; lines: DraftLine[]; version: number; updated_at: string } | null }>(`/api/app?action=stock.drafts&cycle_id=${cycle_id}`),
-  getOpeningReference: (cycle_id: string) => request<{ state: 'AVAILABLE' | 'INITIALIZATION_REQUIRED'; source_type: 'HANDOVER' | 'CLOSING' | 'INITIALIZATION' | null; source_id: string | null; warning_code: string | null; lines: { item_id: string; reference_qty: number }[] }>(`/api/app?action=opening.reference&cycle_id=${cycle_id}`),
-  initializeOpeningReference: (cycle_id: string, expected_version: number, reason: string) => request<{ initialization_id: string; status: 'APPROVED'; duplicate: boolean }>('/api/app?action=opening.initialize', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, idempotency_key: crypto.randomUUID(), reason }) }),
+  getOpeningReference: (cycle_id: string) => request<{ state: 'AVAILABLE' | 'INITIALIZATION_REQUIRED'; source_type: 'HANDOVER' | 'CLOSING' | 'INITIALIZATION' | null; source_id: string | null; warning_code: string | null; lines: { item_id: string; reference_qty: number | null }[] }>(`/api/app?action=opening.reference&cycle_id=${cycle_id}`),
   saveOpeningDraft: (cycle_id: string, expected_version: number | null, lines: DraftLine[], idempotency_key: string) =>
     request<{ draft_id: string; cycle_id: string; owner_id: string; version: number; line_count: number; updated_at: string; idempotent_replay: boolean }>('/api/app?action=opening.saveDraft', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, lines, idempotency_key }) }),
-  confirmOpening: (cycle_id: string, lines: any[]) => request('/api/app?action=opening.confirm', { method: 'POST', body: JSON.stringify({ cycle_id, lines }) }),
+  confirmOpening: (cycle_id: string, lines: StockSnapshotLine[]) => request('/api/app?action=opening.confirm', { method: 'POST', body: JSON.stringify({ cycle_id, lines }) }),
   createMovement: (movement: { cycle_id: string; item_id: string; direction: 'IN' | 'OUT'; category: string; quantity: number; client_occurred_at: string; idempotency_key: string; expected_version: number; correction_of_id?: string; correction_reason?: string }) =>
     request<{ movement: any & { cycle_version: number } }>('/api/app?action=movement.create', { method: 'POST', body: JSON.stringify(movement) }),
   correctMovement: (movement: { cycle_id: string; expected_version: number; original_movement_id: string; quantity: number; idempotency_key: string; reason: string } & ({ direction: 'IN'; category: 'PURCHASE' | 'RETURN_IN' | 'TRANSFER_IN' } | { direction: 'OUT'; category: 'USAGE' | 'INTERNAL' | 'TRANSFER_OUT' | 'WASTE' })) =>
@@ -211,7 +229,7 @@ export const api = {
   completeHandover: (cycle_id: string) => request<{ handover: any }>('/api/app?action=handover.complete', { method: 'POST', body: JSON.stringify({ cycle_id }) }),
   saveClosingDraft: (cycle_id: string, expected_version: number | null, lines: DraftLine[], idempotency_key: string) =>
     request<{ draft_id: string; cycle_id: string; owner_id: string; version: number; line_count: number; updated_at: string; idempotent_replay: boolean }>('/api/app?action=closing.saveDraft', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, lines, idempotency_key }) }),
-  confirmClosing: (cycle_id: string, lines: any[]) => request('/api/app?action=closing.confirm', { method: 'POST', body: JSON.stringify({ cycle_id, lines }) }),
+  confirmClosing: (cycle_id: string, lines: StockSnapshotLine[]) => request('/api/app?action=closing.confirm', { method: 'POST', body: JSON.stringify({ cycle_id, lines }) }),
 
   // Reports & Bonus & Payroll
   getReport: (work_date: string) => request<{ report: any | null; revision: any | null; finance: any | null; stock_lines: any[]; finance_draft: any | null }>(`/api/app?action=report.get&date=${encodeURIComponent(work_date)}`),
@@ -242,7 +260,15 @@ export const api = {
     request<{ run_id: string; status: string; version: number; payment_reference: string; paid_at: string }>('/api/app?action=payroll.markPaid', { method: 'POST', body: JSON.stringify({ run_id, expected_version, payment_reference, payment_reason }) }),
   voidPayroll: (run_id: string, expected_version: number, void_reason: string) =>
     request<{ run_id: string; status: string; version: number; replacement_run_id: string; replacement_version: number }>('/api/app?action=payroll.void', { method: 'POST', body: JSON.stringify({ run_id, expected_version, void_reason }) }),
-  exportPayrollXlsx: (run_id: string, expected_version: number) => request<{ export_id: string; filename: string; file_path: string; checksum: string; label: 'DRAFT' | 'FINALIZED' }>('/api/app?action=payroll.export.xlsx', { method: 'POST', body: JSON.stringify({ run_id, expected_version }) }),
+  exportPayrollXlsx: (run_id: string, expected_version: number, idempotency_key: string) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotency_key ?? '')) {
+      const err = new Error('Idempotency key export wajib UUID valid dan dibuat sekali per operasi; retry wajib memakai key yang sama.') as any;
+      err.code = 'VALIDATION_FAILED';
+      err.status = 400;
+      return Promise.reject(err);
+    }
+    return request<PayrollExportReceipt>('/api/app?action=payroll.export.xlsx', { method: 'POST', body: JSON.stringify({ run_id, expected_version, idempotency_key }) });
+  },
   downloadPayrollExport: (export_id: string, expected_export_version: number, idempotency_key: string) =>
     request<{ url: string; expires_at: string }>('/api/app?action=payroll.export.download', { method: 'POST', body: JSON.stringify({ export_id, expected_run_version: expected_export_version, idempotency_key }) }).then(r => ({ signed_url: r.url, expires_at: r.expires_at })),
 

@@ -21,6 +21,8 @@ pnpm test:db     # supabase db reset + pgTAP — BUTUH DOCKER berjalan
 
 `pnpm dev` hanya menjalankan UI Vite; endpoint `/api/*` berjalan penuh saat project dijalankan oleh Vercel (production/preview).
 
+Mutating E2E hanya boleh memakai staging disposable (`ibzlxdmnuszcmdzuocwu`) dan memerlukan `E2E_MUTATIONS=1`, `E2E_STAGING_PROJECT_REF` yang dipin di kode, `E2E_STAGING_ALLOWLIST`, serta fixture disposable per run. Alur wajib: provision → test → teardown. `scripts/provision-staging-fixtures.mjs` membuat 2 outlet + 8 profil unik per `E2E_RUN_ID` (desktop/mobile terisolasi) dan menulis manifest ke `/tmp` (jangan ke `test-results/`, dihapus Playwright); `scripts/teardown-staging-fixtures.mjs` menonaktifkan outlet/profil/scope, revoke device, dan menghapus session/rate-limit tanpa menghapus histori. Tanpa teardown, outlet ganda memblokir mutasi katalog (`GLOBAL_ITEM_SCHEMA`). Smoke tidak punya default production dan menarget origin yang sama dengan `E2E_BASE_URL` (vercel dev + `.env.local` staging).
+
 ## Verifikasi staging (2026-09-05)
 
 - Migration `0001`–`0018` diterapkan pada staging Supabase disposable (`hopinops-staging`, `ibzlxdmnuszcmdzuocwu`, Singapore) dan **pgTAP 18/18 lulus**.

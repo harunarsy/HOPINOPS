@@ -271,7 +271,7 @@ export default function App() {
     const assignmentVersion = activeAssignment?.version;
     if (!assignmentId || !Number.isInteger(assignmentVersion) || assignmentVersion <= 0) {
       setShowCheckOutModal(false);
-      setCheckoutRecoveryError('Checkout tercatat, tetapi versi assignment tidak valid. Tetap masuk dan gunakan pemulihan checkout.');
+      setCheckoutRecoveryError('Waktu pulang tercatat, tetapi versi penugasan tidak cocok. Tetap masuk dan gunakan pemulihan check-out.');
       return;
     }
 
@@ -311,7 +311,7 @@ export default function App() {
       return;
     }
     if (!Number.isInteger(attendanceVersion) || (attendanceVersion as number) <= 0) {
-      setEmergencyError('Data atau versi attendance aktif tidak valid. Muat ulang sebelum mencoba kembali.');
+      setEmergencyError('Data atau versi absensi aktif tidak valid. Muat ulang sebelum mencoba kembali.');
       return;
     }
 
@@ -336,6 +336,13 @@ export default function App() {
       setShowEmergencyCheckout(false);
       setEmergencyReason('');
       emergencyIdempotencyKeyRef.current = null;
+      // Block the workspace immediately from local truth: the server recorded
+      // CHECK_OUT + PENDING_TASKS atomically, so no stock may be recorded after
+      // this point even if the background refresh fails.
+      setActiveAssignment((prev: any) => (prev ? { ...prev, status: 'PENDING_TASKS' } : prev));
+      setActiveAttendance((prev: any) => (prev
+        ? { ...prev, status: 'REVIEW_REQUIRED', exception_status: 'PENDING_REVIEW' }
+        : prev));
       await loadBootstrap(true);
     } catch (err: any) {
       const code = typeof err?.code === 'string' ? err.code : '';
@@ -606,6 +613,7 @@ export default function App() {
             </button>
           </div>
         </div>
+        {currentUser && logoutConfirmDialog}
       </div>
     );
   }
@@ -628,6 +636,7 @@ export default function App() {
     return (
       <>
         {logoutErrorPanel}
+        {logoutConfirmDialog}
         <ForcedPinChange onSuccess={() => void loadBootstrap()} onLogout={handleLogout} />
       </>
     );
@@ -639,6 +648,7 @@ export default function App() {
     return (
       <>
         {logoutErrorPanel}
+        {logoutConfirmDialog}
         <StaffOnboarding
           onComplete={() => void loadBootstrap()}
           onLogout={handleLogout}
@@ -657,6 +667,7 @@ export default function App() {
     return (
       <>
         {logoutErrorPanel}
+        {logoutConfirmDialog}
         <ManagementView
           user={currentUser}
           onLogout={handleLogout}
@@ -672,6 +683,7 @@ export default function App() {
     return (
       <>
         {logoutErrorPanel}
+        {logoutConfirmDialog}
         <AssignmentScreen
           name={currentUser.display_name}
           onClaim={handleClaimAssignment}
@@ -704,14 +716,15 @@ export default function App() {
           <p className="eyebrow">CHECKOUT DALAM REVIEW</p>
           <h1>Assignment menunggu penyelesaian manajemen.</h1>
           <p className="muted">{emergencyReviewComplete
-            ? 'Review attendance sudah final. Selesaikan assignment untuk menutup shift dengan bukti server.'
-            : 'Checkout darurat sudah tercatat. Jangan lanjut mencatat stok atau mengambil assignment baru sampai manager menyelesaikan review attendance dan tugas shift ini.'}</p>
+            ? 'Peninjauan absensi sudah final. Selesaikan penugasan untuk menutup shift dengan bukti server.'
+            : 'Check-out darurat sudah tercatat. Jangan lanjut mencatat stok atau mengambil penugasan baru sampai manajer menyelesaikan peninjauan absensi dan tugas shift ini.'}</p>
           {checkoutRecoveryError && <p className="form-error" role="alert">{checkoutRecoveryError}</p>}
           <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', flexWrap: 'wrap' }}>
             {emergencyReviewComplete && <button className="primary-button" type="button" onClick={() => void completeAssignmentAndLogout()} disabled={checkoutCompleting}>{checkoutCompleting ? 'Menyelesaikan...' : 'Selesaikan Assignment'}</button>}
             <button className="outline-button" type="button" onClick={handleLogout} disabled={checkoutCompleting}>Keluar</button>
           </div>
         </div>
+        {logoutConfirmDialog}
       </div>
     );
   }
@@ -721,6 +734,7 @@ export default function App() {
   if ((!isCheckedIn || showCheckInModal) && !showReportsView) {
     return (
       <div className="app-shell">
+        {logoutConfirmDialog}
         <header className="topbar">
           <div className="brand">
             <span><strong>HOPIN</strong><small>ABSENSI GPS</small></span>
@@ -758,6 +772,7 @@ export default function App() {
   if (showCheckOutModal) {
     return (
       <div className="app-shell">
+        {logoutConfirmDialog}
         <header className="topbar">
           <div className="brand">
             <span><strong>HOPIN</strong><small>CHECK-OUT GPS</small></span>
@@ -771,7 +786,7 @@ export default function App() {
                 Kelola
               </button>
             )}
-            <button className="logout-button" type="button" disabled>
+            <button className="logout-button" type="button" onClick={handleLogout} disabled={checkoutCompleting}>
               <span>Keluar</span>
             </button>
           </div>

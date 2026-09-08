@@ -1,11 +1,17 @@
 import { test, expect } from '@playwright/test';
-import { credentials, canRunMutating, BASE_URL } from './fixtures';
+import {
+  BASE_URL,
+  requireMutatingStaging,
+  getProjectOutletId,
+  getOnboardingUsername,
+  getInvestorUsernameForProject,
+} from './fixtures';
 
 /**
  * Authenticated staging API flow tests (cookie-based, server-authoritative).
  *
- * SKIPPED unless E2E_USERNAME/E2E_PASSWORD point at a disposable account on
- * the staging database. Requires a running API (vercel dev or deployed URL)
+ * Requires E2E_MUTATIONS=1, an allowlisted staging URL, and disposable credentials
+ * on the staging database. Requires a running API (vercel dev or deployed URL)
  * because Vercel functions do not exist in plain `vite preview`.
  */
 
@@ -38,11 +44,10 @@ async function login(request: any, username: string, pin: string): Promise<Api> 
 }
 
 test.describe('Authenticated staging API flows', () => {
-  test.skip(!canRunMutating, 'Requires E2E_USERNAME/E2E_PASSWORD staging credentials');
-
-  test('login, bootstrap, claim, opening reference/initialize/confirm, movement, closing', async ({ request }) => {
+  test('login, bootstrap, claim, physical baseline, opening, movement', async ({ request }, testInfo) => {
     test.setTimeout(180_000);
-    const api = await login(request, credentials.username, credentials.pin);
+    const selected = requireMutatingStaging(testInfo.project.name);
+    const api = await login(request, selected.username, selected.pin);
 
     const boot = await api.get('/api/app?action=bootstrap');
     expect(boot.status).toBe(200);
@@ -50,52 +55,49 @@ test.describe('Authenticated staging API flows', () => {
     const user = boot.body?.data?.user;
     expect(user?.id).toBeTruthy();
 
-    // Role-based bootstrap shape
+    // Outlet terisolasi per project via manifest; fallback ke outlet utama bila tanpa manifest.
     const outletId = boot.body?.data?.outlet?.id;
-    expect(outletId).toBe('11111111-1111-1111-1111-111111111111');
+    const expectedOutletId = getProjectOutletId(testInfo.project.name) ?? '11111111-1111-1111-1111-111111111111';
+    expect(outletId).toBe(expectedOutletId);
 
-    // Investor must never see operational data in bootstrap
-    // (operator account is the default actor here).
     const workDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
-    // Claim PRIMARY BAR SIANG (idempotent-ish; PRIMARY_TAKEN yields 409 with helper offer)
+    // Claim PRIMARY BAR SIANG pada outlet fresh — wajib 200, bukan 409.
     const claim = await api.post('/api/app?action=assignment.claim', {
       work_date: workDate,
       shift_code: 'SIANG',
       area_code: 'BAR',
       duty_role: 'PRIMARY',
     });
-    expect([200, 409]).toContain(claim.status);
-    if (claim.status === 409) {
-      expect(claim.body?.error?.code).toBe('PRIMARY_TAKEN');
-      return; // another e2e operator already claimed; remaining assertions covered by their own run
-    }
+    expect(claim.status, `PRIMARY claim gagal pada outlet fresh: ${JSON.stringify(claim.body)}`).toBe(200);
 
     const assignment = claim.body?.data?.assignment;
     const cycleId = assignment?.cycle_id;
     expect(cycleId).toBeTruthy();
 
-    // Opening reference resolution (server-owned)
-    const ref = await api.get(`/api/app?action=opening.reference&cycle_id=${cycleId}`);
+    // Outlet fresh wajib INITIALIZATION_REQUIRED (tanpa histori handover/closing).
+    let ref = await api.get(`/api/app?action=opening.reference&cycle_id=${cycleId}`);
     expect(ref.status).toBe(200);
-    expect(['AVAILABLE', 'INITIALIZATION_REQUIRED']).toContain(ref.body?.data?.state);
+    expect(ref.body?.data?.state).toBe('INITIALIZATION_REQUIRED');
+    expect((ref.body?.data?.missing_item_ids ?? []).length).toBeGreaterThan(0);
 
-    if (ref.body?.data?.state === 'INITIALIZATION_REQUIRED') {
-      // B06: PRIMARY on its own cycle MAY initialize the first baseline.
-      // 200 = created; 409 = known state race (already initialized/opened/version moved). 403/500 are failures.
-      const init = await api.post('/api/app?action=opening.initialize', {
-        cycle_id: cycleId,
-        expected_version: assignment?.work_cycles?.version ?? 1,
-        idempotency_key: crypto.randomUUID(),
-        reason: 'e2e attempt',
-      });
-      expect([200, 409]).toContain(init.status);
-      if (init.status === 200) {
-        expect(init.body?.data?.status).toBe('APPROVED');
-      } else {
-        expect(['INITIALIZATION_EXISTS', 'OPENING_EXISTS', 'VERSION_CONFLICT']).toContain(init.body?.error?.code);
-      }
-    }
+    const cycleBefore = await api.get(`/api/app?action=cycle.get&cycle_id=${cycleId}`);
+    expect(cycleBefore.status).toBe(200);
+    const cycleVersion = cycleBefore.body?.data?.cycle?.version ?? claim.body?.data?.cycle?.version ?? 1;
+    expect(cycleVersion).toBeGreaterThan(0);
+
+    const baseline = await api.post('/api/app?action=cycle.baseline.record', {
+      cycle_id: cycleId,
+      expected_version: cycleVersion,
+      lines: (ref.body?.data?.lines ?? []).map((line: any) => ({ item_id: line.item_id, counted_qty: 1 })),
+      reason: 'e2e physical count',
+      idempotency_key: crypto.randomUUID(),
+    });
+    expect(baseline.status, `Baseline fisik gagal: ${JSON.stringify(baseline.body)}`).toBe(200);
+
+    ref = await api.get(`/api/app?action=opening.reference&cycle_id=${cycleId}`);
+    expect(ref.status).toBe(200);
+    expect(ref.body?.data?.state).toBe('AVAILABLE');
 
     // Confirm opening (counted == reference; blank never allowed)
     const lines = (ref.body?.data?.lines ?? []).map((l: any) => ({
@@ -104,53 +106,38 @@ test.describe('Authenticated staging API flows', () => {
       reason_code: null,
       notes: null,
     }));
-    if (lines.length) {
-      const opening = await api.post('/api/app?action=opening.confirm', {
-        cycle_id: cycleId,
-        lines,
-      });
-      expect([200, 409]).toContain(opening.status);
-      if (opening.status === 200) {
-        // Movement with idempotent key
-        const key = crypto.randomUUID();
-        const mv = await api.post('/api/app?action=movement.create', {
-          cycle_id: cycleId,
-          item_id: lines[0].item_id,
-          direction: 'OUT',
-          category: 'USAGE',
-          quantity: 0.5,
-          client_occurred_at: new Date().toISOString(),
-          idempotency_key: key,
-          expected_version: opening.body?.data?.opening ? undefined : undefined,
-        });
-        // expected_version required: fetch cycle for latest version if needed
-        if (mv.status === 400) {
-          const cycle = await api.get(`/api/app?action=cycle.get&cycle_id=${cycleId}`);
-          const version = cycle.body?.data?.cycle?.version;
-          const retry = await api.post('/api/app?action=movement.create', {
-            cycle_id: cycleId,
-            item_id: lines[0].item_id,
-            direction: 'OUT',
-            category: 'USAGE',
-            quantity: 0.5,
-            client_occurred_at: new Date().toISOString(),
-            idempotency_key: key,
-            expected_version: version,
-          });
-          expect([200, 409]).toContain(retry.status);
-        } else {
-          expect([200, 409]).toContain(mv.status);
-        }
-      }
-    }
+    expect(lines.length, 'Staging cycle must expose checklist lines for the opening flow.').toBeGreaterThan(0);
+    const opening = await api.post('/api/app?action=opening.confirm', {
+      cycle_id: cycleId,
+      lines,
+    });
+    expect(opening.status, `Opening confirm gagal: ${JSON.stringify(opening.body)}`).toBe(200);
+
+    const cycle = await api.get(`/api/app?action=cycle.get&cycle_id=${cycleId}`);
+    expect(cycle.status).toBe(200);
+    const version = cycle.body?.data?.cycle?.version;
+    expect(version).toBeGreaterThan(0);
+
+    const mv = await api.post('/api/app?action=movement.create', {
+      cycle_id: cycleId,
+      item_id: lines[0].item_id,
+      direction: 'OUT',
+      category: 'USAGE',
+      quantity: 0.5,
+      client_occurred_at: new Date().toISOString(),
+      idempotency_key: crypto.randomUUID(),
+      expected_version: version,
+    });
+    expect(mv.status, `Movement gagal: ${JSON.stringify(mv.body)}`).toBe(200);
 
     // Logout clears session
     const out = await api.post('/api/auth?action=logout');
-    expect([200, 400]).toContain(out.status);
+    expect(out.status).toBe(200);
   });
 
-  test('investor cannot access operational mutations', async ({ request }) => {
-    const api = await login(request, 'e2e-investor', credentials.pin);
+  test('investor cannot access operational mutations', async ({ request }, testInfo) => {
+    const selected = requireMutatingStaging(testInfo.project.name);
+    const api = await login(request, getInvestorUsernameForProject(testInfo.project.name), selected.pin);
     const claim = await api.post('/api/app?action=assignment.claim', {
       work_date: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()),
       shift_code: 'SIANG',
@@ -161,18 +148,21 @@ test.describe('Authenticated staging API flows', () => {
     const items = await api.get('/api/app?action=items.list');
     expect([403, 404]).toContain(items.status);
 
-    // Investor cannot initialize opening reference
-    const initDenied = await api.post('/api/app?action=opening.initialize', {
+    // Investor cannot record a physical baseline
+    const baselineDenied = await api.post('/api/app?action=cycle.baseline.record', {
       cycle_id: '00000000-0000-0000-0000-000000000000',
       expected_version: 1,
+      lines: [{ item_id: 'missing', counted_qty: 1 }],
       idempotency_key: crypto.randomUUID(),
       reason: 'investor attempt',
     });
-    expect(initDenied.status).toBe(403);
+    expect(baselineDenied.status).toBe(403);
   });
 
-  test('server-authoritative logout revokes session and subsequent requests fail with 401', async ({ request }) => {
-    const api = await login(request, credentials.username, credentials.pin);
+  test('server-authoritative logout revokes session and subsequent requests fail with 401', async ({ request, playwright }, testInfo) => {
+    const selected = requireMutatingStaging(testInfo.project.name);
+    const api = await login(request, selected.username, selected.pin);
+    const oldState = await request.storageState();
 
     // Verify session is active
     const bootBefore = await api.get('/api/app?action=bootstrap');
@@ -188,13 +178,20 @@ test.describe('Authenticated staging API flows', () => {
     expect(bootAfter.status).toBe(401);
     expect(bootAfter.body?.error?.code).toBe('AUTH_REQUIRED');
 
+    const fresh = await playwright.request.newContext({ baseURL: BASE_URL, storageState: oldState });
+    const oldCookieBoot = await fresh.get(`${BASE_URL}/api/app?action=bootstrap`);
+    expect(oldCookieBoot.status()).toBe(401);
+    await fresh.dispose();
+
     // Repeated logout must be safe and idempotent
     const outRepeat = await api.post('/api/auth?action=logout');
     expect(outRepeat.status).toBe(200);
   });
 
-  test('enforces B04 once-only onboarding and rejects invalid payload', async ({ request }) => {
-    const api = await login(request, 'e2e-operator2', credentials.pin);
+  test('enforces B04 once-only onboarding and rejects invalid payload', async ({ request }, testInfo) => {
+    const selected = requireMutatingStaging(testInfo.project.name);
+    const onboardingUsername = getOnboardingUsername(testInfo.project.name) ?? process.env.E2E_ONBOARDING_USERNAME ?? 'e2e-operator2';
+    const api = await login(request, onboardingUsername, selected.pin);
 
     // 1. Invalid payload rejected with 400
     const invalidPayload = await api.post('/api/app?action=onboarding.complete', { version: -5 });
