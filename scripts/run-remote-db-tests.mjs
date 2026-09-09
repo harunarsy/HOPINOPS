@@ -67,4 +67,7 @@ for (const file of [
   run('psql', ['-X', '-v', 'ON_ERROR_STOP=1', databaseUrl, '-f', file]);
 }
 
+console.log('Menjalankan regression konkurensi dengan dua koneksi database...');
+run('sh', ['scripts/test-remote-db-concurrency.sh']);
+
 console.log('Database test remote selesai tanpa Docker.');
