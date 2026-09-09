@@ -1083,6 +1083,25 @@ export default {
         return successResponse(data, data.version);
       }
 
+      if (action === 'roster.cancel' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh membatalkan roster.', 403);
+        const body = await readJsonObject(request, ['id', 'expected_version', 'reason']);
+        if (!body || !isUuid(body.id) || !isPositiveInteger(body.expected_version) || !isNonEmptyString(body.reason, 500)) {
+          return invalidPayload('Roster ID, expected_version, dan alasan pembatalan wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_cancel_roster', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_entry_id: body.id,
+          p_expected_version: body.expected_version,
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.id) || data.outlet_id !== outletId
+          || data.status !== 'CANCELLED' || data.version !== body.expected_version + 1) return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
       if (action === 'swap.request' && request.method === 'POST') {
         const body = await readJsonObject(request, ['roster_entry_id', 'offered_to', 'expected_version']);
         if (!body || !isUuid(body.roster_entry_id) || !isUuid(body.offered_to)

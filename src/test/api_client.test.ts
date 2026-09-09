@@ -137,6 +137,27 @@ describe('API Client Network Resilience (src/lib/api.ts)', () => {
     expect((global.fetch as any).mock.calls[0][0]).toBe('/api/app?action=roster.list');
   });
 
+  it('sends a roster cancellation with its optimistic version and reason', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ ok: true, data: {
+        id: '11111111-1111-4111-8111-111111111111', version: 2, status: 'CANCELLED',
+      } }),
+    } as any);
+
+    await api.cancelRoster('11111111-1111-4111-8111-111111111111', 1, 'Salah input jadwal.');
+
+    expect((global.fetch as any).mock.calls[0][0]).toBe('/api/app?action=roster.cancel');
+    const [, options] = (global.fetch as any).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      id: '11111111-1111-4111-8111-111111111111',
+      expected_version: 1,
+      reason: 'Salah input jadwal.',
+    });
+  });
+
   it('omits invalid overtime dates rather than sending a server-rejected filter', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

@@ -169,6 +169,9 @@ const [rosterFilterError, setRosterFilterError] = useState('');
   const [rosterArea, setRosterArea] = useState<'' | 'BAR' | 'KITCHEN'>('');
   const [rosterPayTreatment, setRosterPayTreatment] = useState<'BASE' | 'EXTRA' | 'MAKEUP'>('BASE');
   const [rosterReason, setRosterReason] = useState('');
+  const [rosterEdit, setRosterEdit] = useState<any | null>(null);
+  const [rosterCancelTarget, setRosterCancelTarget] = useState<any | null>(null);
+  const [rosterCancelReason, setRosterCancelReason] = useState('');
   const [attendanceExceptions, setAttendanceExceptions] = useState<any[]>([]);
   const [overtime, setOvertime] = useState<any[]>([]);
   const [reviewFromDraft, setReviewFromDraft] = useState(defaultReviewFrom);
@@ -746,6 +749,50 @@ const [rosterFilterError, setRosterFilterError] = useState('');
     }
   };
 
+  const handleUpdateRoster = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!rosterEdit) return;
+    if (!rosterEdit.profile_id) return showError('Pilih petugas untuk jadwal.');
+    const isTuesday = new Date(`${rosterEdit.work_date}T00:00:00Z`).getUTCDay() === 2;
+    if (isTuesday && !rosterEdit.override_reason?.trim()) return showError('Alasan wajib untuk roster hari Selasa.');
+    setActionLoading('roster-edit');
+    try {
+      await api.saveRoster({
+        id: rosterEdit.id,
+        expected_version: rosterEdit.version,
+        work_date: rosterEdit.work_date,
+        shift_code: rosterEdit.shift_code,
+        profile_id: rosterEdit.profile_id,
+        expected_area: rosterEdit.expected_area || null,
+        pay_treatment: rosterEdit.pay_treatment,
+        override_reason: rosterEdit.override_reason?.trim() || null,
+      });
+      setRosterEdit(null);
+      showToast('Jadwal berhasil diubah.');
+      await loadData(true);
+    } catch (err: any) {
+      showError(err.message || 'Gagal mengubah jadwal.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleCancelRoster = async () => {
+    if (!rosterCancelTarget || !rosterCancelReason.trim()) return showError('Alasan pembatalan wajib diisi.');
+    setActionLoading('roster-cancel');
+    try {
+      await api.cancelRoster(rosterCancelTarget.id, rosterCancelTarget.version, rosterCancelReason.trim());
+      setRosterCancelTarget(null);
+      setRosterCancelReason('');
+      showToast('Jadwal dibatalkan dan tetap tersimpan di audit.');
+      await loadData(true);
+    } catch (err: any) {
+      showError(err.message || 'Gagal membatalkan jadwal.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   const handleAttendanceReview = async () => {
     if (!attendanceReview || !reviewNote.trim()) return showError('Catatan keputusan wajib diisi.');
     setActionLoading('attendance-review');
@@ -1079,7 +1126,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 <div className="table-responsive" style={{ marginTop: '16px' }}>
                   <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
-                      <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Status</th>
+                      <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th>
                     </tr></thead>
                     <tbody>{roster.map((entry) => (
                       <tr key={entry.id} style={{ borderBottom: '1px solid #eef3f0' }}>
@@ -1089,6 +1136,14 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                         <td style={{ padding: '8px' }}>{entry.expected_area ? taskLabel(entry.expected_area) : 'Fleksibel'}</td>
                         <td style={{ padding: '8px' }}>{taskLabel(entry.pay_treatment)}</td>
                         <td style={{ padding: '8px' }}><span className={`tag ${entry.status === 'COMPLETED' ? 'good' : 'neutral'}`}>{taskLabel(entry.status)}</span></td>
+                        <td style={{ padding: '8px' }}>
+                          {entry.status === 'SCHEDULED' && (user.role === 'OWNER' || user.role === 'SUPERVISOR') ? (
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              <button type="button" className="outline-button" onClick={() => setRosterEdit({ ...entry, expected_area: entry.expected_area || '', override_reason: entry.override_reason || '' })} style={{ padding: '5px 8px', fontSize: '11px' }}>Ubah</button>
+                              <button type="button" className="outline-button" onClick={() => { setRosterCancelTarget(entry); setRosterCancelReason(''); }} style={{ padding: '5px 8px', fontSize: '11px', color: '#b91c1c', borderColor: '#fecaca' }}>Batalkan</button>
+                            </div>
+                          ) : <span className="muted">Terkunci</span>}
+                        </td>
                       </tr>
                     ))}</tbody>
                   </table>
@@ -1751,6 +1806,28 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             <textarea id="management-stock-reason" value={stockReason} onChange={(event) => setStockReason(event.target.value)} maxLength={1000} rows={3} placeholder="Catat hasil hitung fisik atau dasar koreksi." style={{ ...inputStyle, resize: 'vertical' }} />
             {stockFormError && <p role="alert" style={{ color: '#991b1b', fontSize: '12px', margin: '10px 0 0' }}>{stockFormError}</p>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap', marginTop: '16px' }}><button type="button" className="outline-button" onClick={() => setStockTarget(null)} disabled={actionLoading === 'stock-baseline'}>Batal</button><button type="button" className="primary-button" onClick={() => void submitStockForm()} disabled={actionLoading === 'stock-baseline'}>{actionLoading === 'stock-baseline' ? 'Menyimpan...' : stockTarget.reference_state === 'AVAILABLE' ? 'Simpan koreksi stok patokan' : 'Tetapkan stok patokan'}</button></div>
+          </Dialog>
+        )}
+
+        {rosterEdit && (
+          <Dialog titleId="edit-roster-title" title="Ubah Jadwal" onClose={() => { if (actionLoading !== 'roster-edit') setRosterEdit(null); }}>
+            <form onSubmit={handleUpdateRoster} style={{ display: 'grid', gap: '12px' }}>
+              <label style={labelStyle}>Tanggal<input required type="date" value={rosterEdit.work_date} onChange={(event) => setRosterEdit({ ...rosterEdit, work_date: event.target.value })} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+              <label style={labelStyle}>Petugas<select required value={rosterEdit.profile_id} onChange={(event) => setRosterEdit({ ...rosterEdit, profile_id: event.target.value })} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Pilih petugas</option>{usersList.filter((entry) => entry.role !== 'INVESTOR').map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name} · {taskLabel(entry.role)}</option>)}</select></label>
+              <label style={labelStyle}>Shift<select value={rosterEdit.shift_code} onChange={(event) => setRosterEdit({ ...rosterEdit, shift_code: event.target.value })} style={{ ...inputStyle, marginTop: '4px' }}><option value="SIANG">Shift siang</option><option value="MALAM">Shift malam</option><option value="FULL">Shift penuh</option></select></label>
+              <label style={labelStyle}>Area yang diharapkan<select value={rosterEdit.expected_area} onChange={(event) => setRosterEdit({ ...rosterEdit, expected_area: event.target.value })} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Fleksibel</option><option value="BAR">Area bar</option><option value="KITCHEN">Area dapur</option></select></label>
+              <label style={labelStyle}>Perlakuan upah<select value={rosterEdit.pay_treatment} onChange={(event) => setRosterEdit({ ...rosterEdit, pay_treatment: event.target.value })} style={{ ...inputStyle, marginTop: '4px' }}><option value="BASE">Jadwal reguler</option><option value="EXTRA">Hari kerja tambahan</option><option value="MAKEUP">Pengganti hari kerja</option></select></label>
+              <label style={labelStyle}>Alasan khusus <span className="muted">(wajib untuk hari Selasa)</span><textarea value={rosterEdit.override_reason} onChange={(event) => setRosterEdit({ ...rosterEdit, override_reason: event.target.value })} rows={3} maxLength={500} style={{ ...inputStyle, marginTop: '4px', resize: 'vertical' }} /></label>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}><button type="button" className="outline-button" onClick={() => setRosterEdit(null)} disabled={actionLoading === 'roster-edit'}>Batal</button><button type="submit" className="primary-button" disabled={actionLoading === 'roster-edit'}>{actionLoading === 'roster-edit' ? 'Menyimpan...' : 'Simpan Perubahan'}</button></div>
+            </form>
+          </Dialog>
+        )}
+
+        {rosterCancelTarget && (
+          <Dialog titleId="cancel-roster-title" title="Batalkan Jadwal?" onClose={() => { if (actionLoading !== 'roster-cancel') { setRosterCancelTarget(null); setRosterCancelReason(''); } }}>
+            <p className="muted" style={{ fontSize: '13px', margin: '0 0 16px' }}><strong>{rosterCancelTarget.profiles?.display_name ?? 'Petugas'}</strong> pada {rosterCancelTarget.work_date} akan dibatalkan. Jadwal tidak dihapus permanen, statusnya menjadi Dibatalkan dan tetap tersimpan di audit.</p>
+            <label style={labelStyle}>Alasan pembatalan<textarea autoFocus value={rosterCancelReason} onChange={(event) => setRosterCancelReason(event.target.value)} rows={3} maxLength={500} placeholder="Jelaskan alasan pembatalan jadwal." style={{ ...inputStyle, marginTop: '4px', resize: 'vertical' }} /></label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}><button type="button" className="outline-button" onClick={() => { setRosterCancelTarget(null); setRosterCancelReason(''); }} disabled={actionLoading === 'roster-cancel'}>Kembali</button><button type="button" className="primary-button" onClick={handleCancelRoster} disabled={actionLoading === 'roster-cancel' || !rosterCancelReason.trim()} style={{ background: '#b91c1c' }}>{actionLoading === 'roster-cancel' ? 'Membatalkan...' : 'Batalkan Jadwal'}</button></div>
           </Dialog>
         )}
 

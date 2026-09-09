@@ -14,3 +14,9 @@ backups/
 
 test-results/
 playwright-report/
+
+# Workspace-only sibling material outside the application repository
+/.pnpm-store/
+/output/
+/tmp/
+/webapp-fallback/

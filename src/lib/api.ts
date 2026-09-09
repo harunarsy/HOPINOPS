@@ -187,6 +187,8 @@ export const api = {
   },
   saveRoster: (entry: { work_date: string; shift_code: 'SIANG' | 'MALAM' | 'FULL'; profile_id: string; expected_area?: 'BAR' | 'KITCHEN' | null; pay_treatment?: 'BASE' | 'EXTRA' | 'MAKEUP'; override_reason?: string | null } & ({ id?: null; expected_version?: null } | { id: string; expected_version: number })) =>
     request<{ id: string; version: number }>('/api/app?action=roster.save', { method: 'POST', body: JSON.stringify(entry) }),
+  cancelRoster: (id: string, expected_version: number, reason: string) =>
+    request<{ id: string; version: number; status: 'CANCELLED' }>('/api/app?action=roster.cancel', { method: 'POST', body: JSON.stringify({ id, expected_version, reason }) }),
   requestSwap: (roster_entry_id: string, offered_to: string, expected_version: number) => request('/api/app?action=swap.request', { method: 'POST', body: JSON.stringify({ roster_entry_id, offered_to, expected_version }) }),
   respondSwap: (swap_id: string, accept: boolean, expected_version: number) => request('/api/app?action=swap.respond', { method: 'POST', body: JSON.stringify({ swap_id, accept, expected_version }) }),
   cancelSwap: (swap_id: string, expected_version: number) =>
