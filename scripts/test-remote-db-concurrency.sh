@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
+printf '%s\n' 'Pengujian mutasi database dinonaktifkan pada workflow production.' >&2
+exit 1
 
 if [ "${DB_TEST_DISPOSABLE:-}" != "1" ]; then
   printf '%s\n' 'Refusing concurrency test without DB_TEST_DISPOSABLE=1.' >&2

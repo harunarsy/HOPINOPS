@@ -1,4 +1,4 @@
-// Logical teardown for one disposable E2E run on pinned staging only.
+import './mutating-tests-disabled.mjs';
 // Ownership is fully verified before the first write. History is preserved.
 import { createClient } from '@supabase/supabase-js';
 import { webcrypto } from 'node:crypto';

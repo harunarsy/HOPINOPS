@@ -17,36 +17,31 @@ pnpm dev:full    # UI + /api lewat Vercel Dev, memakai hosted Supabase
 pnpm lint        # tsc --noEmit
 pnpm test        # vitest
 pnpm build       # vite build
-pnpm test:e2e    # lifecycle staging disposable: provision → Playwright → teardown
-pnpm test:db     # pgTAP + SQL regression pada hosted DB test disposable
-pnpm test:db:fresh # push migration + seluruh DB test pada hosted DB test disposable
+pnpm test:smoke  # smoke UI read-only desktop/mobile, tanpa login
+pnpm test:e2e    # alias smoke read-only
 ```
 
 `pnpm dev` hanya menjalankan UI Vite. Gunakan `pnpm dev:full` untuk menjalankan endpoint `/api/*` secara lokal melalui Vercel Dev. Keduanya tidak membutuhkan Docker; backend data tetap memakai hosted Supabase.
 
-### Database test tanpa Docker
+### Satu database production (9 September 2026)
 
-Database test wajib memakai project Supabase terpisah yang disposable. Production `naanarmoktmsumkxmjvj` dan staging aplikasi `ibzlxdmnuszcmdzuocwu` ditolak oleh runner, termasuk bila project ref disamarkan lewat connection string.
+Local full-stack dan Vercel `hopinops` menggunakan Supabase production `naanarmoktmsumkxmjvj`. Perubahan data dari aplikasi lokal juga mengubah data production. `.env.local` memakai kredensial server-only project tersebut, origin localhost, serta secret readiness/cron khusus lokal; file ini tidak boleh di-commit.
 
-Set environment berikut hanya pada shell atau secret manager, jangan commit nilainya:
+Untuk smoke full-stack production tanpa login atau mutasi:
 
 ```bash
-DB_TEST_PROJECT_REF=<project-test-khusus>
-DB_TEST_DATABASE_URL=<postgres-connection-string-project-test>
-DB_TEST_DISPOSABLE=1
+E2E_BASE_URL=https://hopinops.vercel.app pnpm test:smoke
 ```
 
-`pnpm test:db` menjalankan pgTAP dan regression SQL transactional. `pnpm test:db:fresh` terlebih dahulu mendorong seluruh migration yang belum ada. Laptop hanya membutuhkan `psql` dan koneksi internet, bukan Docker atau PostgreSQL server lokal. CI database dapat diaktifkan dengan repository variable `DB_TEST_ENABLED=1`, variable `DB_TEST_PROJECT_REF`, dan secret `DB_TEST_DATABASE_URL` setelah project test khusus dibuat.
+Lint, unit test, build, dan smoke read-only tetap tersedia. Job CI database dihapus. Runner database, concurrency, provisioning/teardown staging, dan E2E mutating dinonaktifkan; environment opt-in lama tidak mengaktifkannya kembali. SQL test dan source E2E lama disimpan sebagai referensi dan tidak boleh dijalankan langsung pada production.
 
-### E2E mutating staging
+### Migration dan validasi operasional
 
-Mutating E2E tidak pernah boleh menarget production atau origin remote. Browser wajib menuju root `http://127.0.0.1:<port>` atau `http://localhost:<port>` dari `vercel dev` yang dikonfigurasi dengan environment staging `ibzlxdmnuszcmdzuocwu`; Vite preview tidak menyediakan endpoint `/api/*`.
+Migration SQL yang dibutuhkan harus ditinjau dan diterapkan ke production sebelum aplikasi yang bergantung padanya di-deploy. Hindari perubahan schema yang langsung memutus aplikasi versi lama. Jangan memakai database reset, seed test, atau test SQL mutating sebagai bagian deployment.
 
-1. CLI `vercel` sudah menjadi dev dependency. Runner memakai `vercel dev --local`, jadi tidak menarik environment atau memilih project Vercel remote.
-2. Set hanya secret server-side staging yang diperlukan (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, dan `E2E_FIXTURE_PIN`), serta `E2E_MUTATIONS=1` dan `E2E_STAGING_PROJECT_REF=ibzlxdmnuszcmdzuocwu`. Runner memverifikasi host Supabase tepat ke staging sebelum provisioning.
-3. Jalankan `pnpm test:e2e`. Runner menyalakan `vercel dev` hanya di `127.0.0.1`, menunggu `/api/health`, membuat run ID acak dan fixture disposable, menjalankan Playwright, lalu selalu teardown serta menghentikan server. `E2E_RUN_ID`, `E2E_PORT`, dan `E2E_BASE_URL` hanya untuk investigasi lokal.
+Smoke authenticated untuk mengubah atau membatalkan roster memerlukan akun dan roster test yang telah disetujui. Smoke otomatis default tidak login, tidak mengirim PIN, dan tidak membuat fixture.
 
-`E2E_FIXTURE_MANIFEST` dibuat di direktori temporary dengan permission owner-only. Provisioner menolak run ID, outlet, profile, atau manifest yang sudah ada. Sebelum satu write pun, teardown memastikan dua outlet, delapan profile, username, dan scope aktif benar-benar milik run disposable tersebut. Bila teardown gagal, manifest dipertahankan dan runner gagal agar cleanup dapat dilakukan dengan aman. Histori audit/cycle/attendance/stock tidak dihapus.
+Catatan staging di bawah adalah hasil historis sebelum konsolidasi, bukan petunjuk menjalankan test saat ini.
 
 ## Verifikasi staging (2026-09-05)
 

@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:db": "node scripts/run-remote-db-tests.mjs",
     "test:db:fresh": "node scripts/run-remote-db-tests.mjs --migrate",
-    "test:e2e": "node scripts/run-staging-e2e.mjs",
+    "test:e2e": "playwright test",
+    "test:smoke": "playwright test",
     "test:e2e:playwright": "playwright test",
     "test:watch": "vitest",
     "provision:user": "node scripts/provision-user.mjs"

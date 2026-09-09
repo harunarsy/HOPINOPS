@@ -1,4 +1,4 @@
-// Provision disposable, per-run E2E fixtures on the pinned staging project only.
+import './mutating-tests-disabled.mjs';
 // This script never reuses or repairs an existing run. Collision means abort.
 import { createClient } from '@supabase/supabase-js';
 import { randomBytes, webcrypto } from 'node:crypto';

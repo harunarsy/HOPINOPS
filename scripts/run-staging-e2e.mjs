@@ -1,4 +1,4 @@
-// Run disposable staging E2E with local Vercel API routes and guaranteed teardown.
+import './mutating-tests-disabled.mjs';
 // The runner never targets a remote browser origin and never deploys.
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

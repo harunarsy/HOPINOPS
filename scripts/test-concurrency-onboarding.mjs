@@ -1,6 +1,7 @@
 // scripts/test-concurrency-onboarding.mjs
 // Parallel connection concurrency test for rpc_complete_onboarding (B04).
 // Exercises two independent Supabase client connections issuing simultaneous completion requests.
+import './mutating-tests-disabled.mjs';
 import { createClient } from '@supabase/supabase-js';
 
 const url = process.env.SUPABASE_URL;

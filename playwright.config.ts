@@ -2,14 +2,15 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PORT ?? 4173);
 const explicitBaseUrl = process.env.E2E_BASE_URL;
-if (process.env.E2E_MUTATIONS === '1' && !explicitBaseUrl) {
-  throw new Error('Mutating E2E memerlukan E2E_BASE_URL eksplisit ke vercel dev staging; vite preview tidak punya /api.');
+if (process.env.E2E_MUTATIONS === '1') {
+  throw new Error('Mutating E2E dinonaktifkan: aplikasi menggunakan satu database production.');
 }
 const baseURL = explicitBaseUrl ?? `http://localhost:${PORT}`;
 const e2eClientIp = process.env.E2E_CLIENT_IP;
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testMatch: 'readonly.spec.ts',
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

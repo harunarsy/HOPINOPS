@@ -1,3 +1,4 @@
+import './mutating-tests-disabled.mjs';
 import { spawnSync } from 'node:child_process';
 
 const PRODUCTION_REF = 'naanarmoktmsumkxmjvj';
