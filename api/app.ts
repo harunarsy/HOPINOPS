@@ -1017,14 +1017,32 @@ export default {
         if (!isIsoMonth(month)) return errorResponse('VALIDATION_FAILED', 'month wajib berformat YYYY-MM.', 400);
         let query = db
           .from('roster_entries')
-          .select('*, profiles(username, display_name)')
+          .select('*')
           .eq('outlet_id', outletId)
           .gte('work_date', `${month}-01`)
           .lt('work_date', `${nextMonth(month)}-01`);
         if (user.role === 'OPERATOR') query = query.eq('profile_id', user.id);
-        const { data, error } = await query.order('work_date', { ascending: true });
-        if (error) throw error;
-        return successResponse({ roster: data ?? [] });
+        const { data: rosterEntries, error: rosterError } = await query.order('work_date', { ascending: true });
+        if (rosterError) throw rosterError;
+
+        const profileIds = [...new Set((rosterEntries ?? []).map((entry) => entry.profile_id).filter(isUuid))];
+        const profilesById = new Map<string, { username: string | null; display_name: string | null }>();
+        if (profileIds.length > 0) {
+          const { data: profiles, error: profilesError } = await db
+            .from('profiles')
+            .select('id, username, display_name')
+            .in('id', profileIds);
+          if (profilesError) throw profilesError;
+          for (const profile of profiles ?? []) {
+            profilesById.set(profile.id, { username: profile.username, display_name: profile.display_name });
+          }
+        }
+
+        const roster = (rosterEntries ?? []).map((entry) => ({
+          ...entry,
+          profiles: profilesById.get(entry.profile_id) ?? null,
+        }));
+        return successResponse({ roster });
       }
 
       if (action === 'roster.save' && request.method === 'POST') {
