@@ -9,29 +9,33 @@ vi.mock('../lib/api', () => ({
     listItems: vi.fn(),
     getChecklistLayout: vi.fn(),
     createItem: vi.fn(),
+    updateItem: vi.fn(),
     archiveItem: vi.fn(),
+    operatorCreateItem: vi.fn(),
+    operatorUpdateItem: vi.fn(),
+    operatorArchiveItem: vi.fn(),
     upsertChecklistSection: vi.fn(),
     moveChecklistItem: vi.fn(),
   },
 }));
 
-describe('CatalogManager (E1: B01/B07 server-owned checklist)', () => {
+const items = [
+  { id: 'gula', name: 'Gula', unit_code: 'kg', area_code: 'BAR', decimal_scale: 2, low_threshold: 1, active: true },
+  { id: 'kopi', name: 'Kopi', unit_code: 'kg', area_code: 'BAR', decimal_scale: 2, low_threshold: 2, active: true },
+];
+
+describe('CatalogManager', () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(api.listItems).mockResolvedValue([
-      { id: 'gula', name: 'Gula', unit_code: 'kg', area_code: 'BAR', active: true },
-      { id: 'kopi', name: 'Kopi', unit_code: 'kg', area_code: 'BAR', active: true },
-    ]);
+    vi.mocked(api.listItems).mockResolvedValue(items);
     vi.mocked(api.getChecklistLayout).mockResolvedValue({ version: 3, sections: [], placements: [] });
   });
 
-  it('renders server layout version and falls back to item list without local name-sort override', async () => {
+  it('renders the server catalog without exposing raw item IDs', async () => {
     render(<CatalogManager />);
-    await waitFor(() => {
-      expect(screen.getByText(/susunan aktif server/i)).toBeDefined();
-    });
-    expect(screen.getByText(/Gula/)).toBeDefined();
-    expect(screen.getByText(/Kopi/)).toBeDefined();
+    await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
+    expect(screen.getByText('Kopi')).toBeDefined();
+    expect(screen.queryByText(/gula.*kg/i)).toBeNull();
   });
 
   it('ignores an older area response that arrives after a newer area response', async () => {
@@ -41,94 +45,69 @@ describe('CatalogManager (E1: B01/B07 server-owned checklist)', () => {
     const user = userEvent.setup();
     render(<CatalogManager />);
     await user.click(screen.getByRole('button', { name: 'Kitchen' }));
-    await waitFor(() => expect(screen.getByText(/versi 7/i)).toBeDefined());
+    await waitFor(() => expect(screen.getByText(/cycle berikutnya/i)).toBeDefined());
     resolveBar({ version: 2, sections: [], placements: [] });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(screen.getByText(/versi 7/i)).toBeDefined();
+    expect(screen.getByText(/varian kitchen/i)).toBeDefined();
   });
 
   it('creates items and reports next-cycle effect without claiming instant availability', async () => {
     const user = userEvent.setup();
     vi.mocked(api.createItem).mockResolvedValue({ id: 'teh', active: true });
     render(<CatalogManager />);
-
-    await waitFor(() => expect(screen.getByText(/Gula/)).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
     await user.type(screen.getByPlaceholderText('sirup_gula'), 'teh');
-    await user.type(screen.getByPlaceholderText('Sirup Gula'), 'Teh');
-    await user.click(screen.getByRole('button', { name: /tambah barang/i }));
-
+    await user.type(screen.getByPlaceholderText('Sirup gula'), 'Teh');
+    await user.click(screen.getByRole('button', { name: /tambah varian/i }));
     await waitFor(() => expect(api.createItem).toHaveBeenCalled());
     expect((await screen.findByRole('status')).textContent).toMatch(/cycle berikutnya/i);
   });
 
-  it('clears stale list and archive form when switching area before load finishes', async () => {
-    let resolveKitchen!: (value: any) => void;
-    const kitchenLayout = new Promise((resolve) => { resolveKitchen = resolve; });
-    vi.mocked(api.getChecklistLayout).mockImplementation((area) => area === 'BAR'
-      ? Promise.resolve({ version: 3, sections: [], placements: [] })
-      : kitchenLayout as any);
+  it('uses the scoped operator endpoint for a PRIMARY assigned to the fixed area', async () => {
     const user = userEvent.setup();
-    render(<CatalogManager />);
-
-    await waitFor(() => expect(screen.getByText(/Gula/)).toBeDefined());
-    const gulaRow = screen.getByText('Gula').closest('li')!;
-    await user.click(within(gulaRow as HTMLElement).getByRole('button', { name: 'Arsip' }));
-    expect(screen.getByPlaceholderText(/alasan arsip/i)).toBeDefined();
-
-    await user.click(screen.getByRole('button', { name: 'Kitchen' }));
-    expect(screen.queryByPlaceholderText(/alasan arsip/i)).toBeNull();
-    expect(screen.queryByText(/Gula/)).toBeNull();
-
-    resolveKitchen({ version: 7, sections: [], placements: [] });
-    await waitFor(() => expect(screen.getByText(/versi 7/i)).toBeDefined());
+    vi.mocked(api.operatorCreateItem).mockResolvedValue({ id: 'teh', active: true });
+    render(<CatalogManager fixedArea="BAR" mutationScope="PRIMARY" />);
+    await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
+    expect(screen.queryByRole('button', { name: 'Kitchen' })).toBeNull();
+    await user.type(screen.getByPlaceholderText('sirup_gula'), 'teh');
+    await user.type(screen.getByPlaceholderText('Sirup gula'), 'Teh');
+    await user.click(screen.getByRole('button', { name: /tambah varian/i }));
+    await waitFor(() => expect(api.operatorCreateItem).toHaveBeenCalled());
+    expect(api.createItem).not.toHaveBeenCalled();
   });
 
-  it('labels a pending layout as next-cycle draft instead of claiming it active', async () => {
-    vi.mocked(api.getChecklistLayout).mockResolvedValue({
-      version: 5, pending: true, pending_version: 5, effective_next_cycle: true, sections: [], placements: [],
-    });
-    render(<CatalogManager />);
-    await waitFor(() => expect(screen.getByText(/draft cycle berikutnya/i)).toBeDefined());
-    expect(screen.queryByText(/susunan aktif/i)).toBeNull();
+  it('locks mutation controls for a HELPER while keeping the catalog visible', async () => {
+    render(<CatalogManager fixedArea="BAR" mutationScope="READ_ONLY" lockedMessage="Petugas bantuan sedang bertugas." />);
+    await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
+    expect(screen.getByText(/petugas bantuan sedang bertugas/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /tambah varian/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Ubah' })).toBeNull();
   });
 
-  it('disables layout controls while a layout mutation is in flight', async () => {
-    let resolveMove!: (value: any) => void;
-    const movePromise = new Promise((resolve) => { resolveMove = resolve; });
-    vi.mocked(api.getChecklistLayout).mockResolvedValue({
-      version: 3,
-      sections: [{ id: 's1', name: 'Rak', position: 0, active: true }],
-      placements: [
-        { item_id: 'gula', section_id: 's1', position: 0 },
-        { item_id: 'kopi', section_id: 's1', position: 1 },
-      ],
-    });
-    vi.mocked(api.moveChecklistItem).mockReturnValue(movePromise as any);
+  it('edits catalog metadata with a next-cycle notice', async () => {
     const user = userEvent.setup();
+    vi.mocked(api.updateItem).mockResolvedValue({ id: 'gula', active: true });
     render(<CatalogManager />);
-
-    const downBtn = await screen.findByRole('button', { name: /pindahkan gula ke bawah/i }) as HTMLButtonElement;
-    await user.click(downBtn);
-    await waitFor(() => expect(downBtn.disabled).toBe(true));
-    resolveMove({ layout_version: 4 });
-    await waitFor(() => expect(downBtn.disabled).toBe(false));
+    const row = await screen.findByText('Gula');
+    await user.click(within(row.closest('li') as HTMLElement).getByRole('button', { name: 'Ubah' }));
+    const nameInput = screen.getByDisplayValue('Gula');
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Gula aren');
+    await user.click(screen.getByRole('button', { name: /simpan perubahan/i }));
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'gula', name: 'Gula aren' })));
+    expect((await screen.findByRole('status')).textContent).toMatch(/histori sebelumnya tidak berubah/i);
   });
 
-  it('requires archive reason before archiving and preserves history note', async () => {
+  it('requires an archive reason and preserves history note', async () => {
     const user = userEvent.setup();
     vi.mocked(api.archiveItem).mockResolvedValue({ id: 'gula', active: false });
     render(<CatalogManager />);
-
-    await waitFor(() => expect(screen.getByText(/Gula/)).toBeDefined());
-    const gulaRow = screen.getByText('Gula').closest('li')!;
-    await user.click(within(gulaRow as HTMLElement).getByRole('button', { name: 'Arsip' }));
-
-    const archiveBtn = screen.getByRole('button', { name: /arsipkan/i }) as HTMLButtonElement;
-    expect(archiveBtn.disabled).toBe(true);
+    const row = await screen.findByText('Gula');
+    await user.click(within(row.closest('li') as HTMLElement).getByRole('button', { name: 'Arsip' }));
+    const archive = screen.getByRole('button', { name: /arsipkan/i }) as HTMLButtonElement;
+    expect(archive.disabled).toBe(true);
     await user.type(screen.getByPlaceholderText(/alasan arsip/i), 'tidak dipakai');
-    expect(archiveBtn.disabled).toBe(false);
-    await user.click(archiveBtn);
-
+    await user.click(archive);
     await waitFor(() => expect(api.archiveItem).toHaveBeenCalledWith('gula', 'tidak dipakai'));
     expect((await screen.findByRole('status')).textContent).toMatch(/histori/i);
   });

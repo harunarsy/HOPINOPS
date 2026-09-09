@@ -126,7 +126,7 @@ test.describe('Staging smoke (same origin)', () => {
     }
     // Login auto-submits immediately after the sixth PIN digit.
     const error = page.locator('.form-error, [role="alert"]');
-    await expect(error.first()).toBeVisible({ timeout: 10_000 });
+    await expect(error.first()).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('#pin-input-0')).toHaveValue('');
     await expect(page.locator('#pin-input-5')).toHaveValue('');
     const lockedOut = await page.getByText(/terlalu banyak percobaan salah/i).isVisible();

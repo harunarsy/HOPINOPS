@@ -479,7 +479,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     // physical count. The old synthetic-zero initialization must not return.
     await waitFor(() => {
       expect(screen.getByLabelText(/jumlah fisik stok awal sirup gula/i)).toBeDefined();
-      expect(screen.getByRole('button', { name: /simpan baseline fisik/i })).toBeDefined();
+      expect(screen.getByRole('button', { name: /tetapkan stok patokan/i })).toBeDefined();
     });
     expect(screen.queryByRole('button', { name: /inisialisasi patokan 0/i })).toBeNull();
   });

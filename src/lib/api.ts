@@ -170,6 +170,7 @@ export const api = {
   updateItem: (item: any) => request('/api/app?action=items.update', { method: 'POST', body: JSON.stringify(item) }),
   archiveItem: (id: string, reason: string) => request('/api/app?action=items.archive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
   operatorCreateItem: (item: any) => request('/api/app?action=items.operatorCreate', { method: 'POST', body: JSON.stringify(item) }),
+  operatorUpdateItem: (item: any) => request('/api/app?action=items.operatorUpdate', { method: 'POST', body: JSON.stringify(item) }),
   operatorArchiveItem: (id: string, reason: string) => request('/api/app?action=items.operatorArchive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
 
   // Checklist layout server-owned

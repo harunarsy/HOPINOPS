@@ -3,8 +3,9 @@ import type { Area, ShiftType, Item, DutyRole } from '../../domain/types';
 import { fmtNumber, areaLabel, shiftLabel, statusOfStock, movementCategoryLabel } from '../../domain/rules';
 import { api } from '../../lib/api';
 import { idbQueue, type QueueItem } from '../../lib/idb-queue';
+import { CatalogManager } from '../management/CatalogManager';
 
-type Tab = 'overview' | 'opening' | 'movement' | 'closing';
+type Tab = 'overview' | 'opening' | 'movement' | 'closing' | 'catalog';
 type OpeningReference = Awaited<ReturnType<typeof api.getOpeningReference>>;
 type DraftReceipt = Awaited<ReturnType<typeof api.saveOpeningDraft>>;
 type DraftSaveState = {
@@ -496,7 +497,7 @@ export function StockWorkspace({
     : openingSourceType === 'CLOSING'
       ? 'closing terakhir yang dikonfirmasi'
       : openingSourceType === 'INITIALIZATION'
-        ? 'baseline fisik yang disetujui'
+        ? 'stok patokan fisik yang disetujui'
         : null;
   const openingWarningCode = openingRecord?.reference_warning_code
     ?? openingRecord?.warning_code
@@ -608,15 +609,15 @@ export function StockWorkspace({
     const expectedVersion = cycleVersionRef.current;
     setCriticalError('');
     if (!isPrimary && !canManage) {
-      showCriticalError('Baseline fisik hanya dapat direkam oleh PRIMARY atau manajemen.');
+      showCriticalError('Stok patokan hanya dapat ditetapkan oleh PRIMARY atau manajemen.');
       return;
     }
     if (!reason) {
-      showCriticalError('Alasan pencatatan baseline wajib diisi.');
+      showCriticalError('Alasan penetapan stok patokan wajib diisi.');
       return;
     }
     if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
-       showCriticalError('Versi cycle tidak valid. Muat ulang sebelum mencatat baseline.');
+       showCriticalError('Versi cycle tidak valid. Muat ulang sebelum menetapkan stok patokan.');
       return;
     }
 
@@ -642,13 +643,13 @@ export function StockWorkspace({
       setOpeningReference(reference);
       setOpeningReferenceError('');
       setBaselineReason('');
-      showToast('Baseline fisik tersimpan. Patokan stok awal telah dimuat ulang.');
+      showToast('Stok patokan tersimpan. Patokan stok awal telah dimuat ulang.');
       const refreshed = await onRefresh();
       if (!refreshed) {
         showCriticalError('Referensi berhasil dibuat, tetapi data cycle gagal dimuat ulang.');
       }
     } catch (err: any) {
-      showCriticalError(`Gagal mencatat baseline fisik (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
+      showCriticalError(`Gagal menetapkan stok patokan (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
     } finally {
       setBaselineSubmitting(false);
     }
@@ -1230,10 +1231,19 @@ export function StockWorkspace({
         <button className={tab === 'overview' ? 'active' : ''} aria-current={tab === 'overview' ? 'page' : undefined} onClick={() => setTab('overview')}>Ringkasan</button>
         <button className={tab === 'opening' ? 'active' : ''} aria-current={tab === 'opening' ? 'page' : undefined} onClick={() => setTab('opening')}>Stok Awal</button>
         <button className={tab === 'movement' ? 'active' : ''} aria-current={tab === 'movement' ? 'page' : undefined} disabled={!isOpeningConfirmed} onClick={() => setTab('movement')}>Perubahan</button>
+        <button className={tab === 'catalog' ? 'active' : ''} aria-current={tab === 'catalog' ? 'page' : undefined} onClick={() => setTab('catalog')}>Varian & Checklist</button>
         {isNightOrFull && (
           <button className={tab === 'closing' ? 'active' : ''} aria-current={tab === 'closing' ? 'page' : undefined} disabled={!isOpeningConfirmed} onClick={() => setTab('closing')}>Stok Akhir</button>
         )}
       </nav>
+
+      {tab === 'catalog' && (
+        <CatalogManager
+          fixedArea={area}
+          mutationScope={isPrimary || canManage ? (canManage ? 'MANAGEMENT' : 'PRIMARY') : 'READ_ONLY'}
+          lockedMessage="Petugas bantuan sedang bertugas. Perubahan katalog menunggu penanggung jawab utama."
+        />
+      )}
 
       {/* 1. OVERVIEW TAB */}
       {tab === 'overview' && (
@@ -1309,7 +1319,7 @@ export function StockWorkspace({
                 <strong>Referensi stok awal belum tersedia.</strong> Masukkan jumlah fisik eksplisit untuk setiap item yang belum memiliki referensi. Kolom kosong berarti belum dihitung, bukan nol.
               </>
             ) : missingOpeningReferences.length > 0 ? (
-              <strong>Patokan server tidak lengkap untuk {missingOpeningReferences.map((item) => item.name).join(', ')}. Konfirmasi diblokir.</strong>
+              <strong>Stok patokan belum lengkap untuk {missingOpeningReferences.map((item) => item.name).join(', ')}. Konfirmasi diblokir.</strong>
             ) : openingSourceLabel ? (
               <>
                 <strong>Sumber patokan:</strong> {openingSourceLabel}.
@@ -1461,7 +1471,7 @@ export function StockWorkspace({
 
            {openingReference?.state === 'INITIALIZATION_REQUIRED' && !isOpeningConfirmed && (
              <div style={{ marginTop: '20px', padding: '12px', border: '1px solid #e0ece6', borderRadius: '10px', background: '#f8faf9' }}>
-               <strong style={{ display: 'block', marginBottom: '8px' }}>Simpan baseline fisik</strong>
+               <strong style={{ display: 'block', marginBottom: '8px' }}>Tetapkan stok patokan</strong>
                <label htmlFor="baseline-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Alasan (wajib)</label>
                <textarea
                  id="baseline-reason"
@@ -1473,11 +1483,11 @@ export function StockWorkspace({
                />
                <p className="muted" style={{ fontSize: '12px', margin: '8px 0 0' }}>
                  {canEditOpeningBaseline
-                   ? 'Isi semua item secara eksplisit. Nilai 0 sah dan berarti stok habis.'
-                   : 'Hanya PRIMARY yang ditugaskan untuk shift dan area ini yang dapat mencatat baseline. HELPER dapat melihat, tetapi tidak dapat mengubah hitungan.'}
+                   ? 'Stok patokan dipakai saat area belum memiliki referensi stok fisik yang tepercaya. Ini bukan pencatatan stok harian dan bukan untuk menambah varian.'
+                   : 'Hanya PRIMARY yang ditugaskan untuk shift dan area ini yang dapat menetapkan stok patokan. HELPER dapat melihat, tetapi tidak dapat mengubah hitungan.'}
                </p>
                <button type="button" className="primary-button" onClick={() => void handleRecordPhysicalBaseline()} disabled={baselineSubmitting || !baselineReason.trim() || !canEditOpeningBaseline} style={{ marginTop: '10px', width: '100%' }}>
-                 {baselineSubmitting ? 'Menyimpan Baseline...' : 'Simpan Baseline Fisik'}
+                 {baselineSubmitting ? 'Menyimpan stok patokan...' : 'Tetapkan stok patokan'}
                </button>
              </div>
            )}

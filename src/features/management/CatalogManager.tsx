@@ -1,17 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 
 type Area = 'BAR' | 'KITCHEN';
-
+type MutationScope = 'MANAGEMENT' | 'PRIMARY' | 'READ_ONLY';
 type Section = { id: string; name: string; position: number; active: boolean };
 type Placement = { item_id: string; section_id: string; position: number };
+type CatalogItem = {
+  id: string;
+  name: string;
+  unit_code: string;
+  area_code: Area;
+  decimal_scale: number;
+  low_threshold: number;
+  active: boolean;
+};
+
+type Props = {
+  fixedArea?: Area;
+  mutationScope?: MutationScope;
+  lockedMessage?: string;
+};
 
 const DEFAULT_SECTION = 'Belum dikelompokkan';
+const inputStyle = { width: '100%', padding: '8px', marginTop: '4px', boxSizing: 'border-box' as const };
 
-export function CatalogManager() {
-  const [area, setArea] = useState<Area>('BAR');
+export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', lockedMessage }: Props) {
+  const [area, setArea] = useState<Area>(fixedArea ?? 'BAR');
   const [loadedArea, setLoadedArea] = useState<Area | null>(null);
-  const [items, setItems] = useState<any[]>([]);
+  const [items, setItems] = useState<CatalogItem[]>([]);
   const [layoutVersion, setLayoutVersion] = useState(1);
   const [layoutPending, setLayoutPending] = useState(false);
   const [layoutPendingVersion, setLayoutPendingVersion] = useState<number | null>(null);
@@ -23,15 +39,26 @@ export function CatalogManager() {
   const [newId, setNewId] = useState('');
   const [newName, setNewName] = useState('');
   const [newUnit, setNewUnit] = useState('pcs');
+  const [newThreshold, setNewThreshold] = useState('0');
   const [newSection, setNewSection] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
-  const loadRequestRef = useRef(0);
-  const activeAreaRef = useRef<Area>('BAR');
+  const [editTarget, setEditTarget] = useState<CatalogItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editUnit, setEditUnit] = useState('');
+  const [editThreshold, setEditThreshold] = useState('0');
+  const [layoutMode, setLayoutMode] = useState(false);
   const [pendingLayoutChange, setPendingLayoutChange] = useState(false);
+  const loadRequestRef = useRef(0);
+  const activeAreaRef = useRef<Area>(fixedArea ?? 'BAR');
+  const canMutate = mutationScope !== 'READ_ONLY';
+  const isPrimary = mutationScope === 'PRIMARY';
 
-  const placementByItem = new Map(placements.map((p) => [p.item_id, p]));
-  const sectionById = new Map(sections.map((s) => [s.id, s]));
+  useEffect(() => {
+    if (!fixedArea || fixedArea === activeAreaRef.current) return;
+    activeAreaRef.current = fixedArea;
+    setArea(fixedArea);
+  }, [fixedArea]);
 
   const load = async (targetArea: Area) => {
     const requestId = ++loadRequestRef.current;
@@ -40,10 +67,10 @@ export function CatalogManager() {
     try {
       const [itemList, layout] = await Promise.all([api.listItems(), api.getChecklistLayout(targetArea)]);
       if (loadRequestRef.current !== requestId || activeAreaRef.current !== targetArea) return;
-      setItems(itemList.filter((it: any) => it.area_code === targetArea));
+      setItems(itemList.filter((item: CatalogItem) => item.area_code === targetArea));
       setLayoutVersion(layout.version);
-      setLayoutPending((layout as any).pending === true);
-      setLayoutPendingVersion(typeof (layout as any).pending_version === 'number' ? (layout as any).pending_version : null);
+      setLayoutPending(layout.pending === true);
+      setLayoutPendingVersion(typeof layout.pending_version === 'number' ? layout.pending_version : null);
       setSections(layout.sections);
       setPlacements(layout.placements);
       setLoadedArea(targetArea);
@@ -55,8 +82,10 @@ export function CatalogManager() {
     }
   };
 
+  useEffect(() => { void load(area); }, [area]);
+
   const switchArea = (next: Area) => {
-    if (next === activeAreaRef.current) return;
+    if (fixedArea || next === activeAreaRef.current) return;
     activeAreaRef.current = next;
     loadRequestRef.current += 1;
     setArea(next);
@@ -65,123 +94,108 @@ export function CatalogManager() {
     setSections([]);
     setPlacements([]);
     setArchiveTarget(null);
-    setArchiveReason('');
+    setEditTarget(null);
     setNotice('');
-    setPendingLayoutChange(false);
+    setLayoutMode(false);
   };
 
-  useEffect(() => {
-    void load(area);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [area]);
+  const placementByItem = useMemo(() => new Map(placements.map((placement) => [placement.item_id, placement])), [placements]);
+  const sectionById = useMemo(() => new Map(sections.map((section) => [section.id, section])), [sections]);
+  const grouped = useMemo(() => {
+    const ordered = [...items].sort((left, right) => {
+      const leftPlacement = placementByItem.get(left.id);
+      const rightPlacement = placementByItem.get(right.id);
+      const leftSection = leftPlacement ? sectionById.get(leftPlacement.section_id)?.position ?? 999 : 999;
+      const rightSection = rightPlacement ? sectionById.get(rightPlacement.section_id)?.position ?? 999 : 999;
+      return leftSection - rightSection || (leftPlacement?.position ?? 999) - (rightPlacement?.position ?? 999);
+    });
+    return ordered.reduce((result, item) => {
+      const placement = placementByItem.get(item.id);
+      const name = (placement && sectionById.get(placement.section_id)?.name) || DEFAULT_SECTION;
+      result.set(name, [...(result.get(name) ?? []), item]);
+      return result;
+    }, new Map<string, CatalogItem[]>());
+  }, [items, placementByItem, sectionById]);
 
-  const orderedItems = [...items].sort((a, b) => {
-    const pa = placementByItem.get(a.id);
-    const pb = placementByItem.get(b.id);
-    const sa = pa ? sectionById.get(pa.section_id)?.position ?? 999 : 999;
-    const sb = pb ? sectionById.get(pb.section_id)?.position ?? 999 : 999;
-    if (sa !== sb) return sa - sb;
-    return (pa?.position ?? 999) - (pb?.position ?? 999);
-  });
-
-  const grouped = new Map<string, typeof orderedItems>();
-  for (const it of orderedItems) {
-    const p = placementByItem.get(it.id);
-    const key = (p && sectionById.get(p.section_id)?.name) || DEFAULT_SECTION;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(it);
-  }
-
-  const handleCreate = async () => {
+  const createItem = async () => {
     const operationArea = activeAreaRef.current;
-    setError('');
-    setNotice('');
-    try {
-      await api.createItem({
-        id: newId.trim().toLowerCase().replace(/\s+/g, '_'),
-        area_code: operationArea,
-        name: newName.trim(),
-        unit_code: newUnit.trim() || 'pcs',
-        decimal_scale: 2,
-        low_threshold: 0,
-      });
-      if (activeAreaRef.current !== operationArea) return;
-      setNotice(`Barang ${newName.trim()} ditambahkan. Berlaku mulai cycle berikutnya bila cycle aktif berjalan.`);
-      setNewId('');
-      setNewName('');
-      await load(operationArea);
-    } catch (err: any) {
-      if (activeAreaRef.current !== operationArea) return;
-      setError(err?.message || 'Gagal menambah barang.');
-    }
-  };
-
-  const handleArchive = async () => {
-    if (!archiveTarget) return;
-    const operationArea = activeAreaRef.current;
-    if (!items.some((it: any) => it.id === archiveTarget)) {
-      setError('Area berubah saat formulir arsip terbuka. Pilih ulang barang pada area aktif.');
-      setArchiveTarget(null);
-      setArchiveReason('');
+    const threshold = Number(newThreshold);
+    if (!Number.isFinite(threshold) || threshold < 0) {
+      setError('Batas stok minimum harus berupa angka nol atau lebih.');
       return;
     }
-    setError('');
-    setNotice('');
+    setError(''); setNotice('');
+    const item = { id: newId.trim().toLowerCase().replace(/\s+/g, '_'), area_code: operationArea, name: newName.trim(), unit_code: newUnit.trim() || 'pcs', decimal_scale: 2, low_threshold: threshold };
     try {
-      await api.archiveItem(archiveTarget, archiveReason.trim());
+      if (isPrimary) await api.operatorCreateItem(item);
+      else await api.createItem(item);
       if (activeAreaRef.current !== operationArea) return;
-      setNotice('Barang diarsipkan dari daftar berikutnya. Histori dan laporan lama tetap utuh.');
-      setArchiveTarget(null);
-      setArchiveReason('');
+      setNotice(`Varian ${newName.trim()} ditambahkan dan akan berlaku pada cycle berikutnya.`);
+      setNewId(''); setNewName(''); setNewUnit('pcs'); setNewThreshold('0');
       await load(operationArea);
-    } catch (err: any) {
-      if (activeAreaRef.current !== operationArea) return;
-      setError(err?.message || 'Gagal mengarsipkan barang.');
-    }
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal menambah varian.'); }
   };
 
-  const handleMove = async (itemId: string, sectionId: string, position: number) => {
+  const saveEdit = async () => {
+    if (!editTarget) return;
+    const threshold = Number(editThreshold);
+    if (!editName.trim() || !editUnit.trim() || !Number.isFinite(threshold) || threshold < 0) {
+      setError('Nama, satuan, dan batas stok minimum wajib valid.');
+      return;
+    }
+    const operationArea = activeAreaRef.current;
+    setError(''); setNotice('');
+    try {
+      const payload = { id: editTarget.id, name: editName.trim(), unit_code: editUnit.trim(), decimal_scale: editTarget.decimal_scale ?? 2, low_threshold: threshold };
+      if (isPrimary) await api.operatorUpdateItem(payload);
+      else await api.updateItem(payload);
+      if (activeAreaRef.current !== operationArea) return;
+      setEditTarget(null);
+      setNotice('Varian diperbarui untuk cycle berikutnya. Catatan stok dan histori sebelumnya tidak berubah.');
+      await load(operationArea);
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal memperbarui varian.'); }
+  };
+
+  const archiveItem = async () => {
+    if (!archiveTarget || !archiveReason.trim()) return;
+    const operationArea = activeAreaRef.current;
+    setError(''); setNotice('');
+    try {
+      if (isPrimary) await api.operatorArchiveItem(archiveTarget, archiveReason.trim());
+      else await api.archiveItem(archiveTarget, archiveReason.trim());
+      if (activeAreaRef.current !== operationArea) return;
+      setArchiveTarget(null); setArchiveReason('');
+      setNotice('Varian diarsipkan untuk cycle berikutnya. Histori dan laporan lama tetap utuh.');
+      await load(operationArea);
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal mengarsipkan varian.'); }
+  };
+
+  const moveItem = async (itemId: string, sectionId: string, position: number) => {
     if (pendingLayoutChange) return;
     const operationArea = activeAreaRef.current;
-    const operationVersion = layoutVersion;
-    setError('');
-    setNotice('');
-    setPendingLayoutChange(true);
+    setPendingLayoutChange(true); setError(''); setNotice('');
     try {
-      const res = await api.moveChecklistItem(operationArea, itemId, sectionId, position, operationVersion, crypto.randomUUID());
+      await api.moveChecklistItem(operationArea, itemId, sectionId, position, layoutVersion, crypto.randomUUID());
       if (activeAreaRef.current !== operationArea) return;
-      setLayoutVersion(res.layout_version);
-      setNotice('Susunan checklist tersimpan di server.');
+      setNotice('Susunan checklist disimpan untuk cycle berikutnya.');
       await load(operationArea);
     } catch (err: any) {
       if (activeAreaRef.current !== operationArea) return;
-      if (/VERSION_CONFLICT/.test(err?.message ?? '')) {
-        setError('Susunan berubah oleh pengguna lain. Memuat versi terbaru...');
-        await load(operationArea);
-        return;
-      }
-      setError(err?.message || 'Gagal memindahkan barang.');
-    } finally {
-      if (activeAreaRef.current === operationArea) setPendingLayoutChange(false);
-    }
+      if (/VERSION_CONFLICT/.test(err?.message ?? '')) { setError('Susunan berubah oleh pengguna lain. Memuat versi terbaru.'); await load(operationArea); }
+      else setError(err?.message || 'Gagal memindahkan varian.');
+    } finally { if (activeAreaRef.current === operationArea) setPendingLayoutChange(false); }
   };
 
-  const handleNewSection = async () => {
+  const createSection = async () => {
     if (!newSection.trim() || pendingLayoutChange) return;
     const operationArea = activeAreaRef.current;
-    setError('');
-    setPendingLayoutChange(true);
+    setPendingLayoutChange(true); setError('');
     try {
       await api.upsertChecklistSection(operationArea, newSection.trim(), null, crypto.randomUUID());
       if (activeAreaRef.current !== operationArea) return;
-      setNewSection('');
-      await load(operationArea);
-    } catch (err: any) {
-      if (activeAreaRef.current !== operationArea) return;
-      setError(err?.message || 'Gagal menambah bagian.');
-    } finally {
-      if (activeAreaRef.current === operationArea) setPendingLayoutChange(false);
-    }
+      setNewSection(''); setNotice('Bagian checklist ditambahkan untuk cycle berikutnya.'); await load(operationArea);
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal menambah bagian.'); }
+    finally { if (activeAreaRef.current === operationArea) setPendingLayoutChange(false); }
   };
 
   return (
@@ -189,103 +203,53 @@ export function CatalogManager() {
       <div className="section-heading">
         <div>
           <p className="eyebrow">KATALOG & CHECKLIST</p>
-          <h2 id="catalog-title">Kelola Barang & Susunan</h2>
+          <h2 id="catalog-title">Varian {area === 'BAR' ? 'Bar' : 'Kitchen'}</h2>
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {(['BAR', 'KITCHEN'] as Area[]).map((a) => (
-            <button
-              key={a}
-              type="button"
-              className={`segmented-btn ${area === a ? 'active' : ''}`}
-              aria-pressed={area === a}
-              onClick={() => switchArea(a)}
-            >
-              {a === 'BAR' ? 'Bar' : 'Kitchen'}
-            </button>
-          ))}
-        </div>
+        {!fixedArea && <div style={{ display: 'flex', gap: '8px' }}>{(['BAR', 'KITCHEN'] as Area[]).map((candidate) => <button key={candidate} type="button" className={`segmented-btn ${area === candidate ? 'active' : ''}`} aria-pressed={area === candidate} onClick={() => switchArea(candidate)}>{candidate === 'BAR' ? 'Bar' : 'Kitchen'}</button>)}</div>}
       </div>
 
       <p className="muted" style={{ fontSize: '12px' }}>
-        {layoutPending && layoutPendingVersion !== null ? (
-          <>Draft cycle berikutnya: <strong>versi {layoutPendingVersion}</strong>. Berlaku mulai cycle berikutnya; cycle aktif tetap memakai susunan lama.</>
-        ) : (
-          <>Susunan aktif server: <strong>versi {layoutVersion}</strong>.</>
-        )}
-        {pendingLayoutChange && <> Perubahan susunan sedang menunggu konfirmasi server.</>}
-        <br /><strong>Perubahan berikutnya:</strong> barang baru, arsip, dan susunan ini berlaku mulai cycle berikutnya.
-        Arsip tidak menghapus histori.
+        {layoutPending && layoutPendingVersion !== null ? 'Perubahan sedang dijadwalkan untuk cycle berikutnya.' : 'Perubahan katalog diterapkan pada cycle berikutnya bila ada cycle yang sedang berjalan.'} Histori stok tidak diubah.
       </p>
-
+      {!canMutate && <p role="status" className="muted" style={{ fontSize: '12px', marginTop: '8px' }}>{lockedMessage || 'Katalog dapat dilihat, tetapi perubahan varian dikunci.'}</p>}
       {loading && <p role="status">Memuat katalog...</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       {notice && <p role="status" style={{ color: '#1e5b48' }}>{notice}</p>}
 
-      <div style={{ display: 'grid', gap: '8px', marginTop: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
-        <label style={{ fontSize: '12px' }}>ID barang
-          <input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="sirup_gula" style={{ width: '100%', padding: '6px', marginTop: '4px' }} />
-        </label>
-        <label style={{ fontSize: '12px' }}>Nama
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Sirup Gula" style={{ width: '100%', padding: '6px', marginTop: '4px' }} />
-        </label>
-        <label style={{ fontSize: '12px' }}>Satuan
-          <input value={newUnit} onChange={(e) => setNewUnit(e.target.value)} placeholder="pcs" style={{ width: '100%', padding: '6px', marginTop: '4px' }} />
-        </label>
-      </div>
-      <button type="button" className="primary-button" onClick={() => void handleCreate()} disabled={!newId.trim() || !newName.trim()} style={{ marginTop: '8px' }}>
-        Tambah barang
-      </button>
+      {canMutate && <>
+        <div style={{ display: 'grid', gap: '8px', marginTop: '16px', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+          <label style={{ fontSize: '12px' }}>Kode varian<input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="sirup_gula" style={inputStyle} /></label>
+          <label style={{ fontSize: '12px' }}>Nama varian<input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Sirup gula" style={inputStyle} /></label>
+          <label style={{ fontSize: '12px' }}>Satuan<input value={newUnit} onChange={(event) => setNewUnit(event.target.value)} placeholder="pcs" style={inputStyle} /></label>
+          <label style={{ fontSize: '12px' }}>Batas stok minimum<input type="number" min="0" step="any" value={newThreshold} onChange={(event) => setNewThreshold(event.target.value)} style={inputStyle} /></label>
+        </div>
+        <button type="button" className="primary-button" onClick={() => void createItem()} disabled={!newId.trim() || !newName.trim()} style={{ marginTop: '8px' }}>Tambah varian</button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '20px' }}>
+          <strong>Susunan checklist</strong>
+          <button type="button" className="outline-button" onClick={() => setLayoutMode((current) => !current)}>{layoutMode ? 'Selesai atur susunan' : 'Atur susunan'}</button>
+        </div>
+        {layoutMode && <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}><input value={newSection} onChange={(event) => setNewSection(event.target.value)} placeholder="Bagian baru, mis. Rak atas" aria-label="Nama bagian baru" style={{ ...inputStyle, marginTop: 0, flex: 1, minWidth: '180px' }} /><button type="button" className="outline-button" onClick={() => void createSection()} disabled={!newSection.trim() || pendingLayoutChange}>Tambah bagian</button></div>}
+      </>}
 
-      <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
-        <input value={newSection} onChange={(e) => setNewSection(e.target.value)} placeholder="Bagian baru, mis. Rak atas" style={{ flex: 1, padding: '6px' }} aria-label="Nama bagian baru" />
-        <button type="button" className="outline-button" onClick={() => void handleNewSection()} disabled={!newSection.trim() || pendingLayoutChange}>
-          Tambah bagian
-        </button>
-      </div>
-
-      {loadedArea !== area && (
-        <p role="status" style={{ color: '#476058', fontSize: '12px', marginTop: '12px' }}>
-          Memuat katalog {area === 'BAR' ? 'Bar' : 'Kitchen'}...
-        </p>
-      )}
+      {loadedArea === area && grouped.size === 0 && !loading && <p className="muted" style={{ padding: '20px 0' }}>Belum ada varian aktif pada area ini.</p>}
       {loadedArea === area && [...grouped.entries()].map(([sectionName, sectionItems]) => (
         <div key={sectionName} style={{ marginTop: '16px' }}>
-          <h3 style={{ fontSize: '14px' }}>{sectionName} <small className="muted">({sectionItems.length} barang)</small></h3>
-          <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '6px' }}>
-            {sectionItems.map((it, idx) => {
-              const p = placementByItem.get(it.id);
-              return (
-                <li key={it.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid #e0ece6', borderRadius: '8px' }}>
-                  <span style={{ flex: 1 }}><strong>{it.name}</strong> <small className="muted">{it.id} · {it.unit_code}</small></span>
-                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke atas`} disabled={idx === 0 || pendingLayoutChange} onClick={() => p && void handleMove(it.id, p.section_id, Math.max(0, p.position - 1))} style={{ padding: '4px 8px' }}>↑</button>
-                  <button type="button" className="outline-button" aria-label={`Pindahkan ${it.name} ke bawah`} disabled={idx === sectionItems.length - 1 || pendingLayoutChange} onClick={() => p && void handleMove(it.id, p.section_id, p.position + 1)} style={{ padding: '4px 8px' }}>↓</button>
-                  <select
-                    aria-label={`Pindahkan ${it.name} ke bagian`}
-                    value={p?.section_id ?? ''}
-                    disabled={pendingLayoutChange}
-                    onChange={(e) => e.target.value && void handleMove(it.id, e.target.value, 0)}
-                    style={{ padding: '4px' }}
-                  >
-                    <option value="">Pindah bagian...</option>
-                    {sections.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                  {archiveTarget === it.id ? (
-                    <span style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                      <input value={archiveReason} onChange={(e) => setArchiveReason(e.target.value)} placeholder="Alasan arsip" style={{ padding: '4px', width: '140px' }} aria-label="Alasan arsip" />
-                      <button type="button" className="primary-button" onClick={() => void handleArchive()} disabled={!archiveReason.trim()} style={{ padding: '4px 8px' }}>Arsipkan</button>
-                      <button type="button" className="outline-button" onClick={() => { setArchiveTarget(null); setArchiveReason(''); }} style={{ padding: '4px 8px' }}>Batal</button>
-                    </span>
-                  ) : (
-                    <button type="button" className="outline-button" onClick={() => setArchiveTarget(it.id)} style={{ padding: '4px 8px' }}>Arsip</button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <h3 style={{ fontSize: '14px' }}>{sectionName} <small className="muted">({sectionItems.length} varian)</small></h3>
+          <ul style={{ listStyle: 'none', padding: 0, display: 'grid', gap: '8px' }}>{sectionItems.map((item, index) => {
+            const placement = placementByItem.get(item.id);
+            return <li key={item.id} style={{ padding: '10px', border: '1px solid #e0ece6', borderRadius: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                <span><strong>{item.name}</strong> <small className="muted">{item.unit_code} · batas {item.low_threshold}</small></span>
+                {canMutate && !layoutMode && <span style={{ display: 'flex', gap: '6px' }}><button type="button" className="outline-button" onClick={() => { setEditTarget(item); setEditName(item.name); setEditUnit(item.unit_code); setEditThreshold(String(item.low_threshold)); }}>Ubah</button><button type="button" className="outline-button" onClick={() => setArchiveTarget(item.id)}>Arsip</button></span>}
+              </div>
+              {canMutate && layoutMode && placement && <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '8px' }}><button type="button" className="outline-button" aria-label={`Pindahkan ${item.name} ke atas`} disabled={index === 0 || pendingLayoutChange} onClick={() => void moveItem(item.id, placement.section_id, Math.max(0, placement.position - 1))}>Naik</button><button type="button" className="outline-button" aria-label={`Pindahkan ${item.name} ke bawah`} disabled={index === sectionItems.length - 1 || pendingLayoutChange} onClick={() => void moveItem(item.id, placement.section_id, placement.position + 1)}>Turun</button><select aria-label={`Pindahkan ${item.name} ke bagian`} value={placement.section_id} disabled={pendingLayoutChange} onChange={(event) => event.target.value && void moveItem(item.id, event.target.value, 0)}>{sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></div>}
+              {archiveTarget === item.id && <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' }}><input value={archiveReason} onChange={(event) => setArchiveReason(event.target.value)} placeholder="Alasan arsip" aria-label="Alasan arsip" style={{ ...inputStyle, marginTop: 0, flex: 1, minWidth: '180px' }} /><button type="button" className="primary-button" onClick={() => void archiveItem()} disabled={!archiveReason.trim()}>Arsipkan</button><button type="button" className="outline-button" onClick={() => { setArchiveTarget(null); setArchiveReason(''); }}>Batal</button></div>}
+            </li>;
+          })}</ul>
         </div>
       ))}
+
+      {editTarget && <div role="dialog" aria-modal="true" aria-labelledby="edit-variant-title" style={{ marginTop: '16px', padding: '16px', border: '1px solid #cddcd4', borderRadius: '10px', background: '#f8faf9' }}><h3 id="edit-variant-title">Ubah {editTarget.name}</h3><div style={{ display: 'grid', gap: '8px', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}><label style={{ fontSize: '12px' }}>Nama<input value={editName} onChange={(event) => setEditName(event.target.value)} style={inputStyle} /></label><label style={{ fontSize: '12px' }}>Satuan<input value={editUnit} onChange={(event) => setEditUnit(event.target.value)} style={inputStyle} /></label><label style={{ fontSize: '12px' }}>Batas stok minimum<input type="number" min="0" step="any" value={editThreshold} onChange={(event) => setEditThreshold(event.target.value)} style={inputStyle} /></label></div><p className="muted" style={{ fontSize: '12px' }}>Perubahan satuan berlaku untuk cycle berikutnya. Histori stok sebelumnya tidak diubah.</p><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button type="button" className="primary-button" onClick={() => void saveEdit()}>Simpan perubahan</button><button type="button" className="outline-button" onClick={() => setEditTarget(null)}>Batal</button></div></div>}
     </section>
   );
 }

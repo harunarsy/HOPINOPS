@@ -1,6 +1,6 @@
 // Run disposable staging E2E with local Vercel API routes and guaranteed teardown.
 // The runner never targets a remote browser origin and never deploys.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -76,6 +76,20 @@ if (!/^[a-z0-9]{4,12}$/.test(runId)) fail('E2E_RUN_ID harus 4-12 karakter alnum 
 
 const tempDirectory = mkdtempSync(path.join(tmpdir(), 'hopin-e2e-'));
 const manifestPath = path.join(tempDirectory, `manifest-${runId}.json`);
+const localVercelEnvPath = path.join(process.cwd(), '.env');
+if (existsSync(localVercelEnvPath)) {
+  fail('Menolak menimpa .env yang sudah ada. Pindahkan konfigurasi lokal itu sebelum menjalankan staging E2E.');
+}
+const localVercelEnv = [
+  ['SUPABASE_URL', process.env.SUPABASE_URL],
+  ['SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY],
+  ['VITE_SUPABASE_URL', process.env.VITE_SUPABASE_URL],
+  ['VITE_SUPABASE_PUBLISHABLE_KEY', process.env.VITE_SUPABASE_PUBLISHABLE_KEY],
+]
+  .filter(([, value]) => Boolean(value))
+  .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+  .join('\n');
+writeFileSync(localVercelEnvPath, `${localVercelEnv}\n`, { mode: 0o600, flag: 'wx' });
 const env = {
   ...process.env,
   E2E_RUN_ID: runId,
@@ -102,6 +116,7 @@ try {
     }
   }
   await stopServer(server);
+  rmSync(localVercelEnvPath, { force: true });
   if (!teardownError) rmSync(tempDirectory, { recursive: true, force: true });
 }
 if (teardownError) throw teardownError;

@@ -488,7 +488,8 @@ export function sanitizeExcelCell(val: any): any {
 }
 
 async function sha256Buffer(buffer: ArrayBuffer | Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  const source = new Uint8Array(buffer);
+  const digest = await crypto.subtle.digest('SHA-256', source.buffer);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -855,6 +856,28 @@ export default {
         });
         if (error) return rpcErrorResponse(error);
         if (!isObject(data) || data.id !== body.id.trim()) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'items.operatorUpdate' && request.method === 'POST') {
+        if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
+        const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
+        if (!body || !isItemId(body.id) || !isNonEmptyString(body.name, 150)
+          || !isNonEmptyString(body.unit_code, 32) || !Number.isInteger(body.decimal_scale)
+          || body.decimal_scale < 0 || body.decimal_scale > 4 || !isQuantity(body.low_threshold, true)) {
+          return invalidPayload('ID, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_operator_update_item', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_item_id: body.id.trim(),
+          p_name: body.name.trim(),
+          p_unit_code: body.unit_code.trim(),
+          p_decimal_scale: body.decimal_scale,
+          p_low_threshold: body.low_threshold,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.id !== body.id.trim() || data.active !== true) return invalidRpcResult();
         return successResponse(data);
       }
 

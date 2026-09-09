@@ -15,6 +15,10 @@ insert into public.profiles (id, display_name, role, active)
 values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab', 'Disposable catalog primary', 'OPERATOR', true);
 insert into public.profile_outlet_scopes (profile_id, outlet_id)
 values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab', '11111111-1111-1111-1111-111111111111');
+insert into public.profiles (id, display_name, role, active)
+values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac', 'Disposable catalog helper', 'OPERATOR', true);
+insert into public.profile_outlet_scopes (profile_id, outlet_id)
+values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac', '11111111-1111-1111-1111-111111111111');
 
 do $$
 <<fixture>>
@@ -34,6 +38,10 @@ begin
 
   result := public.rpc_create_item(actor_id, outlet_id, 'regression-current', 'BAR',
     'Current fixture', 'pcs', 0::smallint, 1::numeric);
+  result := public.rpc_create_item(actor_id, outlet_id, 'regression-update', 'BAR',
+    'Update fixture', 'pcs', 0::smallint, 1::numeric);
+  result := public.rpc_create_item(actor_id, outlet_id, 'regression-kitchen', 'KITCHEN',
+    'Kitchen fixture', 'pcs', 0::smallint, 1::numeric);
   if not exists(select 1 from public.items where id = 'regression-current' and active) then
     raise exception 'Catalog create without started cycle did not become current';
   end if;
@@ -71,6 +79,47 @@ begin
     if position('FORBIDDEN_ROLE' in sqlerrm) = 0 then raise; end if;
   end;
 
+  result := public.rpc_operator_update_item(
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab', outlet_id, 'regression-update',
+    'Primary pending update', 'btl', 2::smallint, 3.5::numeric
+  );
+  if result->>'effective_mode' <> 'PENDING'
+     or (select name from public.items where id = 'regression-update') <> 'Update fixture' then
+    raise exception 'PRIMARY update changed the active cycle catalog instead of pending catalog';
+  end if;
+  if not exists(
+    select 1 from public.pending_catalogs p,
+      lateral jsonb_array_elements(p.items_json) i
+    where p.outlet_id = fixture.outlet_id and p.area_code = 'BAR'
+      and i->>'item_id' = 'regression-update'
+      and i->>'name' = 'Primary pending update'
+      and i->>'unit_code' = 'btl'
+      and (i->>'decimal_scale')::smallint = 2
+      and (i->>'low_threshold')::numeric = 3.5
+  ) then
+    raise exception 'PRIMARY update did not persist its pending metadata';
+  end if;
+
+  begin
+    perform public.rpc_operator_update_item(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac', outlet_id, 'regression-update',
+      'Helper update', 'pcs', 0::smallint, 1::numeric
+    );
+    raise exception 'HELPER-equivalent OPERATOR update was not rejected';
+  exception when sqlstate '42501' then
+    if position('FORBIDDEN_SCOPE' in sqlerrm) = 0 then raise; end if;
+  end;
+
+  begin
+    perform public.rpc_operator_update_item(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab', outlet_id, 'regression-kitchen',
+      'Cross area update', 'pcs', 0::smallint, 1::numeric
+    );
+    raise exception 'PRIMARY cross-area update was not rejected';
+  exception when sqlstate '42501' then
+    if position('FORBIDDEN_SCOPE' in sqlerrm) = 0 then raise; end if;
+  end;
+
   begin
     insert into public.pending_catalogs (outlet_id, area_code, version, items_json,
       sections_json, placements_json, fingerprint, last_idempotency_key, last_actor_id)
@@ -102,6 +151,9 @@ begin
 
   update public.work_cycles set status = 'RESET' where id = fixture.cycle_id;
   if not exists(select 1 from public.items where id = 'regression-pending' and active)
+     or not exists(select 1 from public.items
+       where id = 'regression-update' and active and name = 'Primary pending update'
+         and unit_code = 'btl' and decimal_scale = 2 and low_threshold = 3.5)
      or exists(select 1 from public.items where id = 'regression-current' and active) then
     raise exception 'Terminal cycle did not promote accumulated pending changes';
   end if;

@@ -156,6 +156,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   // Roster, attendance, overtime, and settings state
   const [roster, setRoster] = useState<any[]>([]);
+  const [rosterUsersError, setRosterUsersError] = useState('');
 const defaultRosterMonth = wibDateKey().slice(0, 7);
 const defaultReviewFrom = `${wibDateKey().slice(0, 8)}01`;
 const defaultReviewTo = wibDateKey();
@@ -315,10 +316,10 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       const payload = lines.map((line: any) => ({ item_id: line.item_id, counted_qty: Number(stockCounts[line.item_id]) }));
       if (stockTarget.physical_baseline_id) {
         await api.correctCyclePhysicalBaseline(stockTarget.cycle_id, stockTarget.version, payload, reason, crypto.randomUUID());
-        showToast('Koreksi baseline dicatat dengan riwayat sebelum dan sesudah nilai.');
+        showToast('Koreksi stok patokan dicatat dengan riwayat sebelum dan sesudah nilai.');
       } else {
         await api.recordCyclePhysicalBaseline(stockTarget.cycle_id, stockTarget.version, payload, reason, crypto.randomUUID());
-        showToast('Baseline fisik berhasil dicatat.');
+        showToast('Stok patokan berhasil ditetapkan.');
       }
       setStockTarget(null);
       cacheRef.current.delete('stock');
@@ -343,6 +344,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       if (tab === 'dashboard') setDashboardData(cached.dashboard);
       if (tab === 'stock' && cached.stock) setStockReadiness(cached.stock);
       if (tab === 'roster' && cached.roster) {
+        setRosterUsersError('');
         setRoster(cached.roster.entries);
         setUsersList(cached.roster.users);
         setRosterProfileId((current) => current || cached.roster!.users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
@@ -385,12 +387,27 @@ const [rosterFilterError, setRosterFilterError] = useState('');
         cacheRef.current.set(cacheKey, { stock });
         setStockReadiness(stock);
       } else if (tab === 'roster') {
-        const [entries, users] = await Promise.all([api.listRoster(validRosterMonth), api.listUsers()]);
+        const [rosterResult, usersResult] = await Promise.allSettled([
+          api.listRoster(validRosterMonth),
+          api.listUsers(),
+        ]);
         if (loadRequestRef.current !== requestId) return;
-        cacheRef.current.set(cacheKey, { roster: { entries, users } });
-        setRoster(entries);
-        setUsersList(users);
-        setRosterProfileId((current) => current || users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
+        if (rosterResult.status === 'rejected') {
+          throw new Error('Jadwal belum dapat dimuat. Coba lagi.');
+        }
+
+        setRoster(rosterResult.value);
+        if (usersResult.status === 'fulfilled') {
+          const users = usersResult.value;
+          cacheRef.current.set(cacheKey, { roster: { entries: rosterResult.value, users } });
+          setRosterUsersError('');
+          setUsersList(users);
+          setRosterProfileId((current) => current || users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
+        } else {
+          setRosterUsersError('Daftar petugas belum dapat dimuat. Jadwal tetap dapat dilihat, tetapi belum bisa ditambahkan.');
+          setUsersList([]);
+          setRosterProfileId('');
+        }
       } else if (tab === 'exceptions') {
         const [exceptions, claims] = await Promise.all([
           api.listAttendanceExceptions(reviewFromValue, reviewToValue),
@@ -1011,7 +1028,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
           <div style={{ display: 'grid', gap: '16px' }}>
             <div className="section-card">
               <div className="section-heading" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-                <div><p className="eyebrow">KETERSEDIAAN STOK HARI INI</p><h2>Bar dan Kitchen</h2><p className="muted" style={{ marginTop: '7px' }}>Baseline diisi dari sini tanpa masuk Mode Shift. Nilai 0 berarti habis, bukan kosong.</p></div>
+                <div><p className="eyebrow">KETERSEDIAAN STOK HARI INI</p><h2>Bar dan Kitchen</h2><p className="muted" style={{ marginTop: '7px' }}>Stok patokan hanya ditetapkan saat referensi fisik belum tersedia. Nilai 0 berarti habis, bukan kosong.</p></div>
                 <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Muat ulang status</button>
               </div>
               {!loading && !viewError && (stockReadiness?.cycles ?? []).length === 0 ? (
@@ -1028,7 +1045,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'start', flexWrap: 'wrap' }}><strong>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</strong><span className={`tag ${locked ? 'neutral' : hasBaseline ? 'good' : 'warn'}`}>{readiness}</span></div>
                       <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>PJ Utama: <strong>{cycle.primary_name || 'Belum ditugaskan'}</strong></p>
                       <p className="muted" style={{ fontSize: '12px', marginTop: '4px' }}>Cycle: {taskLabel(cycle.cycle_status)}</p>
-                      {locked ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Baseline sudah menjadi bagian opening. Gunakan koreksi ledger untuk perubahan setelah ini.</p> : hasBaseline ? <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Koreksi baseline {taskLabel(cycle.area_code)}</button> : hasReference ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Patokan berasal dari {cycle.reference_source_type || 'sumber server'}, bukan baseline fisik cycle ini.</p> : <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Isi stok {taskLabel(cycle.area_code)}</button>}
+                      {locked ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Stok patokan sudah menjadi bagian opening. Gunakan koreksi ledger untuk perubahan setelah ini.</p> : hasBaseline ? <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Koreksi stok patokan {taskLabel(cycle.area_code)}</button> : hasReference ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Stok patokan berasal dari {cycle.reference_source_type || 'sumber server'}, bukan stok patokan fisik cycle ini.</p> : <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Tetapkan stok patokan {taskLabel(cycle.area_code)}</button>}
                     </article>;
                   })}
                 </div>
@@ -1081,14 +1098,15 @@ const [rosterFilterError, setRosterFilterError] = useState('');
 
             <div className="section-card">
               <div className="section-heading"><div><p className="eyebrow">JADWAL BARU</p><h2>Tambahkan Satu Jadwal</h2></div></div>
+              {rosterUsersError && <p role="alert" style={{ color: '#991b1b', margin: '16px 0 0' }}>{rosterUsersError}</p>}
               <form onSubmit={handleCreateRoster} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginTop: '16px' }}>
-                <label style={labelStyle}>Tanggal<input required type="date" value={rosterDate} onChange={(event) => setRosterDate(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
-                <label style={labelStyle}>Petugas<select required value={rosterProfileId} onChange={(event) => setRosterProfileId(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Pilih petugas</option>{usersList.filter((entry) => entry.role !== 'INVESTOR').map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name} · {taskLabel(entry.role)}</option>)}</select></label>
-                <label style={labelStyle}>Shift<select value={rosterShift} onChange={(event) => setRosterShift(event.target.value as typeof rosterShift)} style={{ ...inputStyle, marginTop: '4px' }}><option value="SIANG">Shift siang</option><option value="MALAM">Shift malam</option><option value="FULL">Shift penuh</option></select></label>
-                <label style={labelStyle}>Area yang diharapkan<select value={rosterArea} onChange={(event) => setRosterArea(event.target.value as typeof rosterArea)} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Fleksibel</option><option value="BAR">Area bar</option><option value="KITCHEN">Area dapur</option></select></label>
-                <label style={labelStyle}>Perlakuan upah<select value={rosterPayTreatment} onChange={(event) => setRosterPayTreatment(event.target.value as typeof rosterPayTreatment)} style={{ ...inputStyle, marginTop: '4px' }}><option value="BASE">Jadwal reguler</option><option value="EXTRA">Hari kerja tambahan</option><option value="MAKEUP">Pengganti hari kerja</option></select></label>
-                <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>Alasan khusus <span className="muted">(wajib untuk hari Selasa)</span><textarea value={rosterReason} onChange={(event) => setRosterReason(event.target.value)} rows={2} maxLength={500} placeholder="Jelaskan perubahan atau perlakuan jadwal khusus." style={{ ...inputStyle, marginTop: '4px', resize: 'vertical' }} /></label>
-                <div style={{ gridColumn: '1 / -1' }}><button type="submit" className="primary-button" disabled={actionLoading === 'roster'}>{actionLoading === 'roster' ? 'Menyimpan...' : 'Tambahkan Jadwal'}</button></div>
+                <label style={labelStyle}>Tanggal<input required disabled={Boolean(rosterUsersError)} type="date" value={rosterDate} onChange={(event) => setRosterDate(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                <label style={labelStyle}>Petugas<select required disabled={Boolean(rosterUsersError)} value={rosterProfileId} onChange={(event) => setRosterProfileId(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Pilih petugas</option>{usersList.filter((entry) => entry.role !== 'INVESTOR').map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name} · {taskLabel(entry.role)}</option>)}</select></label>
+                <label style={labelStyle}>Shift<select disabled={Boolean(rosterUsersError)} value={rosterShift} onChange={(event) => setRosterShift(event.target.value as typeof rosterShift)} style={{ ...inputStyle, marginTop: '4px' }}><option value="SIANG">Shift siang</option><option value="MALAM">Shift malam</option><option value="FULL">Shift penuh</option></select></label>
+                <label style={labelStyle}>Area yang diharapkan<select disabled={Boolean(rosterUsersError)} value={rosterArea} onChange={(event) => setRosterArea(event.target.value as typeof rosterArea)} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Fleksibel</option><option value="BAR">Area bar</option><option value="KITCHEN">Area dapur</option></select></label>
+                <label style={labelStyle}>Perlakuan upah<select disabled={Boolean(rosterUsersError)} value={rosterPayTreatment} onChange={(event) => setRosterPayTreatment(event.target.value as typeof rosterPayTreatment)} style={{ ...inputStyle, marginTop: '4px' }}><option value="BASE">Jadwal reguler</option><option value="EXTRA">Hari kerja tambahan</option><option value="MAKEUP">Pengganti hari kerja</option></select></label>
+                <label style={{ ...labelStyle, gridColumn: '1 / -1' }}>Alasan khusus <span className="muted">(wajib untuk hari Selasa)</span><textarea disabled={Boolean(rosterUsersError)} value={rosterReason} onChange={(event) => setRosterReason(event.target.value)} rows={2} maxLength={500} placeholder="Jelaskan perubahan atau perlakuan jadwal khusus." style={{ ...inputStyle, marginTop: '4px', resize: 'vertical' }} /></label>
+                <div style={{ gridColumn: '1 / -1' }}><button type="submit" className="primary-button" disabled={Boolean(rosterUsersError) || actionLoading === 'roster'}>{actionLoading === 'roster' ? 'Menyimpan...' : 'Tambahkan Jadwal'}</button></div>
               </form>
             </div>
           </div>
@@ -1732,7 +1750,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             <label style={{ ...labelStyle, marginTop: '14px' }} htmlFor="management-stock-reason">Alasan {stockTarget.reference_state === 'AVAILABLE' ? 'koreksi' : 'pencatatan'} (wajib)</label>
             <textarea id="management-stock-reason" value={stockReason} onChange={(event) => setStockReason(event.target.value)} maxLength={1000} rows={3} placeholder="Catat hasil hitung fisik atau dasar koreksi." style={{ ...inputStyle, resize: 'vertical' }} />
             {stockFormError && <p role="alert" style={{ color: '#991b1b', fontSize: '12px', margin: '10px 0 0' }}>{stockFormError}</p>}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap', marginTop: '16px' }}><button type="button" className="outline-button" onClick={() => setStockTarget(null)} disabled={actionLoading === 'stock-baseline'}>Batal</button><button type="button" className="primary-button" onClick={() => void submitStockForm()} disabled={actionLoading === 'stock-baseline'}>{actionLoading === 'stock-baseline' ? 'Menyimpan...' : stockTarget.reference_state === 'AVAILABLE' ? 'Simpan Koreksi Baseline' : 'Simpan Baseline Fisik'}</button></div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap', marginTop: '16px' }}><button type="button" className="outline-button" onClick={() => setStockTarget(null)} disabled={actionLoading === 'stock-baseline'}>Batal</button><button type="button" className="primary-button" onClick={() => void submitStockForm()} disabled={actionLoading === 'stock-baseline'}>{actionLoading === 'stock-baseline' ? 'Menyimpan...' : stockTarget.reference_state === 'AVAILABLE' ? 'Simpan koreksi stok patokan' : 'Tetapkan stok patokan'}</button></div>
           </Dialog>
         )}
 

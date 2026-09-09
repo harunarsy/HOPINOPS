@@ -75,6 +75,7 @@ test.describe('Authenticated staging API flows', () => {
     const cycleId = assignment?.cycle_id;
     expect(cycleId).toBeTruthy();
 
+
     // Outlet fresh wajib INITIALIZATION_REQUIRED (tanpa histori handover/closing).
     let ref = await api.get(`/api/app?action=opening.reference&cycle_id=${cycleId}`);
     expect(ref.status).toBe(200);

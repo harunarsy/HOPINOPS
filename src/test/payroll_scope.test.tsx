@@ -89,6 +89,22 @@ describe('ManagementView payroll period isolation', () => {
     expect(vi.mocked(api.listOvertime)).toHaveBeenCalledTimes(initialOvertimeCalls);
   });
 
+  it('keeps the roster visible and disables schedule creation when the users list fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listRoster).mockResolvedValue([{
+      id: 'roster-1', work_date: wibDateKey(), shift_code: 'SIANG', expected_area: 'BAR',
+      pay_treatment: 'BASE', status: 'SCHEDULED', profiles: { display_name: 'Petugas Bar' },
+    }] as any);
+    vi.mocked(api.listUsers).mockRejectedValue(new Error('server error'));
+
+    render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /atur jadwal/i }));
+
+    expect(await screen.findByText('Petugas Bar')).toBeDefined();
+    expect(screen.getByRole('alert').textContent).toMatch(/daftar petugas belum dapat dimuat/i);
+    expect((screen.getByRole('button', { name: /tambahkan jadwal/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('lets management record a zero baseline directly from Stok Area', async () => {
     const user = userEvent.setup();
     vi.mocked(api.getManagementStockReadiness).mockResolvedValue({
@@ -104,12 +120,12 @@ describe('ManagementView payroll period isolation', () => {
     render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: /stok area/i }));
-    await user.click(await screen.findByRole('button', { name: /isi stok area bar/i }));
+    await user.click(await screen.findByRole('button', { name: /tetapkan stok patokan area bar/i }));
     const quantity = screen.getByRole('spinbutton', { name: /jumlah fisik sirup gula/i });
     await user.clear(quantity);
     await user.type(quantity, '0');
     await user.type(screen.getByLabelText(/alasan pencatatan/i), 'Hitung fisik awal outlet.');
-    await user.click(screen.getByRole('button', { name: /simpan baseline fisik/i }));
+    await user.click(screen.getByRole('button', { name: /^tetapkan stok patokan$/i }));
     await waitFor(() => expect(api.recordCyclePhysicalBaseline).toHaveBeenCalledWith(
       '11111111-1111-4111-8111-111111111111', 1, [{ item_id: 'sirup', counted_qty: 0 }], 'Hitung fisik awal outlet.', expect.any(String),
     ));
