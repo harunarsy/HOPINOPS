@@ -13,7 +13,9 @@ Status: aktif. Dokumen ini adalah urutan kerja dan gate keputusan untuk reliabil
 - [x] Database regression mencakup PRIMARY own-area, HELPER/unassigned denial, cross-area denial, current-cycle freeze, dan promotion setelah cycle terminal.
 - [x] Validasi aplikasi: `pnpm lint`, `pnpm test` (81 test), `pnpm build`, diagnostics, dan `git diff --check` lulus.
 - [x] Staging E2E disposable melalui `vercel dev` lokal dan Supabase staging lulus 22/22, dengan provision dan teardown 2 outlet serta 8 profil bersih. Runner sekarang membuat `.env` sementara berizin `0600`, menolak menimpa `.env` pengguna, lalu menghapusnya saat teardown.
-- [ ] Root cause production `Atur Jadwal`, audit Vercel, rotasi credential staging, konsolidasi folder, dan pensiun project Vercel menunggu bukti atau approval gate yang tercantum di bawah.
+- [x] Release `48a13736b58f29f072bd51c7e3a65dd27b4baa3f` dipush ke `main`, migration `0029` tercatat pada production, dan deployment production `hopinops-bgdii6n0m-harunarsys-projects.vercel.app` berstatus Ready.
+- [x] Alias canonical `https://hopinops.vercel.app` diverifikasi dan dipindahkan eksplisit ke deployment production terbaru. `GET /api/health` menjawab `ok`; `/api/readiness` menolak tanpa Bearer token sesuai desain (`401`).
+- [ ] Root cause production `Atur Jadwal`, rotasi credential staging, konsolidasi folder, dan pensiun project Vercel belum dapat ditutup tanpa bukti/akses tambahan yang tercantum di bawah.
 
 ## Target akhir
 
@@ -59,6 +61,8 @@ Production dan staging tetap dua database terpisah. Yang disatukan adalah source
 
 Gate: `Atur Jadwal` dapat dibuka di production, roster dan pengguna berhasil dimuat atau partial failure ditangani dengan aman.
 
+Status 9 September 2026: fallback partial-failure sudah dirilis, tetapi root cause backend belum dinyatakan selesai karena belum ada request gagal production yang dapat direproduksi dari akun Management. Bukti yang masih diperlukan: action (`roster.list` atau `users.list`), HTTP status, timestamp/request ID, dan Vercel Function log terkait.
+
 ## Fase 2: Deployment production
 
 1. Audit Vercel project `hopinops` untuk Git integration, production branch, root directory, build, domains, aliases, cron, hooks, integrations, redirects, dan protection.
@@ -73,8 +77,8 @@ push main
 ```
 
 3. Verifikasi alias canonical sesudah setiap deploy. `vercel --prod` saja bukan bukti alias berpindah.
-4. Audit project `webapp` hanya untuk dependency aktif. Jangan hapus sebelum audit selesai dan approval diberikan.
-5. Sebelum migration production, lakukan `supabase db push --project-ref naanarmoktmsumkxmjvj --dry-run` dan cocokkan hanya migration yang disetujui.
+4. Audit project `webapp` hanya untuk dependency aktif. Jangan hapus sebelum audit selesai dan approval diberikan. Alias yang masih aktif pada audit awal: `webapp-harunarsys-projects.vercel.app`, `webapp-git-main-harunarsys-projects.vercel.app`, dan `webapp-rose-mu.vercel.app`; karena itu project belum aman dihapus.
+5. Sebelum migration production, lakukan `supabase db push --project-ref naanarmoktmsumkxmjvj --dry-run` dan cocokkan hanya migration yang disetujui. Release ini sudah menerapkan `0029` dan riwayat production menunjukkan local/remote sama sampai `0029`.
 
 Gate: `main` terbukti menjadi sumber deployment `hopinops.vercel.app`.
 
@@ -192,7 +196,7 @@ Sebelum eksekusi, buat checkpoint khusus dan verifikasi Git history, package scr
 
 ### Credential staging
 
-Rotasi service-role key staging yang pernah terekspos, perbarui environment terkait, lalu cabut credential lama tanpa menampilkan nilainya.
+Rotasi service-role key staging yang pernah terekspos, perbarui environment terkait, lalu cabut credential lama tanpa menampilkan nilainya. Aksi ini menunggu akses dashboard/API credential management Supabase; key tidak dapat dirotasi aman hanya melalui migration CLI.
 
 ### Pensiun project Vercel webapp
 
