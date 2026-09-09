@@ -89,6 +89,32 @@ describe('ManagementView payroll period isolation', () => {
     expect(vi.mocked(api.listOvertime)).toHaveBeenCalledTimes(initialOvertimeCalls);
   });
 
+  it('lets management record a zero baseline directly from Stok Area', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getManagementStockReadiness).mockResolvedValue({
+      work_date: wibDateKey(),
+      cycles: [{
+        cycle_id: '11111111-1111-4111-8111-111111111111', work_date: wibDateKey(), shift_code: 'SIANG', area_code: 'BAR',
+        cycle_status: 'ACTIVE', version: 1, primary_name: 'Petugas Bar', opening_exists: false,
+        physical_baseline_id: null, reference_state: 'INITIALIZATION_REQUIRED', reference_source_type: null,
+        missing_item_ids: ['sirup'], lines: [{ item_id: 'sirup', item_name: 'Sirup Gula', unit_code: 'ml', low_threshold: 100, reference_qty: null }],
+      }],
+    } as any);
+    vi.mocked(api.recordCyclePhysicalBaseline).mockResolvedValue({ cycle_id: '11111111-1111-4111-8111-111111111111', version: 1, idempotent_replay: false } as any);
+    render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /stok area/i }));
+    await user.click(await screen.findByRole('button', { name: /isi stok area bar/i }));
+    const quantity = screen.getByRole('spinbutton', { name: /jumlah fisik sirup gula/i });
+    await user.clear(quantity);
+    await user.type(quantity, '0');
+    await user.type(screen.getByLabelText(/alasan pencatatan/i), 'Hitung fisik awal outlet.');
+    await user.click(screen.getByRole('button', { name: /simpan baseline fisik/i }));
+    await waitFor(() => expect(api.recordCyclePhysicalBaseline).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111', 1, [{ item_id: 'sirup', counted_qty: 0 }], 'Hitung fisik awal outlet.', expect.any(String),
+    ));
+  });
+
   it('closes payroll dialogs when the period changes before confirming', async () => {
     const user = userEvent.setup();
     const periodA = wibDateKey().slice(0, 7);
