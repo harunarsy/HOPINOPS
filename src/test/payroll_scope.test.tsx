@@ -8,6 +8,9 @@ import { ManagementView } from '../features/management/ManagementView';
 vi.mock('../lib/api', () => ({
   api: {
     getDashboard: vi.fn(),
+    getManagementStockReadiness: vi.fn(),
+    recordCyclePhysicalBaseline: vi.fn(),
+    correctCyclePhysicalBaseline: vi.fn(),
     listRoster: vi.fn(),
     listUsers: vi.fn(),
     listAttendanceExceptions: vi.fn(),
@@ -43,6 +46,7 @@ describe('ManagementView payroll period isolation', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(api.getDashboard).mockResolvedValue({} as any);
+    vi.mocked(api.getManagementStockReadiness).mockResolvedValue({ work_date: wibDateKey(), cycles: [] } as any);
     vi.mocked(api.listRoster).mockResolvedValue([] as any);
     vi.mocked(api.listUsers).mockResolvedValue([] as any);
     vi.mocked(api.listAttendanceExceptions).mockResolvedValue([] as any);
@@ -62,26 +66,27 @@ describe('ManagementView payroll period isolation', () => {
     expect(vi.mocked(api.getPayrollRun)).toHaveBeenCalledWith(monthInput().value);
   });
 
-  it('normalizes empty schedule and review date controls before loading', async () => {
+  it('keeps invalid schedule and review filters as drafts without sending a malformed request', async () => {
     const user = userEvent.setup();
     render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: /atur jadwal/i }));
     const rosterMonth = document.querySelector('input[type="month"]') as HTMLInputElement;
+    const initialRosterCalls = vi.mocked(api.listRoster).mock.calls.length;
     fireEvent.change(rosterMonth, { target: { value: '' } });
-    fireEvent.blur(rosterMonth);
-    await waitFor(() => expect(rosterMonth.value).toMatch(/^\d{4}-(0[1-9]|1[0-2])$/));
-    expect(vi.mocked(api.listRoster)).toHaveBeenLastCalledWith(rosterMonth.value);
+    expect(rosterMonth.value).toBe('');
+    await user.click(screen.getByRole('button', { name: /terapkan bulan/i }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/masukkan bulan yang valid/i);
+    expect(vi.mocked(api.listRoster)).toHaveBeenCalledTimes(initialRosterCalls);
 
     await user.click(screen.getByRole('button', { name: /review kehadiran/i }));
     const dateInputs = Array.from(document.querySelectorAll('input[type="date"]')) as HTMLInputElement[];
+    const initialOvertimeCalls = vi.mocked(api.listOvertime).mock.calls.length;
     fireEvent.change(dateInputs[0], { target: { value: '' } });
     fireEvent.change(dateInputs[1], { target: { value: '' } });
     await user.click(screen.getByRole('button', { name: 'Terapkan' }));
-    await waitFor(() => expect(vi.mocked(api.listOvertime)).toHaveBeenLastCalledWith({
-      from: `${wibDateKey().slice(0, 8)}01`,
-      to: wibDateKey(),
-    }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/masukkan tanggal awal dan akhir yang valid/i);
+    expect(vi.mocked(api.listOvertime)).toHaveBeenCalledTimes(initialOvertimeCalls);
   });
 
   it('closes payroll dialogs when the period changes before confirming', async () => {

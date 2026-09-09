@@ -3,13 +3,14 @@ import { api } from '../../lib/api';
 import { fmtRupiah, wibDate, wibDateKey } from '../../domain/rules';
 import { CatalogManager } from './CatalogManager';
 
-type Tab = 'dashboard' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account' | 'catalog';
+type Tab = 'dashboard' | 'stock' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account' | 'catalog';
 type Settings = Awaited<ReturnType<typeof api.getSettings>>;
 type Session = Awaited<ReturnType<typeof api.listSessions>>[number];
 type Decision = 'APPROVED' | 'REJECTED';
 
 type ManagementCache = {
   dashboard?: any;
+  stock?: { work_date: string; cycles: any[] };
   roster?: { entries: any[]; users: any[] };
   exceptions?: { attendance: any[]; overtime: any[] };
   sessions?: Session[];
@@ -143,6 +144,11 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [receipt, setReceipt] = useState<{ message: string; error?: boolean } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
   const [dashboardData, setDashboardData] = useState<any>(null);
+  const [stockReadiness, setStockReadiness] = useState<{ work_date: string; cycles: any[] } | null>(null);
+  const [stockTarget, setStockTarget] = useState<any | null>(null);
+  const [stockCounts, setStockCounts] = useState<Record<string, string>>({});
+  const [stockReason, setStockReason] = useState('');
+  const [stockFormError, setStockFormError] = useState('');
   const [investorReports, setInvestorReports] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -150,7 +156,12 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   // Roster, attendance, overtime, and settings state
   const [roster, setRoster] = useState<any[]>([]);
-  const [rosterMonth, setRosterMonth] = useState(wibDateKey().slice(0, 7));
+const defaultRosterMonth = wibDateKey().slice(0, 7);
+const defaultReviewFrom = `${wibDateKey().slice(0, 8)}01`;
+const defaultReviewTo = wibDateKey();
+const [rosterMonthDraft, setRosterMonthDraft] = useState(defaultRosterMonth);
+const [rosterMonthApplied, setRosterMonthApplied] = useState(defaultRosterMonth);
+const [rosterFilterError, setRosterFilterError] = useState('');
   const [rosterDate, setRosterDate] = useState(wibDateKey());
   const [rosterShift, setRosterShift] = useState<'SIANG' | 'MALAM' | 'FULL'>('SIANG');
   const [rosterProfileId, setRosterProfileId] = useState('');
@@ -159,8 +170,10 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [rosterReason, setRosterReason] = useState('');
   const [attendanceExceptions, setAttendanceExceptions] = useState<any[]>([]);
   const [overtime, setOvertime] = useState<any[]>([]);
-  const [reviewFrom, setReviewFrom] = useState(`${wibDateKey().slice(0, 8)}01`);
-  const [reviewTo, setReviewTo] = useState(wibDateKey());
+  const [reviewFromDraft, setReviewFromDraft] = useState(defaultReviewFrom);
+  const [reviewToDraft, setReviewToDraft] = useState(defaultReviewTo);
+  const [reviewRangeApplied, setReviewRangeApplied] = useState({ from: defaultReviewFrom, to: defaultReviewTo });
+  const [reviewFilterError, setReviewFilterError] = useState('');
   const [attendanceReview, setAttendanceReview] = useState<{ attendance: any; correction: any; decision: Decision } | null>(null);
   const [overtimeReview, setOvertimeReview] = useState<{ claim: any; decision: Decision } | null>(null);
   const [reviewNote, setReviewNote] = useState('');
@@ -239,19 +252,96 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const showToast = (message: string) => setReceipt({ message });
   const showError = (message: string) => setReceipt({ message, error: true });
 
+  const applyRosterMonth = () => {
+    if (!isValidIsoMonth(rosterMonthDraft)) {
+      setRosterFilterError('Masukkan bulan yang valid.');
+      return;
+    }
+    setRosterFilterError('');
+    setRosterMonthApplied(rosterMonthDraft);
+  };
+
+  const applyReviewRange = () => {
+    if (!isValidIsoDate(reviewFromDraft) || !isValidIsoDate(reviewToDraft)) {
+      setReviewFilterError('Masukkan tanggal awal dan akhir yang valid.');
+      return;
+    }
+    if (reviewFromDraft > reviewToDraft) {
+      setReviewFilterError('Tanggal awal harus sebelum atau sama dengan tanggal akhir.');
+      return;
+    }
+    if (Date.parse(`${reviewToDraft}T00:00:00Z`) - Date.parse(`${reviewFromDraft}T00:00:00Z`) > 366 * 86_400_000) {
+      setReviewFilterError('Rentang maksimal 366 hari.');
+      return;
+    }
+    setReviewFilterError('');
+    setReviewRangeApplied({ from: reviewFromDraft, to: reviewToDraft });
+  };
+
+  const openStockForm = (cycle: any) => {
+    const counts: Record<string, string> = {};
+    for (const line of cycle.lines ?? []) {
+      if (line.reference_qty !== null && line.reference_qty !== undefined) counts[line.item_id] = String(line.reference_qty);
+    }
+    setStockTarget(cycle);
+    setStockCounts(counts);
+    setStockReason('');
+    setStockFormError('');
+  };
+
+  const submitStockForm = async () => {
+    if (!stockTarget) return;
+    const reason = stockReason.trim();
+    if (!reason) {
+      setStockFormError('Alasan pencatatan atau koreksi wajib diisi.');
+      return;
+    }
+    const lines = stockTarget.reference_state === 'AVAILABLE'
+      ? (stockTarget.lines ?? [])
+      : (stockTarget.lines ?? []).filter((line: any) => line.reference_qty === null || line.reference_qty === undefined);
+    const missing = lines.find((line: any) => stockCounts[line.item_id] === undefined || stockCounts[line.item_id].trim() === '');
+    if (missing) {
+      setStockFormError(`Jumlah fisik untuk ${missing.item_id} belum diisi. Nilai 0 boleh digunakan bila stok habis.`);
+      return;
+    }
+    const invalid = lines.find((line: any) => !Number.isFinite(Number(stockCounts[line.item_id])) || Number(stockCounts[line.item_id]) < 0);
+    if (invalid) {
+      setStockFormError(`Jumlah fisik untuk ${invalid.item_id} harus berupa angka minimal 0.`);
+      return;
+    }
+    setActionLoading('stock-baseline');
+    setStockFormError('');
+    try {
+      const payload = lines.map((line: any) => ({ item_id: line.item_id, counted_qty: Number(stockCounts[line.item_id]) }));
+      if (stockTarget.physical_baseline_id) {
+        await api.correctCyclePhysicalBaseline(stockTarget.cycle_id, stockTarget.version, payload, reason, crypto.randomUUID());
+        showToast('Koreksi baseline dicatat dengan riwayat sebelum dan sesudah nilai.');
+      } else {
+        await api.recordCyclePhysicalBaseline(stockTarget.cycle_id, stockTarget.version, payload, reason, crypto.randomUUID());
+        showToast('Baseline fisik berhasil dicatat.');
+      }
+      setStockTarget(null);
+      cacheRef.current.delete('stock');
+      await loadData(true);
+    } catch (error: any) {
+      setStockFormError(error.message || 'Baseline stok gagal disimpan.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
   const loadData = useCallback(async (force = false) => {
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
-    const validRosterMonth = isValidIsoMonth(rosterMonth) ? rosterMonth : wibDateKey().slice(0, 7);
-    const validReviewRange = isValidIsoDate(reviewFrom) && isValidIsoDate(reviewTo) && reviewFrom <= reviewTo
-      && Date.parse(`${reviewTo}T00:00:00Z`) - Date.parse(`${reviewFrom}T00:00:00Z`) <= 366 * 86_400_000;
-    const reviewFromValue = validReviewRange ? reviewFrom : `${wibDateKey().slice(0, 8)}01`;
-    const reviewToValue = validReviewRange ? reviewTo : wibDateKey();
+    const validRosterMonth = rosterMonthApplied;
+    const reviewFromValue = reviewRangeApplied.from;
+    const reviewToValue = reviewRangeApplied.to;
     const cacheKey = tab === 'roster' ? `roster:${validRosterMonth}` : tab === 'exceptions' ? `exceptions:${reviewFromValue}:${reviewToValue}` : tab;
     const cached = !force ? cacheRef.current.get(cacheKey) : undefined;
 
     if (cached) {
       if (tab === 'dashboard') setDashboardData(cached.dashboard);
+      if (tab === 'stock' && cached.stock) setStockReadiness(cached.stock);
       if (tab === 'roster' && cached.roster) {
         setRoster(cached.roster.entries);
         setUsersList(cached.roster.users);
@@ -289,6 +379,11 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
         if (loadRequestRef.current !== requestId) return;
         cacheRef.current.set(cacheKey, { dashboard });
         setDashboardData(dashboard);
+      } else if (tab === 'stock') {
+        const stock = await api.getManagementStockReadiness();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { stock });
+        setStockReadiness(stock);
       } else if (tab === 'roster') {
         const [entries, users] = await Promise.all([api.listRoster(validRosterMonth), api.listUsers()]);
         if (loadRequestRef.current !== requestId) return;
@@ -324,7 +419,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
     } finally {
       if (loadRequestRef.current === requestId) setLoading(false);
     }
-  }, [isInvestor, payrollPeriod, reviewFrom, reviewTo, rosterMonth, tab]);
+  }, [isInvestor, payrollPeriod, reviewRangeApplied, rosterMonthApplied, tab]);
 
   const loadPayroll = async (period: string) => {
     const requestId = payrollRequestRef.current + 1;
@@ -812,6 +907,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
         <nav className="tabs" aria-label="Navigasi manajemen">
           {!isInvestor ? <>
             <button className={tab === 'dashboard' ? 'active' : ''} aria-current={tab === 'dashboard' ? 'page' : undefined} onClick={() => setTab('dashboard')}>Ringkasan Shift</button>
+            <button className={tab === 'stock' ? 'active' : ''} aria-current={tab === 'stock' ? 'page' : undefined} onClick={() => setTab('stock')}>Stok Area</button>
             <button className={tab === 'roster' ? 'active' : ''} aria-current={tab === 'roster' ? 'page' : undefined} onClick={() => setTab('roster')}>Atur Jadwal</button>
             <button className={tab === 'exceptions' ? 'active' : ''} aria-current={tab === 'exceptions' ? 'page' : undefined} onClick={() => setTab('exceptions')}>Review Kehadiran</button>
             <button className={tab === 'payroll' ? 'active' : ''} aria-current={tab === 'payroll' ? 'page' : undefined} onClick={() => setTab('payroll')}>Kelola Payroll</button>
@@ -879,16 +975,11 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                           Bantuan: {helpers.map((h: any) => h.profiles?.display_name).join(', ')}
                         </small>
                       )}
-                        {c.status === 'ACTIVE' && onEnterOperatorMode && (
-                          <div style={{ marginTop: '8px', display: 'grid', gap: '6px' }}>
-                            <button
-                              type="button"
-                              className="outline-button"
-                              onClick={onEnterOperatorMode}
-                              style={{ fontSize: '12px', padding: '6px 12px' }}
-                            >
-                              Buka form baseline fisik di workspace
-                            </button>
+                        {c.status === 'ACTIVE' && (
+                        <div style={{ marginTop: '8px' }}>
+                          <button type="button" className="outline-button" onClick={() => setTab('stock')} style={{ fontSize: '12px', padding: '6px 12px' }}>
+                            Kelola stok area
+                          </button>
                         </div>
                       )}
                     </div>
@@ -915,6 +1006,37 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
           </div>
         )}
 
+        {/* STOCK AREA: a direct management surface, never dependent on Mode Shift. */}
+        {tab === 'stock' && !isInvestor && (
+          <div style={{ display: 'grid', gap: '16px' }}>
+            <div className="section-card">
+              <div className="section-heading" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                <div><p className="eyebrow">KETERSEDIAAN STOK HARI INI</p><h2>Bar dan Kitchen</h2><p className="muted" style={{ marginTop: '7px' }}>Baseline diisi dari sini tanpa masuk Mode Shift. Nilai 0 berarti habis, bukan kosong.</p></div>
+                <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Muat ulang status</button>
+              </div>
+              {!loading && !viewError && (stockReadiness?.cycles ?? []).length === 0 ? (
+                <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Belum ada cycle Bar atau Kitchen untuk tanggal ini.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: '12px', marginTop: '16px' }}>
+                  {(stockReadiness?.cycles ?? []).map((cycle: any) => {
+                    const missingCount = cycle.missing_item_ids?.length ?? 0;
+                    const hasBaseline = Boolean(cycle.physical_baseline_id);
+                    const hasReference = cycle.reference_state === 'AVAILABLE';
+                    const locked = Boolean(cycle.opening_exists);
+                    const readiness = locked ? 'Opening sudah dikonfirmasi' : hasBaseline || hasReference ? 'Patokan tersedia' : missingCount ? `Menunggu hitung ${missingCount} item` : 'Perlu peninjauan';
+                    return <article key={cycle.cycle_id} style={{ padding: '14px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9', minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'start', flexWrap: 'wrap' }}><strong>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</strong><span className={`tag ${locked ? 'neutral' : hasBaseline ? 'good' : 'warn'}`}>{readiness}</span></div>
+                      <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>PJ Utama: <strong>{cycle.primary_name || 'Belum ditugaskan'}</strong></p>
+                      <p className="muted" style={{ fontSize: '12px', marginTop: '4px' }}>Cycle: {taskLabel(cycle.cycle_status)}</p>
+                      {locked ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Baseline sudah menjadi bagian opening. Gunakan koreksi ledger untuk perubahan setelah ini.</p> : hasBaseline ? <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Koreksi baseline {taskLabel(cycle.area_code)}</button> : hasReference ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Patokan berasal dari {cycle.reference_source_type || 'sumber server'}, bukan baseline fisik cycle ini.</p> : <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Isi stok {taskLabel(cycle.area_code)}</button>}
+                    </article>;
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* 2. ROSTER */}
         {tab === 'roster' && !isInvestor && (
           <div style={{ display: 'grid', gap: '16px' }}>
@@ -924,10 +1046,14 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                   <p className="eyebrow">JADWAL KERJA BULANAN</p>
                   <h2>Lihat dan Tambah Jadwal</h2>
                 </div>
-                <label style={{ ...labelStyle, marginBottom: 0 }}>
-                  Bulan
-                  <input type="month" value={rosterMonth} onChange={(event) => setRosterMonth(isValidIsoMonth(event.target.value) ? event.target.value : wibDateKey().slice(0, 7))} style={{ ...inputStyle, marginTop: '4px' }} />
-                </label>
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 0 }}>
+                    Bulan
+                    <input type="month" value={rosterMonthDraft} onChange={(event) => { setRosterMonthDraft(event.target.value); setRosterFilterError(''); }} style={{ ...inputStyle, marginTop: '4px' }} />
+                  </label>
+                  {rosterFilterError && <span role="alert" style={{ display: 'block', color: '#991b1b', marginTop: '4px' }}>{rosterFilterError}</span>}
+                  <button type="button" className="outline-button" onClick={applyRosterMonth} disabled={loading} style={{ marginTop: '8px', width: '100%' }}>Terapkan bulan</button>
+                </div>
               </div>
 
               {!loading && !viewError && roster.length === 0 ? (
@@ -975,9 +1101,10 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               <div className="section-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', flexWrap: 'wrap', gap: '12px' }}>
                 <div><p className="eyebrow">RENTANG REVIEW</p><h2>Tugas Kehadiran</h2></div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'end', flexWrap: 'wrap' }}>
-                  <label style={labelStyle}>Dari<input type="date" value={reviewFrom} onChange={(event) => setReviewFrom(isValidIsoDate(event.target.value) ? event.target.value : `${wibDateKey().slice(0, 8)}01`)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
-                  <label style={labelStyle}>Sampai<input type="date" value={reviewTo} onChange={(event) => setReviewTo(isValidIsoDate(event.target.value) ? event.target.value : wibDateKey())} style={{ ...inputStyle, marginTop: '4px' }} /></label>
-                  <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Terapkan</button>
+                  <label style={labelStyle}>Dari<input type="date" value={reviewFromDraft} onChange={(event) => { setReviewFromDraft(event.target.value); setReviewFilterError(''); }} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <label style={labelStyle}>Sampai<input type="date" value={reviewToDraft} onChange={(event) => { setReviewToDraft(event.target.value); setReviewFilterError(''); }} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <button type="button" className="outline-button" onClick={applyReviewRange} disabled={loading}>Terapkan</button>
+                  {reviewFilterError && <span role="alert" style={{ color: '#991b1b', fontSize: '12px', width: '100%' }}>{reviewFilterError}</span>}
                 </div>
               </div>
             </div>
@@ -1581,6 +1708,32 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               )}
             </div>
           </div>
+        )}
+
+        {stockTarget && (
+          <Dialog titleId="management-stock-title" title={`${stockTarget.reference_state === 'AVAILABLE' ? 'Koreksi' : 'Isi'} baseline ${taskLabel(stockTarget.area_code)} · ${taskLabel(stockTarget.shift_code)}`} onClose={() => { if (actionLoading !== 'stock-baseline') setStockTarget(null); }}>
+            <p className="muted" style={{ fontSize: '13px', margin: '0 0 14px' }}>
+              Kolom kosong berarti belum dihitung dan tidak dapat disimpan. Nilai <strong>0</strong> valid, artinya stok habis. Status hampir habis mengikuti ambang masing-masing item dan satuannya.
+            </p>
+            <div style={{ display: 'grid', gap: '9px' }}>
+              {(stockTarget.reference_state === 'AVAILABLE'
+                ? (stockTarget.lines ?? [])
+                : (stockTarget.lines ?? []).filter((line: any) => line.reference_qty === null || line.reference_qty === undefined)
+              ).map((line: any) => {
+                const value = stockCounts[line.item_id] ?? '';
+                const numeric = value.trim() === '' ? null : Number(value);
+                const status = numeric === null || !Number.isFinite(numeric) ? 'Belum dihitung' : numeric <= 0 ? 'Habis' : numeric <= Number(line.low_threshold) ? 'Hampir habis' : 'Aman';
+                return <label key={line.item_id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 112px', gap: '10px', alignItems: 'center', padding: '10px', background: '#f8faf9', border: '1px solid #e0ece6', borderRadius: '8px' }}>
+                  <span style={{ minWidth: 0 }}><strong style={{ display: 'block' }}>{line.item_name || line.item_id}</strong><small className="muted">Ambang rendah: {line.low_threshold} {line.unit_code}. Status: {status}</small></span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><input type="number" min="0" step="any" value={value} aria-label={`Jumlah fisik ${line.item_name || line.item_id}`} onChange={(event) => setStockCounts({ ...stockCounts, [line.item_id]: event.target.value })} style={{ ...inputStyle, textAlign: 'right', minWidth: 0 }} /><small>{line.unit_code}</small></span>
+                </label>;
+              })}
+            </div>
+            <label style={{ ...labelStyle, marginTop: '14px' }} htmlFor="management-stock-reason">Alasan {stockTarget.reference_state === 'AVAILABLE' ? 'koreksi' : 'pencatatan'} (wajib)</label>
+            <textarea id="management-stock-reason" value={stockReason} onChange={(event) => setStockReason(event.target.value)} maxLength={1000} rows={3} placeholder="Catat hasil hitung fisik atau dasar koreksi." style={{ ...inputStyle, resize: 'vertical' }} />
+            {stockFormError && <p role="alert" style={{ color: '#991b1b', fontSize: '12px', margin: '10px 0 0' }}>{stockFormError}</p>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap', marginTop: '16px' }}><button type="button" className="outline-button" onClick={() => setStockTarget(null)} disabled={actionLoading === 'stock-baseline'}>Batal</button><button type="button" className="primary-button" onClick={() => void submitStockForm()} disabled={actionLoading === 'stock-baseline'}>{actionLoading === 'stock-baseline' ? 'Menyimpan...' : stockTarget.reference_state === 'AVAILABLE' ? 'Simpan Koreksi Baseline' : 'Simpan Baseline Fisik'}</button></div>
+          </Dialog>
         )}
 
         {emergencyTarget && (

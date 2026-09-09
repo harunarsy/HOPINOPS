@@ -172,6 +172,7 @@ export function StockWorkspace({
 
   const isPrimary = dutyRole === 'PRIMARY';
   const canSaveDraft = dutyRole === 'PRIMARY' || dutyRole === 'HELPER' || canManage;
+  const canEditOpeningBaseline = isPrimary || canManage;
 
   // E2: report unsaved work upward so logout can confirm instead of silently discarding.
   // Queue entries persist in-device (scoped per user/outlet); unconfirmed counts may be lost.
@@ -526,11 +527,17 @@ export function StockWorkspace({
     return map;
   }, [items, openingRecord, openingReferenceByItem, movements]);
 
-  const markOpeningCount = (itemId: string, value: string) => {
+  const canEditOpeningItem = (itemId: string) => {
     const reference = openingReferenceByItem.get(itemId);
     const canEnterBaseline = openingReference?.state === 'INITIALIZATION_REQUIRED'
       && missingOpeningReferences.some((item) => item.id === itemId);
-    if (isOpeningConfirmed || (reference === undefined && !canEnterBaseline)) return;
+    return canEditOpeningBaseline && !isOpeningConfirmed
+      && (reference !== undefined || canEnterBaseline);
+  };
+
+  const markOpeningCount = (itemId: string, value: string) => {
+    const reference = openingReferenceByItem.get(itemId);
+    if (!canEditOpeningItem(itemId)) return;
     const next = { ...openingCounts, [itemId]: value };
     localInputDirtyRef.current = true;
     setOpeningCounts(next);
@@ -614,8 +621,9 @@ export function StockWorkspace({
     }
 
     const missingCount = missingOpeningReferences.find((item) => {
-      const value = openingCounts[item.id]?.trim();
-      return !value || !Number.isFinite(Number(value)) || Number(value) < 0;
+      const rawValue = openingCounts[item.id];
+      const value = rawValue?.trim();
+      return value === undefined || value === '' || !Number.isFinite(Number(value)) || Number(value) < 0;
     });
     if (missingCount) {
       showCriticalError(`Jumlah fisik "${missingCount.name}" wajib diisi dan tidak boleh negatif.`);
@@ -1363,7 +1371,7 @@ export function StockWorkspace({
                       <button
                         type="button"
                         onClick={() => refVal !== null && markOpeningCount(it.id, String(refVal))}
-                         disabled={isOpeningConfirmed || refVal === null}
+                        disabled={!canEditOpeningItem(it.id) || refVal === null}
                         style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         Sesuai
@@ -1371,7 +1379,7 @@ export function StockWorkspace({
                       <button
                         type="button"
                         onClick={() => markOpeningCount(it.id, '0')}
-                         disabled={isOpeningConfirmed || refVal === null}
+                        disabled={!canEditOpeningItem(it.id)}
                         style={{ padding: '4px 8px', minHeight: '44px', minWidth: '44px', borderRadius: '6px', border: '1px solid #c9dad1', background: '#fff', color: '#1e5b48', fontSize: '11px', fontWeight: 700 }}
                       >
                         0
@@ -1381,7 +1389,7 @@ export function StockWorkspace({
                         type="number"
                         min="0"
                         step="any"
-                         disabled={isOpeningConfirmed || (refVal === null && openingReference?.state !== 'INITIALIZATION_REQUIRED')}
+                        disabled={!canEditOpeningItem(it.id)}
                         value={val}
                         placeholder="Custom"
                         aria-label={`Jumlah fisik stok awal ${it.name}`}
@@ -1463,7 +1471,12 @@ export function StockWorkspace({
                  placeholder="Contoh: outlet baru, belum ada stok historis"
                  style={{ width: '100%', minHeight: '72px', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', resize: 'vertical' }}
                />
-               <button type="button" className="primary-button" onClick={() => void handleRecordPhysicalBaseline()} disabled={baselineSubmitting || !baselineReason.trim() || !isPrimary && !canManage} style={{ marginTop: '10px', width: '100%' }}>
+               <p className="muted" style={{ fontSize: '12px', margin: '8px 0 0' }}>
+                 {canEditOpeningBaseline
+                   ? 'Isi semua item secara eksplisit. Nilai 0 sah dan berarti stok habis.'
+                   : 'Hanya PRIMARY yang ditugaskan untuk shift dan area ini yang dapat mencatat baseline. HELPER dapat melihat, tetapi tidak dapat mengubah hitungan.'}
+               </p>
+               <button type="button" className="primary-button" onClick={() => void handleRecordPhysicalBaseline()} disabled={baselineSubmitting || !baselineReason.trim() || !canEditOpeningBaseline} style={{ marginTop: '10px', width: '100%' }}>
                  {baselineSubmitting ? 'Menyimpan Baseline...' : 'Simpan Baseline Fisik'}
                </button>
              </div>

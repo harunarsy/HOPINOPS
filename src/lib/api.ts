@@ -158,6 +158,7 @@ export const api = {
   // Bootstrap & Settings
   bootstrap: () => request<any>('/api/app?action=bootstrap'),
   getDashboard: (date?: string) => request<any>(`/api/app?action=dashboard.get${date ? `&date=${date}` : ''}`),
+  getManagementStockReadiness: (date?: string) => request<{ work_date: string; cycles: any[] }>(`/api/app?action=management.stock.readiness${date ? `&date=${encodeURIComponent(date)}` : ''}`),
   getInvestorReports: () => request<{ reports: any[] }>('/api/app?action=investor.reports').then(r => r.reports),
   getSettings: () => request<{ outlet_id: string; version: number; latitude?: number | null; longitude?: number | null; geofence_radius_m: number; max_accuracy_m: number; gps_sample_limit: number; gps_timeout_seconds: number; late_grace_minutes: number; overtime_threshold_minutes: number; raw_gps_retention_days: number; system_mode: 'PRODUCTION' | 'PILOT' | 'MAINTENANCE'; onboarding_version: number }>('/api/app?action=settings.get'),
   updateSettings: (expected_version: number, settings: { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number; max_accuracy_m?: number; gps_sample_limit?: number; gps_timeout_seconds?: number; late_grace_minutes?: number; overtime_threshold_minutes?: number; raw_gps_retention_days?: number; system_mode?: 'PRODUCTION' | 'PILOT' | 'MAINTENANCE'; onboarding_version?: number }) =>
@@ -241,6 +242,8 @@ export const api = {
   getCyclePhysicalBaseline: (cycle_id: string) => request<{ cycle_id: string; state: 'AVAILABLE' | 'REQUIRED' | 'PENDING_REVIEW'; lines: StockSnapshotLine[] }>(`/api/app?action=cycle.baseline&cycle_id=${encodeURIComponent(cycle_id)}`),
   recordCyclePhysicalBaseline: (cycle_id: string, expected_version: number, lines: PhysicalBaselineLine[], reason: string, idempotency_key: string) =>
     request<{ cycle_id: string; version: number; idempotent_replay: boolean }>('/api/app?action=cycle.baseline.record', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, lines, reason, idempotency_key }) }),
+  correctCyclePhysicalBaseline: (cycle_id: string, expected_version: number, lines: PhysicalBaselineLine[], reason: string, idempotency_key: string) =>
+    request<{ cycle_id: string; version: number; idempotent_replay: boolean }>('/api/app?action=cycle.baseline.correct', { method: 'POST', body: JSON.stringify({ cycle_id, expected_version, lines, reason, idempotency_key }) }),
   getStockDrafts: (cycle_id: string) => request<{ opening_draft: { id: string; lines: DraftLine[]; version: number; updated_at: string } | null; closing_draft: { id: string; lines: DraftLine[]; version: number; updated_at: string } | null }>(`/api/app?action=stock.drafts&cycle_id=${cycle_id}`),
   getOpeningReference: (cycle_id: string) => request<{ state: 'AVAILABLE' | 'INITIALIZATION_REQUIRED'; source_type: 'HANDOVER' | 'CLOSING' | 'INITIALIZATION' | null; source_id: string | null; warning_code: string | null; lines: { item_id: string; reference_qty: number | null }[] }>(`/api/app?action=opening.reference&cycle_id=${cycle_id}`),
   saveOpeningDraft: (cycle_id: string, expected_version: number | null, lines: DraftLine[], idempotency_key: string) =>

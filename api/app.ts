@@ -1541,6 +1541,20 @@ export default {
         return successResponse({ cycle, opening, movements: movements ?? [], handover, closing, items: items ?? [] });
       }
 
+      if (action === 'management.stock.readiness' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner & Supervisor yang dapat mengelola stok.', 403);
+        }
+        const workDate = url.searchParams.get('date') || getWibDate();
+        if (!isIsoDate(workDate)) return invalidPayload('date wajib berformat YYYY-MM-DD.');
+        const { data, error } = await db.rpc('rpc_get_management_stock_readiness', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_work_date: workDate,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.work_date !== workDate || !Array.isArray(data.cycles)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
       if (action === 'cycle.baseline' && request.method === 'GET') {
         const cycleId = url.searchParams.get('cycle_id');
         if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
@@ -1565,6 +1579,27 @@ export default {
           return invalidPayload('cycle_id, expected_version, lines physical, reason, dan idempotency_key wajib valid.');
         }
         const { data, error } = await db.rpc('rpc_record_cycle_physical_baseline', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_cycle_id: body.cycle_id,
+          p_expected_version: body.expected_version, p_lines: body.lines,
+          p_reason: body.reason.trim(), p_idempotency_key: body.idempotency_key,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.cycle_id !== body.cycle_id || !isPositiveInteger(data.version)
+          || typeof data.idempotent_replay !== 'boolean') return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
+      if (action === 'cycle.baseline.correct' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner & Supervisor yang dapat mengoreksi baseline fisik.', 403);
+        }
+        const body = await readJsonObject(request, ['cycle_id', 'expected_version', 'lines', 'reason', 'idempotency_key']);
+        if (!body || !isUuid(body.cycle_id) || !isPositiveInteger(body.expected_version)
+          || !isPhysicalBaselineLines(body.lines) || !isNonEmptyString(body.reason, 1000)
+          || !isUuid(body.idempotency_key)) {
+          return invalidPayload('cycle_id, expected_version, lines physical, reason, dan idempotency_key wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_correct_cycle_physical_baseline', {
           p_actor_id: user.id, p_outlet_id: outletId, p_cycle_id: body.cycle_id,
           p_expected_version: body.expected_version, p_lines: body.lines,
           p_reason: body.reason.trim(), p_idempotency_key: body.idempotency_key,
