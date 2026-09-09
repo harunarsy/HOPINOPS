@@ -12,14 +12,31 @@ Aplikasi operasional stok HOPIN: SPA React/Vite yang hanya berkomunikasi dengan 
 
 ```bash
 pnpm install
+pnpm dev         # UI Vite saja
+pnpm dev:full    # UI + /api lewat Vercel Dev, memakai hosted Supabase
 pnpm lint        # tsc --noEmit
 pnpm test        # vitest
 pnpm build       # vite build
 pnpm test:e2e    # lifecycle staging disposable: provision → Playwright → teardown
-pnpm test:db     # supabase db reset + pgTAP; membutuhkan Docker berjalan
+pnpm test:db     # pgTAP + SQL regression pada hosted DB test disposable
+pnpm test:db:fresh # push migration + seluruh DB test pada hosted DB test disposable
 ```
 
-`pnpm dev` hanya menjalankan UI Vite; endpoint `/api/*` berjalan penuh saat project dijalankan oleh Vercel (production/preview).
+`pnpm dev` hanya menjalankan UI Vite. Gunakan `pnpm dev:full` untuk menjalankan endpoint `/api/*` secara lokal melalui Vercel Dev. Keduanya tidak membutuhkan Docker; backend data tetap memakai hosted Supabase.
+
+### Database test tanpa Docker
+
+Database test wajib memakai project Supabase terpisah yang disposable. Production `naanarmoktmsumkxmjvj` dan staging aplikasi `ibzlxdmnuszcmdzuocwu` ditolak oleh runner, termasuk bila project ref disamarkan lewat connection string.
+
+Set environment berikut hanya pada shell atau secret manager, jangan commit nilainya:
+
+```bash
+DB_TEST_PROJECT_REF=<project-test-khusus>
+DB_TEST_DATABASE_URL=<postgres-connection-string-project-test>
+DB_TEST_DISPOSABLE=1
+```
+
+`pnpm test:db` menjalankan pgTAP dan regression SQL transactional. `pnpm test:db:fresh` terlebih dahulu mendorong seluruh migration yang belum ada. Laptop hanya membutuhkan `psql` dan koneksi internet, bukan Docker atau PostgreSQL server lokal. CI database dapat diaktifkan dengan repository variable `DB_TEST_ENABLED=1`, variable `DB_TEST_PROJECT_REF`, dan secret `DB_TEST_DATABASE_URL` setelah project test khusus dibuat.
 
 ### E2E mutating staging
 

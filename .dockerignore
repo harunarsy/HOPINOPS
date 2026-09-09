@@ -1,8 +1,0 @@
-node_modules
-dist
-.git
-.DS_Store
-*.log
-.vite
-premium-ui.json
-premium-audit.json
