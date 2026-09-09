@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { api } from '../../lib/api';
 import { fmtRupiah, wibDate, wibDateKey } from '../../domain/rules';
 import { CatalogManager } from './CatalogManager';
@@ -7,6 +7,28 @@ type Tab = 'dashboard' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settin
 type Settings = Awaited<ReturnType<typeof api.getSettings>>;
 type Session = Awaited<ReturnType<typeof api.listSessions>>[number];
 type Decision = 'APPROVED' | 'REJECTED';
+
+type ManagementCache = {
+  dashboard?: any;
+  roster?: { entries: any[]; users: any[] };
+  exceptions?: { attendance: any[]; overtime: any[] };
+  sessions?: Session[];
+  users?: any[];
+  settings?: Settings;
+};
+
+const ISO_MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const ISO_DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+function isValidIsoMonth(value: string) {
+  return ISO_MONTH.test(value);
+}
+
+function isValidIsoDate(value: string) {
+  if (!ISO_DATE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
 
 const inputStyle = { width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cddcd4', fontSize: '13px', boxSizing: 'border-box' as const };
 const labelStyle = { fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' };
@@ -148,6 +170,8 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [emergencyResolutionReason, setEmergencyResolutionReason] = useState('');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
+  const cacheRef = useRef(new Map<string, ManagementCache>());
+  const loadRequestRef = useRef(0);
 
   // Payroll state
   const [payrollPeriod, setPayrollPeriod] = useState(wibDateKey().slice(0, 7));
@@ -215,47 +239,92 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const showToast = (message: string) => setReceipt({ message });
   const showError = (message: string) => setReceipt({ message, error: true });
 
-  const loadData = async () => {
+  const loadData = useCallback(async (force = false) => {
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
+    const validRosterMonth = isValidIsoMonth(rosterMonth) ? rosterMonth : wibDateKey().slice(0, 7);
+    const validReviewRange = isValidIsoDate(reviewFrom) && isValidIsoDate(reviewTo) && reviewFrom <= reviewTo
+      && Date.parse(`${reviewTo}T00:00:00Z`) - Date.parse(`${reviewFrom}T00:00:00Z`) <= 366 * 86_400_000;
+    const reviewFromValue = validReviewRange ? reviewFrom : `${wibDateKey().slice(0, 8)}01`;
+    const reviewToValue = validReviewRange ? reviewTo : wibDateKey();
+    const cacheKey = tab === 'roster' ? `roster:${validRosterMonth}` : tab === 'exceptions' ? `exceptions:${reviewFromValue}:${reviewToValue}` : tab;
+    const cached = !force ? cacheRef.current.get(cacheKey) : undefined;
+
+    if (cached) {
+      if (tab === 'dashboard') setDashboardData(cached.dashboard);
+      if (tab === 'roster' && cached.roster) {
+        setRoster(cached.roster.entries);
+        setUsersList(cached.roster.users);
+        setRosterProfileId((current) => current || cached.roster!.users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
+      }
+      if (tab === 'exceptions' && cached.exceptions) {
+        setAttendanceExceptions(cached.exceptions.attendance);
+        setOvertime(cached.exceptions.overtime);
+      }
+      if (tab === 'account') setSessions(cached.sessions ?? []);
+      if (tab === 'users') setUsersList(cached.users ?? []);
+      if (tab === 'settings' && cached.settings) {
+        setSettings(cached.settings);
+        setSettingsDraft(cached.settings);
+      }
+      return;
+    }
+
     setLoading(true);
     setViewError('');
     try {
       if (tab === 'account') {
-        setSessions(await api.listSessions());
+        const sessions = await api.listSessions();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { sessions });
+        setSessions(sessions);
       } else if (isInvestor) {
-        const reps = await api.getInvestorReports();
-        setInvestorReports(reps);
+        const reports = await api.getInvestorReports();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { dashboard: reports });
+        setInvestorReports(reports);
         return;
-      }
-
-      if (tab === 'dashboard') {
-        setDashboardData(await api.getDashboard());
+      } else if (tab === 'dashboard') {
+        const dashboard = await api.getDashboard();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { dashboard });
+        setDashboardData(dashboard);
       } else if (tab === 'roster') {
-        const [entries, users] = await Promise.all([api.listRoster(rosterMonth), api.listUsers()]);
+        const [entries, users] = await Promise.all([api.listRoster(validRosterMonth), api.listUsers()]);
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { roster: { entries, users } });
         setRoster(entries);
         setUsersList(users);
-        if (!rosterProfileId) setRosterProfileId(users.find((entry: any) => entry.role !== 'INVESTOR')?.id ?? '');
+        setRosterProfileId((current) => current || users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
       } else if (tab === 'exceptions') {
         const [exceptions, claims] = await Promise.all([
-          api.listAttendanceExceptions(reviewFrom, reviewTo),
-          api.listOvertime({ from: reviewFrom, to: reviewTo }),
+          api.listAttendanceExceptions(reviewFromValue, reviewToValue),
+          api.listOvertime({ from: reviewFromValue, to: reviewToValue }),
         ]);
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { exceptions: { attendance: exceptions, overtime: claims } });
         setAttendanceExceptions(exceptions);
         setOvertime(claims);
       } else if (tab === 'payroll') {
         await loadPayroll(payrollPeriod);
       } else if (tab === 'users') {
-        setUsersList(await api.listUsers());
+        const users = await api.listUsers();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { users });
+        setUsersList(users);
       } else if (tab === 'settings') {
         const current = await api.getSettings();
+        if (loadRequestRef.current !== requestId) return;
+        cacheRef.current.set(cacheKey, { settings: current });
         setSettings(current);
         setSettingsDraft(current);
       }
     } catch (e: any) {
-      setViewError(e.message || 'Gagal memuat data manajemen.');
+      if (loadRequestRef.current === requestId) setViewError(e.message || 'Gagal memuat data manajemen.');
     } finally {
-      setLoading(false);
+      if (loadRequestRef.current === requestId) setLoading(false);
     }
-  };
+  }, [isInvestor, payrollPeriod, reviewFrom, reviewTo, rosterMonth, tab]);
 
   const loadPayroll = async (period: string) => {
     const requestId = payrollRequestRef.current + 1;
@@ -483,7 +552,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   useEffect(() => {
     void loadData();
-  }, [tab, rosterMonth, payrollPeriod]);
+  }, [loadData]);
 
   const handleExportPayroll = async () => {
     if (!payrollRun || payrollLoadedPeriod !== payrollPeriod) {
@@ -532,7 +601,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       const res = await api.resetPin(resetTarget.username);
       setResetTarget(null);
       setOneTimeSecret({ username: res.username, pin: res.tempPin });
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal mereset PIN.');
     } finally {
@@ -557,7 +626,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       });
       showToast('Jadwal berhasil ditambahkan.');
       setRosterReason('');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal menambahkan jadwal.');
     } finally {
@@ -573,7 +642,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       showToast(attendanceReview.decision === 'APPROVED' ? 'Koreksi kehadiran disetujui.' : 'Koreksi kehadiran ditolak.');
       setAttendanceReview(null);
       setReviewNote('');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal menyimpan review koreksi.');
     } finally {
@@ -589,7 +658,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       setEmergencyTarget(null);
       setEmergencyReason('');
       showToast('Check-out darurat tercatat. Ajukan dan selesaikan peninjauan absensi sebelum penugasan dapat ditutup.');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Emergency checkout gagal dicatat.');
     } finally {
@@ -610,7 +679,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       setEmergencyResolutionTarget(null);
       setEmergencyResolutionReason('');
       showToast('Usulan penyelesaian dibuat. Manager lain wajib mereview sebelum assignment ditutup.');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Usulan penyelesaian emergency checkout gagal dibuat.');
     } finally {
@@ -626,7 +695,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       showToast(overtimeReview.decision === 'APPROVED' ? 'Lembur disetujui.' : 'Lembur ditolak.');
       setOvertimeReview(null);
       setReviewNote('');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal menyimpan review lembur.');
     } finally {
@@ -648,7 +717,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       });
       setUserEdit(null);
       showToast('Data pengguna diperbarui.');
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal memperbarui pengguna.');
     } finally {
@@ -664,7 +733,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
       setDeactivateTarget(null);
       setDeactivateReason('');
       showToast(`Akun dinonaktifkan. ${result.revoked_sessions} sesi dan ${result.revoked_devices} perangkat dicabut.`);
-      await loadData();
+      await loadData(true);
     } catch (err: any) {
       showError(err.message || 'Gagal menonaktifkan pengguna.');
     } finally {
@@ -772,7 +841,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
         {viewError && (
           <div role="alert" style={{ marginBottom: '16px', padding: '12px 14px', borderRadius: '8px', border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
             <span>{viewError}</span>
-            <button type="button" className="outline-button" onClick={() => void loadData()} disabled={loading}>Coba lagi</button>
+            <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Coba lagi</button>
           </div>
         )}
 
@@ -857,7 +926,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                 </div>
                 <label style={{ ...labelStyle, marginBottom: 0 }}>
                   Bulan
-                  <input type="month" value={rosterMonth} onChange={(event) => setRosterMonth(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} />
+                  <input type="month" value={rosterMonth} onChange={(event) => setRosterMonth(isValidIsoMonth(event.target.value) ? event.target.value : wibDateKey().slice(0, 7))} style={{ ...inputStyle, marginTop: '4px' }} />
                 </label>
               </div>
 
@@ -906,9 +975,9 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
               <div className="section-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', flexWrap: 'wrap', gap: '12px' }}>
                 <div><p className="eyebrow">RENTANG REVIEW</p><h2>Tugas Kehadiran</h2></div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'end', flexWrap: 'wrap' }}>
-                  <label style={labelStyle}>Dari<input type="date" value={reviewFrom} onChange={(event) => setReviewFrom(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
-                  <label style={labelStyle}>Sampai<input type="date" value={reviewTo} onChange={(event) => setReviewTo(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
-                  <button type="button" className="outline-button" onClick={() => void loadData()} disabled={loading}>Terapkan</button>
+                  <label style={labelStyle}>Dari<input type="date" value={reviewFrom} onChange={(event) => setReviewFrom(isValidIsoDate(event.target.value) ? event.target.value : `${wibDateKey().slice(0, 8)}01`)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <label style={labelStyle}>Sampai<input type="date" value={reviewTo} onChange={(event) => setReviewTo(isValidIsoDate(event.target.value) ? event.target.value : wibDateKey())} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Terapkan</button>
                 </div>
               </div>
             </div>
@@ -1337,7 +1406,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
                           });
                           setShowCreateUserModal(false);
                           setOneTimeSecret({ username: res.user.username, pin: res.initial_pin });
-                          await loadData();
+                          await loadData(true);
                         } catch (err: any) {
                           showError(err.message || 'Gagal membuat pengguna baru.');
                         } finally {

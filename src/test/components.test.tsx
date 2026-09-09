@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Login } from '../features/auth/Login';
 import { ForcedPinChange } from '../features/auth/ForcedPinChange';
@@ -48,7 +48,9 @@ describe('UI Component Flow Tests', () => {
     const submitBtn = screen.getByRole('button', { name: /masuk ke sistem/i });
     await userEvent.click(submitBtn);
 
-    expect(handleLogin).toHaveBeenCalledWith('harun', '123456');
+    await waitFor(() => {
+      expect(handleLogin).toHaveBeenCalledWith('harun', '123456');
+    });
   });
 
   it('renders forced pin change screen requiring 6-digit confirmation', () => {

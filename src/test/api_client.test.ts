@@ -123,4 +123,45 @@ describe('API Client Network Resilience (src/lib/api.ts)', () => {
       status: 200,
     });
   });
+
+  it('omits invalid roster month rather than sending a server-rejected filter', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ ok: true, data: { roster: [] } }),
+    } as any);
+
+    await api.listRoster('September 2026');
+
+    expect((global.fetch as any).mock.calls[0][0]).toBe('/api/app?action=roster.list');
+  });
+
+  it('omits invalid overtime dates rather than sending a server-rejected filter', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ ok: true, data: { overtime: [] } }),
+    } as any);
+
+    await api.listOvertime({ from: '', to: '2026-02-30' });
+
+    expect((global.fetch as any).mock.calls[0][0]).toBe('/api/app?action=overtime.list');
+  });
+
+  it('sends only normalized, encoded roster and overtime filters', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ ok: true, data: { roster: [], overtime: [] } }),
+    } as any);
+
+    await api.listRoster('2026-09');
+    await api.listOvertime({ from: '2026-09-01', to: '2026-09-30', status: 'CANDIDATE' });
+
+    expect((global.fetch as any).mock.calls[0][0]).toBe('/api/app?action=roster.list&month=2026-09');
+    expect((global.fetch as any).mock.calls[1][0]).toBe('/api/app?action=overtime.list&from=2026-09-01&to=2026-09-30&status=CANDIDATE');
+  });
 });

@@ -21,6 +21,19 @@ type PayrollExportReceipt = { export_id: string; filename: string; file_path?: s
 const DEFAULT_TIMEOUT_MS = 15_000;
 const EXPORT_TIMEOUT_MS = 60_000;
 
+const ISO_MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const ISO_DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+function validIsoMonth(value?: string) {
+  return value && ISO_MONTH.test(value) ? value : undefined;
+}
+
+function validIsoDate(value?: string) {
+  if (!value || !ISO_DATE.test(value)) return undefined;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? undefined : value;
+}
+
 export type RequestOptions = RequestInit & {
   timeoutMs?: number;
 };
@@ -166,7 +179,10 @@ export const api = {
     request<{ item_id: string; section_id: string; position: number; layout_version: number; idempotent_replay: boolean }>('/api/app?action=checklist.item.move', { method: 'POST', body: JSON.stringify({ area_code, item_id, section_id, position, expected_layout_version, idempotency_key }) }),
 
   // Roster & Swap
-  listRoster: (month?: string) => request<{ roster: any[] }>(`/api/app?action=roster.list${month ? `&month=${month}` : ''}`).then(r => r.roster),
+  listRoster: (month?: string) => {
+    const validMonth = validIsoMonth(month);
+    return request<{ roster: any[] }>(`/api/app?action=roster.list${validMonth ? `&month=${encodeURIComponent(validMonth)}` : ''}`).then(r => r.roster);
+  },
   saveRoster: (entry: { work_date: string; shift_code: 'SIANG' | 'MALAM' | 'FULL'; profile_id: string; expected_area?: 'BAR' | 'KITCHEN' | null; pay_treatment?: 'BASE' | 'EXTRA' | 'MAKEUP'; override_reason?: string | null } & ({ id?: null; expected_version?: null } | { id: string; expected_version: number })) =>
     request<{ id: string; version: number }>('/api/app?action=roster.save', { method: 'POST', body: JSON.stringify(entry) }),
   requestSwap: (roster_entry_id: string, offered_to: string, expected_version: number) => request('/api/app?action=swap.request', { method: 'POST', body: JSON.stringify({ roster_entry_id, offered_to, expected_version }) }),
@@ -191,7 +207,11 @@ export const api = {
   checkOut: (data: { challengeId: string; idempotencyKey: string; samples: LocationSample[]; locationFailure?: LocationFailure; note?: string }) =>
     request('/api/app?action=attendance.checkOut', { method: 'POST', body: JSON.stringify(data) }),
   getMyAttendance: (from?: string) => request<{ attendance: { id: string; work_date: string; status: string; lateness_status: string | null; exception_status: string | null; scheduled_start_at: string | null; scheduled_end_at: string | null; check_in_event_id: string | null; check_out_event_id: string | null }[] }>(`/api/app?action=attendance.mine${from ? `&from=${encodeURIComponent(from)}` : ''}`).then(r => r.attendance),
-  listAttendanceExceptions: (from?: string, to?: string) => request<{ exceptions: any[] }>(`/api/app?action=attendance.exceptions${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}`).then(r => r.exceptions),
+  listAttendanceExceptions: (from?: string, to?: string) => {
+    const validFrom = validIsoDate(from);
+    const validTo = validIsoDate(to);
+    return request<{ exceptions: any[] }>(`/api/app?action=attendance.exceptions${validFrom ? `&from=${encodeURIComponent(validFrom)}` : ''}${validTo ? `&to=${encodeURIComponent(validTo)}` : ''}`).then(r => r.exceptions);
+  },
   emergencyCheckout: (attendance_id: string, expected_version: number, reason: string, idempotency_key: string) =>
     request<{ attendance_id: string; event_id: string; status: 'REVIEW_REQUIRED'; exception_status: 'PENDING_REVIEW'; version: number; idempotent_replay: boolean }>('/api/app?action=attendance.emergencyCheckout', { method: 'POST', body: JSON.stringify({ attendance_id, expected_attendance_version: expected_version, reason, idempotency_key }) }),
   selfEmergencyCheckout: (expected_version: number, reason: string, idempotency_key: string) =>
@@ -207,8 +227,12 @@ export const api = {
   cancelLeave: (leave_id: string) => request<{ id: string; status: 'CANCELLED' }>('/api/app?action=leave.cancel', { method: 'POST', body: JSON.stringify({ leave_id }) }),
   reviewLeave: (leave_id: string, status: 'APPROVED' | 'REJECTED', note: string) =>
     request<{ id: string; status: 'APPROVED' | 'REJECTED' }>('/api/app?action=leave.review', { method: 'POST', body: JSON.stringify({ leave_id, status, note }) }),
-  listOvertime: (filters: { from?: string; to?: string; status?: 'CANDIDATE' | 'APPROVED' | 'REJECTED' } = {}) =>
-    request<{ overtime: any[] }>(`/api/app?action=overtime.list${filters.from ? `&from=${encodeURIComponent(filters.from)}` : ''}${filters.to ? `&to=${encodeURIComponent(filters.to)}` : ''}${filters.status ? `&status=${filters.status}` : ''}`).then(r => r.overtime),
+  listOvertime: (filters: { from?: string; to?: string; status?: 'CANDIDATE' | 'APPROVED' | 'REJECTED' } = {}) => {
+    const from = validIsoDate(filters.from);
+    const to = validIsoDate(filters.to);
+    const status = filters.status && ['CANDIDATE', 'APPROVED', 'REJECTED'].includes(filters.status) ? filters.status : undefined;
+    return request<{ overtime: any[] }>(`/api/app?action=overtime.list${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}${status ? `&status=${encodeURIComponent(status)}` : ''}`).then(r => r.overtime);
+  },
   reviewOvertime: (claim_id: string, expected_version: number, status: 'APPROVED' | 'REJECTED', reason: string) =>
     request<{ id: string; status: 'APPROVED' | 'REJECTED'; version: number }>('/api/app?action=overtime.review', { method: 'POST', body: JSON.stringify({ claim_id, expected_version, status, reason }) }),
 

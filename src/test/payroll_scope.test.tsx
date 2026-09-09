@@ -8,6 +8,10 @@ import { ManagementView } from '../features/management/ManagementView';
 vi.mock('../lib/api', () => ({
   api: {
     getDashboard: vi.fn(),
+    listRoster: vi.fn(),
+    listUsers: vi.fn(),
+    listAttendanceExceptions: vi.fn(),
+    listOvertime: vi.fn(),
     getPayrollRun: vi.fn(),
     previewPayroll: vi.fn(),
     reviewPayroll: vi.fn(),
@@ -39,6 +43,10 @@ describe('ManagementView payroll period isolation', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(api.getDashboard).mockResolvedValue({} as any);
+    vi.mocked(api.listRoster).mockResolvedValue([] as any);
+    vi.mocked(api.listUsers).mockResolvedValue([] as any);
+    vi.mocked(api.listAttendanceExceptions).mockResolvedValue([] as any);
+    vi.mocked(api.listOvertime).mockResolvedValue([] as any);
   });
 
   function monthInput() {
@@ -52,6 +60,28 @@ describe('ManagementView payroll period isolation', () => {
     await user.click(screen.getByRole('button', { name: /kelola payroll/i }));
     await waitFor(() => expect(monthInput().value).toMatch(/^\d{4}-(0[1-9]|1[0-2])$/));
     expect(vi.mocked(api.getPayrollRun)).toHaveBeenCalledWith(monthInput().value);
+  });
+
+  it('normalizes empty schedule and review date controls before loading', async () => {
+    const user = userEvent.setup();
+    render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /atur jadwal/i }));
+    const rosterMonth = document.querySelector('input[type="month"]') as HTMLInputElement;
+    fireEvent.change(rosterMonth, { target: { value: '' } });
+    fireEvent.blur(rosterMonth);
+    await waitFor(() => expect(rosterMonth.value).toMatch(/^\d{4}-(0[1-9]|1[0-2])$/));
+    expect(vi.mocked(api.listRoster)).toHaveBeenLastCalledWith(rosterMonth.value);
+
+    await user.click(screen.getByRole('button', { name: /review kehadiran/i }));
+    const dateInputs = Array.from(document.querySelectorAll('input[type="date"]')) as HTMLInputElement[];
+    fireEvent.change(dateInputs[0], { target: { value: '' } });
+    fireEvent.change(dateInputs[1], { target: { value: '' } });
+    await user.click(screen.getByRole('button', { name: 'Terapkan' }));
+    await waitFor(() => expect(vi.mocked(api.listOvertime)).toHaveBeenLastCalledWith({
+      from: `${wibDateKey().slice(0, 8)}01`,
+      to: wibDateKey(),
+    }));
   });
 
   it('closes payroll dialogs when the period changes before confirming', async () => {
