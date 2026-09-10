@@ -968,7 +968,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
           </div>
         </section>
 
-        <nav className="tabs management-tabs" aria-label="Navigasi manajemen" onFocus={(event) => (event.target as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'center' })}>
+        <nav className="tabs management-tabs" aria-label="Navigasi manajemen" onClick={(event) => (event.target as HTMLElement).closest('button')?.scrollIntoView({ block: 'nearest', inline: 'center' })}>
           {!isInvestor ? <>
             <button className={tab === 'dashboard' ? 'active' : ''} aria-current={tab === 'dashboard' ? 'page' : undefined} onClick={() => setTab('dashboard')}>Ringkasan Shift</button>
             <button className={tab === 'stock' ? 'active' : ''} aria-current={tab === 'stock' ? 'page' : undefined} onClick={() => setTab('stock')}>Stok Area</button>
