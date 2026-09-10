@@ -54,25 +54,29 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - name: Check Vercel deployment secrets
+      - name: Select production deployment path
+        id: deployment_path
         shell: bash
         run: |
           set -euo pipefail
-          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error title=Missing deployment secret::$name is not configured for the production environment."
-              exit 1
-            fi
-          done
+          if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_ORG_ID:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
+            echo "mode=vercel-cli" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=git-integration" >> "$GITHUB_OUTPUT"
+          fi
       - run: pnpm install --frozen-lockfile
       - name: Pull canonical Vercel project settings
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         run: pnpm exec vercel pull --yes --environment=production --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
       - name: Build the exact commit artifact
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         run: pnpm exec vercel build --prod --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
       - name: Deploy prebuilt artifact
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         run: pnpm exec vercel deploy --prebuilt --prod --yes --json --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" > "$RUNNER_TEMP/vercel-deployment.json"
       - name: Capture deployment URL
         id: deployment
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         shell: bash
         env:
           DEPLOYMENT_JSON: ${{ runner.temp }}/vercel-deployment.json
@@ -90,10 +94,21 @@ jobs:
           ' "$DEPLOYMENT_JSON")"
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
       - name: Ensure the canonical production alias uses this deployment
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         run: pnpm exec vercel promote "${{ steps.deployment.outputs.deployment_url }}" --yes --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
-      - name: Verify deployment SHA, alias, and health
+      - name: Wait for Vercel Git integration deployment
+        if: steps.deployment_path.outputs.mode == 'git-integration'
+        run: node scripts/wait-for-production-deployment.mjs
+      - name: Verify explicit Vercel deployment SHA, alias, and health
+        if: steps.deployment_path.outputs.mode == 'vercel-cli'
         env:
           HOPIN_DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment_url }}
+          HOPIN_EXPECTED_SHA: ${{ github.sha }}
+        run: node scripts/verify-production-deployment.mjs
+      - name: Verify Git integration deployment SHA, alias, and health
+        if: steps.deployment_path.outputs.mode == 'git-integration'
+        env:
+          HOPIN_DEPLOYMENT_URL: https://hopinops.vercel.app
           HOPIN_EXPECTED_SHA: ${{ github.sha }}
         run: node scripts/verify-production-deployment.mjs
       - name: Install browser for read-only production smoke

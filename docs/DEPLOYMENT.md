@@ -4,13 +4,13 @@
 
 `main` adalah branch release. GitHub Actions menjalankan gate aplikasi, lalu job `Deploy production` hanya berjalan setelah gate tersebut lulus dan hanya untuk push ke `main`.
 
-Job deploy memakai project Vercel canonical `hopinops`. Ia menarik setting production, membangun artifact dari commit yang sama, mengirim prebuilt artifact, memastikan alias `hopinops.vercel.app` menunjuk ke deployment tersebut, lalu memeriksa `/build-info.json` dan `/api/health`. Smoke production hanya read-only.
+Job deploy memakai project Vercel canonical `hopinops`. Bila secret Vercel tersedia, job menarik setting production, membangun artifact dari commit yang sama, mengirim prebuilt artifact, dan mempromosikan alias. Bila secret belum tersedia, job menunggu Git Integration Vercel yang terhubung ke `main` menyelesaikan deployment otomatis. Kedua jalur memeriksa `/build-info.json`, `/api/health`, dan smoke production read-only sebelum dianggap lulus.
 
-Project Vercel lain tidak boleh dipakai sebagai jalur production. Untuk menghindari dua deployment berebut alias, matikan automatic Production Deployments dari Git pada project `hopinops` setelah workflow ini aktif. Preview deployment tetap boleh dipertahankan bila memang dibutuhkan.
+Project Vercel lain tidak boleh dipakai sebagai jalur production. Pertahankan automatic Production Deployments dari Git bila memakai fallback Git Integration. Jika nanti secret Vercel ditambahkan dan jalur CLI dipilih sebagai satu-satunya promoter, auto production deploy dapat dimatikan setelah jalur CLI terbukti.
 
-## Secret GitHub yang dibutuhkan
+## Secret GitHub untuk jalur CLI (opsional)
 
-Tambahkan tiga secret pada GitHub Environment `production` atau repository:
+Tambahkan tiga secret pada GitHub Environment `production` atau repository bila ingin artifact dipromosikan langsung oleh GitHub Actions:
 
 | Secret | Isi |
 |---|---|
@@ -22,12 +22,10 @@ Nilai tidak boleh ditulis di repository, workflow output, atau file `.env` yang 
 
 ## One-time setup
 
-1. Pastikan `VERCEL_PROJECT_ID` mengarah ke project `hopinops` dan environment production memiliki seluruh variable runtime yang dibutuhkan aplikasi.
-2. Buat GitHub Environment bernama `production`. Tambahkan secret di atas. Approval manual boleh diaktifkan sebagai pengaman tambahan, tetapi bukan bagian dari aplikasi.
-3. Jalankan satu push perubahan kecil ke `main` setelah secret tersedia.
-4. Pastikan job `application` lulus sebelum `deploy_production` dimulai.
-5. Pastikan `build-info.json` pada `https://hopinops.vercel.app` berisi commit workflow terbaru, lalu `/api/health` mengembalikan `ok`.
-6. Setelah pipeline terbukti, nonaktifkan auto production deploy Git di dashboard Vercel agar hanya GitHub Actions yang mempromosikan production.
+1. Pastikan project Vercel `hopinops` terhubung ke repository `HOPINOPS`, branch `main`, dan environment production memiliki seluruh variable runtime yang dibutuhkan aplikasi. Ini adalah jalur default tanpa secret.
+2. Jalankan satu push perubahan kecil ke `main`. Job `deploy_production` akan menunggu SHA baru muncul pada `https://hopinops.vercel.app` lalu memeriksa health dan smoke.
+3. Jika memilih jalur CLI, buat GitHub Environment `production`, tambahkan secret di atas, lalu jalankan push berikutnya. Approval manual boleh diaktifkan sebagai pengaman tambahan.
+4. Setelah salah satu jalur terbukti, pastikan `build-info.json` berisi commit workflow terbaru dan `/api/health` mengembalikan `ok`.
 
 Migration database tetap dilakukan sebagai langkah release terpisah dan terkontrol sebelum deploy aplikasi yang memerlukannya. Workflow ini tidak menjalankan migration, seed, backup, atau mutating test terhadap production.
 
