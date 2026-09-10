@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 
+export type ConnectionStatus = 'CHECKING' | 'ONLINE' | 'OFFLINE';
+
 type Props = {
   options: { username: string; display_name: string }[];
   onLogin: (username: string, pin: string) => Promise<void>;
@@ -17,9 +19,55 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
   const submitInFlightRef = useRef(false);
   const prevErrorRef = useRef(error);
   const transientTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('CHECKING');
 
   const selectedUser = options.find((o) => o.username === username);
   const disabled = loading || lockoutSeconds > 0;
+
+  useEffect(() => {
+    let disposed = false;
+    let activeProbe: AbortController | null = null;
+
+    const probe = async () => {
+      if (!navigator.onLine) {
+        if (!disposed) setConnectionStatus('OFFLINE');
+        return;
+      }
+
+      activeProbe?.abort();
+      activeProbe = new AbortController();
+      if (!disposed) setConnectionStatus('CHECKING');
+      try {
+        const response = await fetch('/api/health', {
+          cache: 'no-store',
+          signal: activeProbe.signal,
+        });
+        const body = await response.text();
+        if (!disposed) setConnectionStatus(response.ok && body === 'ok' ? 'ONLINE' : 'OFFLINE');
+      } catch (probeError: any) {
+        if (!disposed && probeError?.name !== 'AbortError') setConnectionStatus('OFFLINE');
+      }
+    };
+
+    const handleOnline = () => void probe();
+    const handleOffline = () => {
+      activeProbe?.abort();
+      setConnectionStatus('OFFLINE');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    void probe();
+    const timer = window.setInterval(() => void probe(), 30_000);
+
+    return () => {
+      disposed = true;
+      activeProbe?.abort();
+      window.clearInterval(timer);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -102,7 +150,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
         </div>
         <form noValidate onSubmit={handleSubmit}>
           <div className="login-field">
-            <label htmlFor="user-picker">Nama Lengkap</label>
+            <label htmlFor="user-picker">Pilih Pengguna</label>
             <div className="user-picker">
               <button
                 id="user-picker"
@@ -119,7 +167,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                     <strong className="picker-name">{selectedUser.display_name}</strong>
                   ) : (
                     <strong className="picker-placeholder">
-                      {options.length === 0 ? 'Memuat daftar nama...' : 'Pilih nama Anda...'}
+                      {options.length === 0 ? 'Memuat daftar pengguna...' : 'Pilih pengguna...'}
                     </strong>
                   )}
                 </span>
@@ -150,26 +198,19 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
           </div>
 
           <div className="login-field">
-            <div style={{ marginBottom: '8px' }}>
-              <label htmlFor="pin-input-0" style={{ margin: 0 }}>PIN 6 DIGIT</label>
-            </div>
+            <label htmlFor="pin-input-0">PIN 6 DIGIT</label>
             <div
-              className="pin-box-wrap"
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(6, 1fr)',
-                gap: '8px',
-                width: '100%',
-                maxWidth: '340px',
-                margin: '0 auto',
-              }}
+              className="pin-rail"
+              role="group"
+              aria-label="PIN 6 digit"
               onBlur={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget as Node)) {
                   if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
                   setTransientVisibleIndex(null);
                 }
               }}
-              onClick={() => {
+              onClick={(event) => {
+                if (event.target !== event.currentTarget) return;
                 const idx = Math.min(pin.length, 5);
                 const el = document.getElementById(`pin-input-${idx}`);
                 el?.focus();
@@ -181,6 +222,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                   <input
                     key={idx}
                     id={`pin-input-${idx}`}
+                    ref={idx === 0 ? pinInputRef : undefined}
                     aria-label={`Digit PIN ${idx + 1} dari 6`}
                     type={transientVisibleIndex === idx ? 'text' : 'password'}
                     inputMode="numeric"
@@ -207,14 +249,6 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                         nextEl?.focus();
                       }
                     }}
-                    onFocus={(e) => {
-                      e.target.style.borderColor = '#1e5b48';
-                      e.target.style.boxShadow = '0 0 0 3px rgba(30, 91, 72, 0.16)';
-                    }}
-                    onBlur={(e) => {
-                      e.target.style.borderColor = digit ? '#1e5b48' : '#cddcd4';
-                      e.target.style.boxShadow = 'none';
-                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Backspace') {
                         if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -235,24 +269,6 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                         const targetIdx = Math.min(pasted.length, 5);
                         document.getElementById(`pin-input-${targetIdx}`)?.focus();
                       }
-                    }}
-                    style={{
-                      width: '100%',
-                      aspectRatio: '4 / 5',
-                      minHeight: '48px',
-                      maxHeight: '56px',
-                      textAlign: 'center',
-                      fontSize: '20px',
-                      fontWeight: 700,
-                      fontFamily: 'monospace',
-                      borderRadius: '10px',
-                      border: `1.5px solid ${digit ? '#1e5b48' : '#cddcd4'}`,
-                      background: digit ? '#f0f7f4' : '#fff',
-                      color: '#123d32',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                      padding: 0,
-                      transition: 'border-color 0.15s, box-shadow 0.15s, background 0.15s',
                     }}
                   />
                 );
@@ -295,7 +311,17 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                 : 'Masuk ke sistem'} <span>→</span>
           </button>
         </form>
-        <p className="demo-hint">Gunakan PIN 6 digit pribadi Anda · Sesi aman terhubung ke server</p>
+        <div className={`login-connection login-connection-${connectionStatus.toLowerCase()}`} aria-live="polite">
+          <span>Gunakan PIN 6 digit pribadi Anda</span>
+          <span className="connection-status-line">
+            <span className="connection-status-icon" aria-hidden="true" />
+            {connectionStatus === 'ONLINE'
+              ? 'Server terhubung'
+              : connectionStatus === 'CHECKING'
+                ? 'Memeriksa koneksi server…'
+                : 'Server tidak terjangkau'}
+          </span>
+        </div>
       </div>
 
       <div className="login-aside">

@@ -23,6 +23,8 @@ pnpm test:e2e    # alias smoke read-only
 
 `pnpm dev` hanya menjalankan UI Vite. Gunakan `pnpm dev:full` untuk menjalankan endpoint `/api/*` secara lokal melalui Vercel Dev. Keduanya tidak membutuhkan Docker; backend data tetap memakai hosted Supabase.
 
+Jika halaman lokal menampilkan pesan server tidak terjangkau saat login, jalankan `pnpm dev:full` (bukan `pnpm dev`) lalu buka ulang origin yang sama, biasanya `http://localhost:3000`.
+
 ### Satu database production (9 September 2026)
 
 Local full-stack dan Vercel `hopinops` menggunakan Supabase production `naanarmoktmsumkxmjvj`. Perubahan data dari aplikasi lokal juga mengubah data production. `.env.local` memakai kredensial server-only project tersebut, origin localhost, serta secret readiness/cron khusus lokal; file ini tidak boleh di-commit.

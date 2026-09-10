@@ -13,6 +13,11 @@ import { ManagementView } from './features/management/ManagementView';
 type AppStatus = 'BOOTING' | 'READY' | 'SERVICE_UNAVAILABLE' | 'SESSION_EXPIRED';
 
 function requestErrorMessage(error: any, fallback: string) {
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocalOrigin = host === 'localhost' || host === '127.0.0.1';
+  if (isLocalOrigin && ['NETWORK_ERROR', 'NON_JSON_RESPONSE'].includes(error?.code)) {
+    return 'Server lokal belum terhubung. Jalankan pnpm dev:full, bukan pnpm dev, lalu buka ulang halaman.';
+  }
   const message = error?.message || fallback;
   const context = [error?.code, error?.status ? `HTTP ${error.status}` : '', error?.request_id || error?.details?.request_id]
     .filter(Boolean)
@@ -150,7 +155,7 @@ export default function App() {
         setLoginLockSeconds(seconds);
         setLoginError('Terlalu banyak percobaan PIN salah. Silakan tunggu beberapa saat.');
       } else {
-        setLoginError(err.message || 'Nama user atau PIN salah.');
+        setLoginError(requestErrorMessage(err, 'Nama user atau PIN salah.'));
       }
     } finally {
       setAuthLoading(false);

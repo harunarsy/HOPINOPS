@@ -56,6 +56,15 @@ describe('API Client Network Resilience (src/lib/api.ts)', () => {
     });
   });
 
+  it('classifies browser network failures for local-friendly messaging', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(api.getCurrentUser()).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      message: 'Server tidak dapat dijangkau.',
+    });
+  });
+
   it('supports caller cancellation signal cleanly', async () => {
     const controller = new AbortController();
     global.fetch = vi.fn().mockImplementation((_url, options) => {

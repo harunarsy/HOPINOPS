@@ -133,6 +133,12 @@ async function request<T = any>(path: string, options: RequestOptions = {}): Pro
       abortErr.code = 'REQUEST_ABORTED';
       throw abortErr;
     }
+    if (err?.name === 'TypeError' && /failed to fetch|networkerror|network request failed/i.test(String(err?.message || ''))) {
+      const networkErr = new Error('Server tidak dapat dijangkau.') as any;
+      networkErr.code = 'NETWORK_ERROR';
+      networkErr.cause = err;
+      throw networkErr;
+    }
     throw err;
   } finally {
     clearTimeout(timer);

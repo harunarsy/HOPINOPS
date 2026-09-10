@@ -170,11 +170,11 @@ describe('Staff Flow & Onboarding UI Regression', () => {
 
     // Wait for login screen
     await waitFor(() => {
-      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+      expect(screen.getByText('Pilih pengguna...')).toBeDefined();
     });
 
     // Select user from picker
-    await user.click(screen.getByRole('button', { name: /nama lengkap/i }));
+    await user.click(screen.getByRole('button', { name: /pilih pengguna/i }));
     await user.click(screen.getByText('Budi Operator'));
 
     // Fill 6-digit PIN
@@ -352,11 +352,11 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+      expect(screen.getByText('Pilih pengguna...')).toBeDefined();
     });
 
     // Select Budi
-    await user.click(screen.getByRole('button', { name: /nama lengkap/i }));
+    await user.click(screen.getByRole('button', { name: /pilih pengguna/i }));
     await user.click(screen.getByText('Budi Operator'));
 
     // Type 2 digits
@@ -368,7 +368,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     expect(pin1.value).toBe('2');
 
     // Switch to Siti
-    await user.click(screen.getByRole('button', { name: /nama lengkap/i }));
+    await user.click(screen.getByRole('button', { name: /pilih pengguna/i }));
     await user.click(screen.getByText('Siti Supervisor'));
 
     // PIN boxes should be reset to empty!
@@ -519,7 +519,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     await user.click(logoutBtn);
 
     // Client must NOT redirect to Login on server failure!
-    expect(screen.queryByText('Pilih nama Anda...')).toBeNull();
+    expect(screen.queryByText('Pilih pengguna...')).toBeNull();
     expect(screen.getByText(/halo, budi operator/i)).toBeDefined();
 
     // Security warning banner is displayed
@@ -537,7 +537,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
 
     // Now client is safely logged out
     await waitFor(() => {
-      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+      expect(screen.getByText('Pilih pengguna...')).toBeDefined();
     });
   });
 
@@ -692,7 +692,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     await user.click(screen.getAllByRole('button', { name: 'Keluar' })[0]);
     await user.click(screen.getByRole('button', { name: /tetap keluar/i }));
     await waitFor(() => {
-      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+      expect(screen.getByText('Pilih pengguna...')).toBeDefined();
     });
     expect(api.logout).toHaveBeenCalled();
   });
@@ -766,7 +766,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+      expect(screen.getByText('Pilih pengguna...')).toBeDefined();
     });
 
     const pin0 = document.getElementById('pin-input-0') as HTMLInputElement;
@@ -782,7 +782,7 @@ describe('Staff Flow & Onboarding UI Regression', () => {
     expect(pin1.type).toBe('text');
 
     // Blur from the PIN group to an outside element
-    const wrap = pin0.closest('.pin-box-wrap') as HTMLElement;
+    const wrap = pin0.closest('.pin-rail') as HTMLElement;
     fireEvent.blur(wrap, { relatedTarget: document.body });
 
     // Both are now masked!

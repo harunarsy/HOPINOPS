@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Login } from '../features/auth/Login';
 import { ForcedPinChange } from '../features/auth/ForcedPinChange';
@@ -21,10 +21,10 @@ describe('UI Component Flow Tests', () => {
       />
     );
 
-    expect(screen.getByText('Pilih nama Anda...')).toBeDefined();
+    expect(screen.getByText('Pilih pengguna...')).toBeDefined();
 
     // Click picker button
-    const picker = screen.getByRole('button', { name: /nama lengkap/i });
+    const picker = screen.getByRole('button', { name: /pilih pengguna/i });
     await userEvent.click(picker);
 
     // Verify names are listed
@@ -61,5 +61,35 @@ describe('UI Component Flow Tests', () => {
     expect(screen.getByText(/pin saat ini/i)).toBeDefined();
     expect(screen.getByText(/pin baru \(6 digit\)/i)).toBeDefined();
     expect(screen.getByText(/ulangi pin baru/i)).toBeDefined();
+  });
+
+  describe('login connection status', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.restoreAllMocks();
+    });
+
+    it('starts in checking state and becomes online only for an exact ok health body', async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => 'ok' }) as any;
+      render(<Login options={[]} onLogin={vi.fn()} loading={false} error="" />);
+
+      expect(screen.getByText(/memeriksa koneksi server/i)).toBeDefined();
+      await waitFor(() => expect(screen.getByText('Server terhubung')).toBeDefined());
+      expect(global.fetch).toHaveBeenCalledWith('/api/health', expect.objectContaining({ cache: 'no-store' }));
+    });
+
+    it('shows offline state and reacts to browser network events', async () => {
+      global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) as any;
+      render(<Login options={[]} onLogin={vi.fn()} loading={false} error="" />);
+
+      await waitFor(() => expect(screen.getByText('Server tidak terjangkau')).toBeDefined());
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => 'ok' }) as any;
+      fireEvent(window, new Event('online'));
+      await waitFor(() => expect(screen.getByText('Server terhubung')).toBeDefined());
+      fireEvent(window, new Event('offline'));
+      expect(screen.getByText('Server tidak terjangkau')).toBeDefined();
+    });
   });
 });
