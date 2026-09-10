@@ -467,12 +467,11 @@ async function main() {
     const items = boot.items;
     const siang = await runStockCycle(api, items, { workDate: runDate(), shift: 'SIANG', area: 'BAR' });
     const malam = await runStockCycle(api, items, { workDate: runDate(), shift: 'MALAM', area: 'KITCHEN' });
-    const attendanceAssignments = assertStatus(
-      await api.get(`/api/app?action=assignment.active&date=${encodeURIComponent(wibToday())}`),
-      200,
-      'Assignment hari ini',
-    );
-    const attendanceResult = await tryAttendance(api, attendanceAssignments.assignments?.[0], 'Attendance operator');
+    // Claim a disposable assignment for today's WIB date so the attendance
+    // branch is exercised on every fresh fixture instead of being skipped when
+    // the randomized stock cycles fall on another date.
+    const attendanceAssignmentData = await claim(api, wibToday(), 'SIANG', 'BAR');
+    const attendanceResult = await tryAttendance(api, attendanceAssignmentData.assignment, 'Attendance operator');
     // A fixture operator is not assigned to today's real outlet calendar, so
     // the report endpoint may correctly return forbidden/not-found. Verify
     // that it never becomes an unexpected server error instead of forcing a
