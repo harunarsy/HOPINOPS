@@ -6,6 +6,17 @@ test('halaman login dapat dibuka tanpa mengirim login', async ({ page }) => {
       await route.abort();
       throw new Error('Smoke test hanya boleh membaca API.');
     }
+    if (!process.env.E2E_BASE_URL) {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/auth' && url.searchParams.get('action') === 'me') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { user: null } }) });
+        return;
+      }
+      if (url.pathname === '/api/auth' && url.searchParams.get('action') === 'options') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, data: { options: [{ username: 'smoke', display_name: 'Petugas Smoke' }] } }) });
+        return;
+      }
+    }
     await route.continue();
   });
   await page.goto('/');
