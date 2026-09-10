@@ -20,6 +20,8 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
   const submitInFlightRef = useRef(false);
   const prevErrorRef = useRef(error);
   const transientTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lockoutWasActiveRef = useRef(lockoutSeconds > 0);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('CHECKING');
 
   const selectedUser = options.find((o) => o.username === username);
@@ -76,6 +78,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
   useEffect(() => {
     return () => {
       if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
     };
   }, []);
 
@@ -87,25 +90,30 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
     }, 800);
   };
 
-  // Server-authoritative lock countdown. When it expires, reset input focus.
+  // Server-authoritative lock countdown. Reset the PIN only when an active
+  // lock really expires; the initial render must not race the first keystroke.
   useEffect(() => {
-    if (lockoutSeconds <= 0) {
-      setPin('');
-      setTransientVisibleIndex(null);
-      submitInFlightRef.current = false;
-      prevErrorRef.current = error;
-      setTimeout(() => {
-        document.getElementById('pin-input-0')?.focus();
-      }, 50);
-    }
-  }, [lockoutSeconds === 0]);
+    const wasLocked = lockoutWasActiveRef.current;
+    lockoutWasActiveRef.current = lockoutSeconds > 0;
+    if (!wasLocked || lockoutSeconds > 0) return;
+
+    setPin('');
+    setTransientVisibleIndex(null);
+    submitInFlightRef.current = false;
+    prevErrorRef.current = error;
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = setTimeout(() => {
+      document.getElementById('pin-input-0')?.focus();
+    }, 50);
+  }, [lockoutSeconds, error]);
 
   // Clear PIN on every fresh (non-lock) error so the operator can retype.
   useEffect(() => {
     if (error && error !== prevErrorRef.current && lockoutSeconds === 0) {
       setPin('');
       setTransientVisibleIndex(null);
-      setTimeout(() => {
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = setTimeout(() => {
         document.getElementById('pin-input-0')?.focus();
       }, 50);
     }
