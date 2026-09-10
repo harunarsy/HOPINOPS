@@ -12,6 +12,9 @@ premium-audit.json
 # Phase 0 production backups (never commit)
 backups/
 
+# Local production snapshots and database backups (never commit)
+.local-sandbox/
+
 test-results/
 playwright-report/
 

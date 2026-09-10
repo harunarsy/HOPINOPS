@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
+import { getUserFacingError } from '../../lib/user-facing-error';
 
 type Area = 'BAR' | 'KITCHEN';
 type MutationScope = 'MANAGEMENT' | 'PRIMARY' | 'READ_ONLY';
@@ -164,7 +165,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
         ? current
         : availableUnits.find((unit) => unit.active)?.code ?? '');
     } catch (err: any) {
-      if (loadRequestRef.current === requestId && activeAreaRef.current === targetArea) setError(err?.message || 'Gagal memuat katalog.');
+      if (loadRequestRef.current === requestId && activeAreaRef.current === targetArea) setError(getUserFacingError(err, 'Gagal memuat katalog.'));
     } finally {
       if (loadRequestRef.current === requestId && activeAreaRef.current === targetArea) setLoading(false);
     }
@@ -203,7 +204,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
       if (isPrimary) await api.operatorCreateItem(item); else await api.createItem(item);
       if (activeAreaRef.current !== operationArea) return;
       setNotice(`Varian ${newName.trim()} ditambahkan dan akan berlaku pada cycle berikutnya.`); setNewName(''); setNewThreshold('0'); setNewSectionId(''); await load(operationArea);
-    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal menambah varian.'); }
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(getUserFacingError(err, 'Gagal menambah varian.')); }
   };
 
   const saveEdit = async () => {
@@ -216,7 +217,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
       if (isPrimary) await api.operatorUpdateItem(payload); else await api.updateItem(payload);
       if (activeAreaRef.current !== operationArea) return;
       setEditTarget(null); setNotice('Varian diperbarui untuk cycle berikutnya. Catatan stok dan histori sebelumnya tidak berubah.'); await load(operationArea);
-    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal memperbarui varian.'); }
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(getUserFacingError(err, 'Gagal memperbarui varian.')); }
   };
 
   const archiveItem = async () => {
@@ -225,7 +226,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
       if (isPrimary) await api.operatorArchiveItem(archiveTarget, archiveReason.trim()); else await api.archiveItem(archiveTarget, archiveReason.trim());
       if (activeAreaRef.current !== operationArea) return;
       setArchiveTarget(null); setArchiveReason(''); setNotice('Varian diarsipkan untuk cycle berikutnya. Histori dan laporan lama tetap utuh.'); await load(operationArea);
-    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal mengarsipkan varian.'); }
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(getUserFacingError(err, 'Gagal mengarsipkan varian.')); }
   };
 
   const restoreItem = async () => {
@@ -234,54 +235,54 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
       await api.restoreItem(restoreTarget, restoreReason.trim());
       if (activeAreaRef.current !== operationArea) return;
       setRestoreTarget(null); setRestoreReason(''); setNotice('Varian dipulihkan untuk cycle berikutnya dan tetap memakai kode yang sama.'); await load(operationArea);
-    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal memulihkan varian.'); }
+    } catch (err: any) { if (activeAreaRef.current === operationArea) setError(getUserFacingError(err, 'Gagal memulihkan varian.')); }
   };
 
   const openHistory = async (item: CatalogItem) => {
     setHistoryTarget(item); setHistory([]); setHistoryLoading(true); setError('');
-    try { setHistory(await api.itemHistory(item.id) as ItemRevision[]); } catch (err: any) { setError(err?.message || 'Gagal memuat histori varian.'); } finally { setHistoryLoading(false); }
+    try { setHistory(await api.itemHistory(item.id) as ItemRevision[]); } catch (err: any) { setError(getUserFacingError(err, 'Gagal memuat histori varian.')); } finally { setHistoryLoading(false); }
   };
 
   const moveItem = async (itemId: string, sectionId: string, position: number) => {
     if (pendingLayoutChange) return; const operationArea = activeAreaRef.current; setPendingLayoutChange(true); setError(''); setNotice('');
     try { await api.moveChecklistItem(operationArea, itemId, sectionId, position, layoutVersion, crypto.randomUUID()); if (activeAreaRef.current !== operationArea) return; setNotice('Kelompok checklist disimpan untuk cycle berikutnya.'); await load(operationArea); }
-    catch (err: any) { if (activeAreaRef.current !== operationArea) return; if (/VERSION_CONFLICT/.test(err?.message ?? '')) { setError('Susunan berubah oleh pengguna lain. Memuat versi terbaru.'); await load(operationArea); } else setError(err?.message || 'Gagal memindahkan varian.'); }
+    catch (err: any) { if (activeAreaRef.current !== operationArea) return; if (/VERSION_CONFLICT/.test(err?.message ?? '')) { setError('Susunan berubah oleh pengguna lain. Memuat versi terbaru.'); await load(operationArea); } else setError(getUserFacingError(err, 'Gagal memindahkan varian.')); }
     finally { if (activeAreaRef.current === operationArea) setPendingLayoutChange(false); }
   };
 
   const createSection = async () => {
     if (!newSection.trim() || pendingLayoutChange) return; const operationArea = activeAreaRef.current; setPendingLayoutChange(true); setError('');
     try { await api.upsertChecklistSection(operationArea, newSection.trim(), null, crypto.randomUUID()); if (activeAreaRef.current !== operationArea) return; setNewSection(''); setNotice('Kelompok checklist ditambahkan untuk cycle berikutnya.'); await load(operationArea); }
-    catch (err: any) { if (activeAreaRef.current === operationArea) setError(err?.message || 'Gagal menambah kelompok.'); }
+    catch (err: any) { if (activeAreaRef.current === operationArea) setError(getUserFacingError(err, 'Gagal menambah kelompok.')); }
     finally { if (activeAreaRef.current === operationArea) setPendingLayoutChange(false); }
   };
 
   const refreshUnits = async () => {
     if (typeof api.listUnitOptions !== 'function') return;
-    try { setUnits(await api.listUnitOptions(unitShowArchived) as UnitOption[]); } catch (err: any) { setError(err?.message || 'Gagal memuat satuan.'); }
+    try { setUnits(await api.listUnitOptions(unitShowArchived) as UnitOption[]); } catch (err: any) { setError(getUserFacingError(err, 'Gagal memuat satuan.')); }
   };
 
   const createUnit = async () => {
     const code = newUnitCode.trim().toLowerCase();
     if (!/^[a-z][a-z0-9._-]{0,31}$/.test(code) || !newUnitLabel.trim()) { setError('Kode dan nama satuan wajib valid.'); return; }
     try { await api.createUnitOption({ code, label: newUnitLabel.trim(), decimal_scale: Number(newUnitScale) }); setNewUnitCode(''); setNewUnitLabel(''); setNotice('Satuan ditambahkan dan siap dipakai pada cycle berikutnya.'); await refreshUnits(); }
-    catch (err: any) { setError(err?.message || 'Gagal menambah satuan.'); }
+    catch (err: any) { setError(getUserFacingError(err, 'Gagal menambah satuan.')); }
   };
 
   const archiveUnit = async () => {
     if (!unitArchiveTarget || !unitArchiveReason.trim()) return;
     try { await api.archiveUnitOption(unitArchiveTarget, unitArchiveReason.trim()); setUnitArchiveTarget(null); setUnitArchiveReason(''); setNotice('Satuan diarsipkan. Histori item lama tetap memakai snapshot satuannya.'); await refreshUnits(); }
-    catch (err: any) { setError(err?.message || 'Gagal mengarsipkan satuan.'); }
+    catch (err: any) { setError(getUserFacingError(err, 'Gagal mengarsipkan satuan.')); }
   };
 
   const restoreUnit = async (code: string) => {
     try { await api.restoreUnitOption(code); setNotice('Satuan dipulihkan dan tersedia untuk cycle berikutnya.'); await refreshUnits(); }
-    catch (err: any) { setError(err?.message || 'Gagal memulihkan satuan.'); }
+    catch (err: any) { setError(getUserFacingError(err, 'Gagal memulihkan satuan.')); }
   };
 
   const openUnitHistory = async (unit: UnitOption) => {
     setUnitHistoryTarget(unit); setUnitHistory([]); setUnitHistoryLoading(true); setError('');
-    try { setUnitHistory(await api.unitHistory(unit.code) as UnitRevision[]); } catch (err: any) { setError(err?.message || 'Gagal memuat histori satuan.'); } finally { setUnitHistoryLoading(false); }
+    try { setUnitHistory(await api.unitHistory(unit.code) as UnitRevision[]); } catch (err: any) { setError(getUserFacingError(err, 'Gagal memuat histori satuan.')); } finally { setUnitHistoryLoading(false); }
   };
 
   return (
@@ -303,7 +304,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
 
       {editTarget && <div role="dialog" aria-modal="true" aria-labelledby="edit-variant-title" className="catalog-dialog"><div className="catalog-dialog-head"><div><p className="eyebrow">EDIT VARIAN</p><h3 id="edit-variant-title">{editTarget.name}</h3></div><button type="button" className="close-button" aria-label="Tutup edit varian" onClick={() => setEditTarget(null)}>×</button></div><p className="catalog-readonly"><span>Kode tampilan</span><strong>{editTarget.display_code || 'Dibuat server saat item aktif'}</strong></p><div className="catalog-field-grid"><label className="catalog-field">Nama varian<input value={editName} onChange={(event) => setEditName(event.target.value)} /></label><label className="catalog-field">Satuan<select value={editUnit} onChange={(event) => setEditUnit(event.target.value)}>{units.filter((unit) => unit.active).map((unit) => <option key={unit.code} value={unit.code}>{unit.label}</option>)}</select></label><label className="catalog-field">Batas stok minimum<input type="number" min="0" step="any" value={editThreshold} onChange={(event) => setEditThreshold(event.target.value)} /></label></div><p className="catalog-field-help">Perubahan berlaku pada cycle berikutnya. Histori stok sebelumnya tetap memakai snapshot lama.</p><div className="catalog-dialog-actions"><button type="button" className="primary-button" onClick={() => void saveEdit()}>Simpan perubahan</button><button type="button" className="outline-button" onClick={() => setEditTarget(null)}>Batal</button></div></div>}
       {historyTarget && <div role="dialog" aria-modal="true" aria-labelledby="item-history-title" className="catalog-dialog"><div className="catalog-dialog-head"><div><p className="eyebrow">HISTORI MASTER</p><h3 id="item-history-title">{historyTarget.name}</h3><p className="catalog-field-help">{historyTarget.display_code || 'Kode dibuat server'} · histori tidak dapat diubah.</p></div><button type="button" className="close-button" aria-label="Tutup histori varian" onClick={() => setHistoryTarget(null)}>×</button></div>{historyLoading ? <p role="status">Memuat histori...</p> : history.length === 0 ? <p className="catalog-empty">Belum ada catatan perubahan.</p> : <ol className="catalog-history-list">{history.map((revision) => <li key={revision.id}><div><strong>{actionLabel(revision.action)}</strong><small>{formatDateTime(revision.effective_at)}</small></div>{revisionChanges(revision).length > 0 && <ul className="catalog-history-changes">{revisionChanges(revision).map((change) => <li key={change.label}><span>{change.label}</span><strong>{change.value}</strong></li>)}</ul>}{revision.reason && <p>{revision.reason}</p>}{revision.changed_by && <small>Pengubah: {revision.changed_by}</small>}</li>)}</ol>}</div>}
-      {unitManagerOpen && canManageUnits && <div role="dialog" aria-modal="true" aria-labelledby="unit-manager-title" className="catalog-dialog"><div className="catalog-dialog-head"><div><p className="eyebrow">MASTER SATUAN</p><h3 id="unit-manager-title">Kelola satuan</h3></div><button type="button" className="close-button" aria-label="Tutup kelola satuan" onClick={() => setUnitManagerOpen(false)}>×</button></div><p className="catalog-field-help">Satuan yang masih dipakai item aktif tidak dapat diarsipkan. Histori perubahan disimpan otomatis.</p><div className="catalog-field-grid unit-create-grid"><label className="catalog-field">Kode satuan<input value={newUnitCode} onChange={(event) => setNewUnitCode(event.target.value)} placeholder="Contoh: botol" /></label><label className="catalog-field">Nama tampilan<input value={newUnitLabel} onChange={(event) => setNewUnitLabel(event.target.value)} placeholder="Contoh: botol" /></label><label className="catalog-field">Skala desimal<select value={newUnitScale} onChange={(event) => setNewUnitScale(event.target.value)}><option value="0">0 · bilangan utuh</option><option value="1">1 angka desimal</option><option value="2">2 angka desimal</option><option value="3">3 angka desimal</option><option value="4">4 angka desimal</option></select></label></div><button type="button" className="primary-button" onClick={() => void createUnit()} disabled={!newUnitCode.trim() || !newUnitLabel.trim()}>Tambah satuan</button><label className="catalog-check unit-archive-toggle"><input type="checkbox" checked={unitShowArchived} onChange={(event) => { const includeArchived = event.target.checked; setUnitShowArchived(includeArchived); void (typeof api.listUnitOptions === 'function' ? api.listUnitOptions(includeArchived).then((list) => setUnits(list as UnitOption[])).catch((err: any) => setError(err?.message || 'Gagal memuat satuan.')) : Promise.resolve()); }} /> Tampilkan satuan arsip</label><ul className="unit-list">{units.map((unit) => <li key={unit.code} className={unit.active ? '' : 'is-archived'}><div><strong>{unit.label}</strong><span>{unit.code} · {unit.decimal_scale} desimal{!unit.active && ' · Diarsipkan'}</span></div><div className="catalog-item-actions">{unit.active ? <><button type="button" className="outline-button" onClick={() => setUnitArchiveTarget(unit.code)}>Arsipkan</button>{unitArchiveTarget === unit.code && <div className="catalog-inline-form"><label className="catalog-field">Alasan arsip<input value={unitArchiveReason} onChange={(event) => setUnitArchiveReason(event.target.value)} placeholder="Contoh: tidak dipakai" /></label><button type="button" className="primary-button" onClick={() => void archiveUnit()} disabled={!unitArchiveReason.trim()}>Simpan</button><button type="button" className="outline-button" onClick={() => { setUnitArchiveTarget(null); setUnitArchiveReason(''); }}>Batal</button></div>}</> : <button type="button" className="outline-button" onClick={() => void restoreUnit(unit.code)}>Pulihkan</button>}<button type="button" className="text-button" onClick={() => void openUnitHistory(unit)}>Histori</button></div></li>)}</ul></div>}
+      {unitManagerOpen && canManageUnits && <div role="dialog" aria-modal="true" aria-labelledby="unit-manager-title" className="catalog-dialog"><div className="catalog-dialog-head"><div><p className="eyebrow">MASTER SATUAN</p><h3 id="unit-manager-title">Kelola satuan</h3></div><button type="button" className="close-button" aria-label="Tutup kelola satuan" onClick={() => setUnitManagerOpen(false)}>×</button></div><p className="catalog-field-help">Satuan yang masih dipakai item aktif tidak dapat diarsipkan. Histori perubahan disimpan otomatis.</p><div className="catalog-field-grid unit-create-grid"><label className="catalog-field">Kode satuan<input value={newUnitCode} onChange={(event) => setNewUnitCode(event.target.value)} placeholder="Contoh: botol" /></label><label className="catalog-field">Nama tampilan<input value={newUnitLabel} onChange={(event) => setNewUnitLabel(event.target.value)} placeholder="Contoh: botol" /></label><label className="catalog-field">Skala desimal<select value={newUnitScale} onChange={(event) => setNewUnitScale(event.target.value)}><option value="0">0 · bilangan utuh</option><option value="1">1 angka desimal</option><option value="2">2 angka desimal</option><option value="3">3 angka desimal</option><option value="4">4 angka desimal</option></select></label></div><button type="button" className="primary-button" onClick={() => void createUnit()} disabled={!newUnitCode.trim() || !newUnitLabel.trim()}>Tambah satuan</button><label className="catalog-check unit-archive-toggle"><input type="checkbox" checked={unitShowArchived} onChange={(event) => { const includeArchived = event.target.checked; setUnitShowArchived(includeArchived); void (typeof api.listUnitOptions === 'function' ? api.listUnitOptions(includeArchived).then((list) => setUnits(list as UnitOption[])).catch((err: any) => setError(getUserFacingError(err, 'Gagal memuat satuan.'))) : Promise.resolve()); }} /> Tampilkan satuan arsip</label><ul className="unit-list">{units.map((unit) => <li key={unit.code} className={unit.active ? '' : 'is-archived'}><div><strong>{unit.label}</strong><span>{unit.code} · {unit.decimal_scale} desimal{!unit.active && ' · Diarsipkan'}</span></div><div className="catalog-item-actions">{unit.active ? <><button type="button" className="outline-button" onClick={() => setUnitArchiveTarget(unit.code)}>Arsipkan</button>{unitArchiveTarget === unit.code && <div className="catalog-inline-form"><label className="catalog-field">Alasan arsip<input value={unitArchiveReason} onChange={(event) => setUnitArchiveReason(event.target.value)} placeholder="Contoh: tidak dipakai" /></label><button type="button" className="primary-button" onClick={() => void archiveUnit()} disabled={!unitArchiveReason.trim()}>Simpan</button><button type="button" className="outline-button" onClick={() => { setUnitArchiveTarget(null); setUnitArchiveReason(''); }}>Batal</button></div>}</> : <button type="button" className="outline-button" onClick={() => void restoreUnit(unit.code)}>Pulihkan</button>}<button type="button" className="text-button" onClick={() => void openUnitHistory(unit)}>Histori</button></div></li>)}</ul></div>}
       {unitHistoryTarget && <div role="dialog" aria-modal="true" aria-labelledby="unit-history-title" className="catalog-dialog"><div className="catalog-dialog-head"><div><p className="eyebrow">HISTORI SATUAN</p><h3 id="unit-history-title">{unitHistoryTarget.label}</h3><p className="catalog-field-help">{unitHistoryTarget.code} · histori tidak dapat diubah.</p></div><button type="button" className="close-button" aria-label="Tutup histori satuan" onClick={() => setUnitHistoryTarget(null)}>×</button></div>{unitHistoryLoading ? <p role="status">Memuat histori...</p> : unitHistory.length === 0 ? <p className="catalog-empty">Belum ada catatan perubahan.</p> : <ol className="catalog-history-list">{unitHistory.map((revision) => <li key={revision.id}><div><strong>{actionLabel(revision.action)}</strong><small>{formatDateTime(revision.effective_at)}</small></div>{unitRevisionChanges(revision).length > 0 && <ul className="catalog-history-changes">{unitRevisionChanges(revision).map((change) => <li key={change.label}><span>{change.label}</span><strong>{change.value}</strong></li>)}</ul>}{revision.reason && <p>{revision.reason}</p>}{revision.changed_by && <small>Pengubah: {revision.changed_by}</small>}</li>)}</ol>}</div>}
     </section>
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../../lib/api';
+import { getUserFacingError } from '../../lib/user-facing-error';
 
 type Props = {
   onSuccess: () => void;
@@ -30,7 +31,7 @@ export function ForcedPinChange({ onSuccess, onLogout }: Props) {
       await api.changePin(oldPin, newPin, confirmPin);
       onSuccess();
     } catch (err: any) {
-      setError(err.message || 'Gagal memperbarui PIN.');
+      setError(getUserFacingError(err, 'Gagal memperbarui PIN.'));
     } finally {
       setLoading(false);
     }

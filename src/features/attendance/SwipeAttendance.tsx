@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { api } from '../../lib/api';
+import { getErrorCode, getErrorMessage, getUserFacingError } from '../../lib/user-facing-error';
 
 type Props = {
   actionType: 'CHECK_IN' | 'CHECK_OUT';
@@ -127,7 +128,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       setTimeout(onSuccess, 1000);
     } catch (err: any) {
       console.error(err);
-      if (err.message && err.message.includes('Catatan alasan wajib diisi')) {
+      if (getErrorCode(err) === 'ATTENDANCE_NOTE_REQUIRED' || getErrorMessage(err).includes('Catatan alasan wajib diisi')) {
         setNeedsNote(true);
         setStatus('IDLE');
         setSliderPos(0);
@@ -135,7 +136,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       } else {
         setStatus('ERROR');
         setSliderPos(0);
-        setErrorMessage(err.message || 'Gagal melakukan absensi.');
+        setErrorMessage(getUserFacingError(err, 'Gagal melakukan absensi.'));
       }
     } finally {
       inFlightRef.current = false;

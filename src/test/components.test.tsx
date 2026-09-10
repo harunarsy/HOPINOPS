@@ -53,6 +53,28 @@ describe('UI Component Flow Tests', () => {
     });
   });
 
+  it('renders a sanitized login error in an animated live slot below the PIN rail', () => {
+    const { container } = render(
+      <Login
+        options={[]}
+        onLogin={vi.fn()}
+        loading={false}
+        error="Nama user atau PIN salah. (API_ERROR · HTTP 401 · request_id private)"
+      />,
+    );
+
+    expect(screen.getByText('Nama user atau PIN salah.')).toBeDefined();
+    expect(screen.queryByText(/API_ERROR|HTTP 401|request_id/i)).toBeNull();
+
+    const slot = container.querySelector('.login-error-slot');
+    expect(slot?.classList.contains('is-visible')).toBe(true);
+    expect(slot?.getAttribute('aria-live')).toBe('polite');
+    expect(slot?.getAttribute('aria-atomic')).toBe('true');
+
+    const pinRail = container.querySelector('.pin-rail');
+    expect(pinRail?.getAttribute('aria-describedby')).toBe('login-error');
+  });
+
   it('renders forced pin change screen requiring 6-digit confirmation', () => {
     const handleSuccess = vi.fn();
     render(<ForcedPinChange onSuccess={handleSuccess} />);

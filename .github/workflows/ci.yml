@@ -25,3 +25,80 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: git diff --check
+
+  deploy_production:
+    name: Deploy production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: application
+    runs-on: ubuntu-latest
+    concurrency:
+      group: hopin-production-deployment
+      cancel-in-progress: true
+    environment:
+      name: production
+      url: https://hopinops.vercel.app
+    permissions:
+      contents: read
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      HOPIN_BUILD_SHA: ${{ github.sha }}
+      HOPIN_PRODUCTION_URL: https://hopinops.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.23.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Check Vercel deployment secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error title=Missing deployment secret::$name is not configured for the production environment."
+              exit 1
+            fi
+          done
+      - run: pnpm install --frozen-lockfile
+      - name: Pull canonical Vercel project settings
+        run: pnpm exec vercel pull --yes --environment=production --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+      - name: Build the exact commit artifact
+        run: pnpm exec vercel build --prod --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+      - name: Deploy prebuilt artifact
+        run: pnpm exec vercel deploy --prebuilt --prod --yes --json --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" > "$RUNNER_TEMP/vercel-deployment.json"
+      - name: Capture deployment URL
+        id: deployment
+        shell: bash
+        env:
+          DEPLOYMENT_JSON: ${{ runner.temp }}/vercel-deployment.json
+        run: |
+          set -euo pipefail
+          deployment_url="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const value = JSON.parse(readFileSync(process.argv[1], "utf8"));
+            const deployment = Array.isArray(value) ? value[0] : value;
+            const url = typeof deployment?.url === "string" ? deployment.url.trim() : "";
+            if (!url || !/^[a-z0-9.-]+\.vercel\.app$/i.test(url.replace(/^https?:\\/\\//, ""))) {
+              throw new Error("Vercel did not return a valid deployment URL.");
+            }
+            process.stdout.write(url);
+          ' "$DEPLOYMENT_JSON")"
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+      - name: Ensure the canonical production alias uses this deployment
+        run: pnpm exec vercel promote "${{ steps.deployment.outputs.deployment_url }}" --yes --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+      - name: Verify deployment SHA, alias, and health
+        env:
+          HOPIN_DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment_url }}
+          HOPIN_EXPECTED_SHA: ${{ github.sha }}
+        run: node scripts/verify-production-deployment.mjs
+      - name: Install browser for read-only production smoke
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run read-only production smoke
+        env:
+          E2E_BASE_URL: https://hopinops.vercel.app
+        run: pnpm test:smoke

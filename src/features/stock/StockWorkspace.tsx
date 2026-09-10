@@ -4,6 +4,7 @@ import { fmtNumber, areaLabel, shiftLabel, statusOfStock, movementCategoryLabel 
 import { api } from '../../lib/api';
 import { idbQueue, type QueueItem } from '../../lib/idb-queue';
 import { CatalogManager } from '../management/CatalogManager';
+import { getUserFacingError } from '../../lib/user-facing-error';
 
 type Tab = 'overview' | 'opening' | 'movement' | 'closing' | 'catalog';
 type OpeningReference = Awaited<ReturnType<typeof api.getOpeningReference>>;
@@ -123,7 +124,7 @@ export function StockWorkspace({
         setLayoutSections([]);
         setLayoutPlacements([]);
         setLayoutVersion(null);
-        setLayoutError(`Urutan checklist gagal dimuat (${error?.code || 'LAYOUT_LOAD_FAILED'}). Coba muat ulang.`);
+        setLayoutError(getUserFacingError(error, 'Urutan checklist gagal dimuat. Coba muat ulang.'));
       })
       .finally(() => {
         if (active) setLayoutLoading(false);
@@ -282,8 +283,7 @@ export function StockWorkspace({
       })
       .catch((err: any) => {
         if (!active || activeScopeRef.current !== scopeSignature) return;
-        const code = typeof err?.code === 'string' ? err.code : 'DRAFT_RESTORE_FAILED';
-        setCriticalError(`Draft stok gagal dipulihkan (${code}). Input baru belum disimpan.`);
+        setCriticalError(getUserFacingError(err, 'Draft stok gagal dipulihkan. Input baru belum disimpan.'));
       });
     return () => { active = false; };
   }, [scopeSignature, isOpeningConfirmed, isClosingConfirmed, closingCompleted]);
@@ -306,8 +306,7 @@ export function StockWorkspace({
       })
       .catch((err: any) => {
         if (!active || activeScopeRef.current !== scopeSignature) return;
-        const code = typeof err?.code === 'string' ? err.code : 'OPENING_REFERENCE_FAILED';
-        setOpeningReferenceError(`Patokan stok awal gagal dimuat (${code}).`);
+        setOpeningReferenceError(getUserFacingError(err, 'Patokan stok awal gagal dimuat.'));
       })
       .finally(() => {
         if (active && activeScopeRef.current === scopeSignature) setOpeningReferenceLoading(false);
@@ -649,7 +648,7 @@ export function StockWorkspace({
         showCriticalError('Referensi berhasil dibuat, tetapi data cycle gagal dimuat ulang.');
       }
     } catch (err: any) {
-      showCriticalError(`Gagal menetapkan stok patokan (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menetapkan stok patokan.'));
     } finally {
       setBaselineSubmitting(false);
     }
@@ -715,11 +714,7 @@ export function StockWorkspace({
       }
       setTab('movement');
     } catch (err: any) {
-      const status = typeof err?.status === 'number' ? err.status : null;
-      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
-      showCriticalError(status === 409
-        ? `Konfirmasi stok awal berkonflik dengan server (${errorCode}).`
-        : `Gagal konfirmasi stok awal (${errorCode}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal mengonfirmasi stok awal.'));
     } finally {
       setLoading(false);
     }
@@ -773,11 +768,7 @@ export function StockWorkspace({
       showToast('Draft stok awal berhasil disimpan tanpa konfirmasi.');
     } catch (err: any) {
       if (activeScopeRef.current !== requestScope) return;
-      const status = typeof err?.status === 'number' ? err.status : null;
-      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
-      showCriticalError(status === 409 || errorCode === 'VERSION_CONFLICT'
-        ? `Draft stok awal berkonflik dengan versi server (${errorCode}).`
-        : `Gagal menyimpan draft stok awal (${errorCode}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menyimpan draft stok awal.'));
     } finally {
       if (activeScopeRef.current === requestScope) setOpeningDraftSaving(false);
     }
@@ -838,8 +829,7 @@ export function StockWorkspace({
       setMvQty('');
       setMovementModalOpen(false);
     } catch (err: any) {
-      const errorCode = typeof err?.code === 'string' ? err.code : 'QUEUE_WRITE_FAILED';
-      showCriticalError(`Gagal menyimpan antrean perubahan (${errorCode}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menyimpan antrean perubahan.'));
     } finally {
       setLoading(false);
     }
@@ -863,8 +853,7 @@ export function StockWorkspace({
       }
       return true;
     } catch (err: any) {
-      const errorCode = typeof err?.code === 'string' ? err.code : 'QUEUE_READ_FAILED';
-      showCriticalError(`Status antrean tidak dapat diverifikasi (${errorCode}). ${actionLabel} dibatalkan.`);
+      showCriticalError(`${getUserFacingError(err, 'Status antrean tidak dapat diverifikasi.')} ${actionLabel} dibatalkan.`);
       return false;
     }
   };
@@ -882,7 +871,7 @@ export function StockWorkspace({
         showCriticalError('Handover berhasil, tetapi tampilan gagal dimuat ulang.');
       }
     } catch (err: any) {
-      showCriticalError(`Gagal menyelesaikan handover (${typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR'}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menyelesaikan handover.'));
     } finally {
       setLoading(false);
     }
@@ -894,7 +883,7 @@ export function StockWorkspace({
       await loadQueueSummary();
       await syncQueue();
     } catch (err: any) {
-      showCriticalError(`Gagal menjadwalkan ulang transaksi (${typeof err?.code === 'string' ? err.code : 'QUEUE_RETRY_FAILED'}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menjadwalkan ulang transaksi.'));
     }
   };
 
@@ -914,7 +903,7 @@ export function StockWorkspace({
       setConflictDiscardItem(null);
       showToast('Konflik dihapus setelah data terbaru berhasil dimuat. Masukkan kembali transaksi bila masih diperlukan.');
     } catch (err: any) {
-      showCriticalError(`Konflik tidak dihapus karena refresh gagal (${typeof err?.code === 'string' ? err.code : 'REFRESH_FAILED'}). Antrean tetap tersimpan.`);
+      showCriticalError(`${getUserFacingError(err, 'Konflik tidak dihapus karena data terbaru gagal dimuat.')} Antrean tetap tersimpan.`);
     } finally {
       setLoading(false);
     }
@@ -982,11 +971,7 @@ export function StockWorkspace({
         showCriticalError('Koreksi berhasil, tetapi ledger gagal dimuat ulang.');
       }
     } catch (err: any) {
-      const status = typeof err?.status === 'number' ? err.status : null;
-      const code = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
-      showCriticalError(status === 409
-        ? `Koreksi berkonflik dengan kondisi server (${code}). Muat ulang ledger.`
-        : `Gagal menyimpan koreksi (${code}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menyimpan koreksi. Muat ulang ledger lalu coba lagi.'));
     } finally {
       setLoading(false);
     }
@@ -1067,11 +1052,7 @@ export function StockWorkspace({
       }
       onGoReports();
     } catch (err: any) {
-      const status = typeof err?.status === 'number' ? err.status : null;
-      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
-      showCriticalError(status === 409
-        ? `Closing berkonflik dengan kondisi server (${errorCode}).`
-        : `Gagal konfirmasi closing (${errorCode}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal mengonfirmasi closing.'));
     } finally {
       setLoading(false);
     }
@@ -1125,11 +1106,7 @@ export function StockWorkspace({
       showToast('Draft stok akhir berhasil disimpan tanpa konfirmasi.');
     } catch (err: any) {
       if (activeScopeRef.current !== requestScope) return;
-      const status = typeof err?.status === 'number' ? err.status : null;
-      const errorCode = typeof err?.code === 'string' ? err.code : 'UNKNOWN_ERROR';
-      showCriticalError(status === 409 || errorCode === 'VERSION_CONFLICT'
-        ? `Draft stok akhir berkonflik dengan versi server (${errorCode}).`
-        : `Gagal menyimpan draft stok akhir (${errorCode}).`);
+      showCriticalError(getUserFacingError(err, 'Gagal menyimpan draft stok akhir.'));
     } finally {
       if (activeScopeRef.current === requestScope) setClosingDraftSaving(false);
     }

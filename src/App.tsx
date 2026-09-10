@@ -9,21 +9,9 @@ import { SwipeAttendance } from './features/attendance/SwipeAttendance';
 import { StockWorkspace } from './features/stock/StockWorkspace';
 import { ReportsView } from './features/reports/ReportsView';
 import { ManagementView } from './features/management/ManagementView';
+import { getUserFacingError } from './lib/user-facing-error';
 
 type AppStatus = 'BOOTING' | 'READY' | 'SERVICE_UNAVAILABLE' | 'SESSION_EXPIRED';
-
-function requestErrorMessage(error: any, fallback: string) {
-  const host = typeof window !== 'undefined' ? window.location.hostname : '';
-  const isLocalOrigin = host === 'localhost' || host === '127.0.0.1';
-  if (isLocalOrigin && ['NETWORK_ERROR', 'NON_JSON_RESPONSE'].includes(error?.code)) {
-    return 'Server lokal belum terhubung. Jalankan pnpm dev:full, bukan pnpm dev, lalu buka ulang halaman.';
-  }
-  const message = error?.message || fallback;
-  const context = [error?.code, error?.status ? `HTTP ${error.status}` : '', error?.request_id || error?.details?.request_id]
-    .filter(Boolean)
-    .join(' · ');
-  return context ? `${message} (${context})` : message;
-}
 
 function isSessionError(error: any) {
   return error?.status === 401 || ['AUTH_REQUIRED', 'INVALID_SESSION', 'INVALID_DEVICE'].includes(error?.code);
@@ -106,7 +94,7 @@ export default function App() {
       return true;
     } catch (e: any) {
       console.error('Bootstrap failed', e);
-      const message = requestErrorMessage(e, 'Gagal memuat data operasional.');
+      const message = getUserFacingError(e, 'Gagal memuat data operasional.');
       if (!background) {
         setBootstrapError(message);
         setAppStatus(isSessionError(e) ? 'SESSION_EXPIRED' : 'SERVICE_UNAVAILABLE');
@@ -132,7 +120,7 @@ export default function App() {
       setLoginOptions(await api.getLoginOptions());
       setAppStatus('READY');
     } catch (e: any) {
-      setBootstrapError(requestErrorMessage(e, 'Layanan autentikasi belum siap.'));
+      setBootstrapError(getUserFacingError(e, 'Layanan autentikasi belum siap.'));
       setAppStatus(isSessionError(e) ? 'SESSION_EXPIRED' : 'SERVICE_UNAVAILABLE');
     }
   };
@@ -155,7 +143,7 @@ export default function App() {
         setLoginLockSeconds(seconds);
         setLoginError('Terlalu banyak percobaan PIN salah. Silakan tunggu beberapa saat.');
       } else {
-        setLoginError(requestErrorMessage(err, 'Nama user atau PIN salah.'));
+        setLoginError(getUserFacingError(err, 'Nama user atau PIN salah.', { surface: 'login' }));
       }
     } finally {
       setAuthLoading(false);
@@ -241,11 +229,14 @@ export default function App() {
       try {
         setLoginOptions(await api.getLoginOptions());
       } catch (e: any) {
-        setLoginError(requestErrorMessage(e, 'Gagal memuat daftar akun.'));
+        setLoginError(getUserFacingError(e, 'Gagal memuat daftar akun.', { surface: 'login' }));
       }
     } catch (err: any) {
       console.error('Logout failed on server', err?.message);
-      setLogoutError(`Keluar akun belum terkonfirmasi di server. Jangan tinggalkan perangkat ini. (${err?.message || 'Gagal mencabut sesi'})`);
+      setLogoutError(getUserFacingError(
+        err,
+        'Keluar akun belum terkonfirmasi di server. Jangan tinggalkan perangkat ini.',
+      ));
     } finally {
       setLoggingOut(false);
     }
@@ -265,7 +256,7 @@ export default function App() {
       setAssignmentError('');
       setShowCheckInModal(true);
     } catch (err: any) {
-      setAssignmentError(requestErrorMessage(err, 'Gagal mengambil penugasan.'));
+      setAssignmentError(getUserFacingError(err, 'Gagal mengambil penugasan.'));
     } finally {
       setAuthLoading(false);
     }
@@ -287,7 +278,7 @@ export default function App() {
       await handleLogout();
     } catch (err: any) {
       setShowCheckOutModal(false);
-      setCheckoutRecoveryError(requestErrorMessage(
+      setCheckoutRecoveryError(getUserFacingError(
         err,
         'Checkout tercatat, tetapi assignment belum dapat diselesaikan. Anda tetap masuk agar kondisi ini dapat dipulihkan.',
       ));
@@ -350,12 +341,11 @@ export default function App() {
         : prev));
       await loadBootstrap(true);
     } catch (err: any) {
-      const code = typeof err?.code === 'string' ? err.code : '';
-      setEmergencyError(requestErrorMessage(
+      setEmergencyError(getUserFacingError(
         err,
         /ALREADY_CHECKED_OUT|NO_OPEN_ATTENDANCE/.test(err?.message ?? '')
           ? 'Check-out sudah tercatat. Bila assignment belum selesai, gunakan pemulihan penyelesaian assignment.'
-          : `Check-out darurat gagal (${code || 'UNKNOWN_ERROR'}). Anda tetap masuk; periksa kondisi attendance lalu coba kembali.`,
+          : 'Check-out darurat gagal. Anda tetap masuk; periksa kondisi absensi lalu coba kembali.',
       ));
     } finally {
       setEmergencySubmitting(false);

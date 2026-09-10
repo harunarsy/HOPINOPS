@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { sanitizeUserMessage } from '../../lib/user-facing-error';
 
 export type ConnectionStatus = 'CHECKING' | 'ONLINE' | 'OFFLINE';
 
@@ -23,6 +24,9 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
 
   const selectedUser = options.find((o) => o.username === username);
   const disabled = loading || lockoutSeconds > 0;
+  const visibleError = error
+    ? sanitizeUserMessage(error, 'Nama user atau PIN salah.')
+    : '';
 
   useEffect(() => {
     let disposed = false;
@@ -160,7 +164,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                 disabled={disabled || options.length === 0}
               >
                 <span className="picker-avatar">
-                  {selectedUser ? selectedUser.display_name.slice(0, 2).toUpperCase() : '—'}
+                  {selectedUser ? selectedUser.display_name.slice(0, 2).toUpperCase() : '-'}
                 </span>
                 <span className="picker-copy">
                   {selectedUser ? (
@@ -203,6 +207,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
               className="pin-rail"
               role="group"
               aria-label="PIN 6 digit"
+              aria-describedby={visibleError && lockoutSeconds === 0 ? 'login-error' : undefined}
               onBlur={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget as Node)) {
                   if (transientTimerRef.current) clearTimeout(transientTimerRef.current);
@@ -297,7 +302,17 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
             </div>
           )}
 
-          {error && lockoutSeconds === 0 && <p className="form-error" role="alert">{error}</p>}
+          <div
+            className={`login-error-slot${visibleError && lockoutSeconds === 0 ? ' is-visible' : ''}`}
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {visibleError && lockoutSeconds === 0 && (
+              <p id="login-error" className="form-error login-error" role="status">
+                {visibleError}
+              </p>
+            )}
+          </div>
 
           <button
             className="primary-button"

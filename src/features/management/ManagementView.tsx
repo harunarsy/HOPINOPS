@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { api } from '../../lib/api';
 import { fmtRupiah, wibDate, wibDateKey } from '../../domain/rules';
 import { CatalogManager } from './CatalogManager';
+import { getUserFacingError } from '../../lib/user-facing-error';
 
 type Tab = 'dashboard' | 'stock' | 'roster' | 'exceptions' | 'payroll' | 'users' | 'settings' | 'reports' | 'account' | 'catalog';
 type Settings = Awaited<ReturnType<typeof api.getSettings>>;
@@ -66,6 +67,10 @@ function formatDateTime(value: string) {
 
 function getPayrollAdjustments(entry: any) {
   return entry.payroll_adjustments ?? entry.adjustments ?? [];
+}
+
+function messageFrom(error: unknown, fallback: string) {
+  return getUserFacingError(error, fallback);
 }
 
 function Dialog({ titleId, title, onClose, children }: { titleId: string; title: string; onClose: () => void; children: ReactNode }) {
@@ -328,7 +333,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       cacheRef.current.delete('stock');
       await loadData(true);
     } catch (error: any) {
-      setStockFormError(error.message || 'Baseline stok gagal disimpan.');
+      setStockFormError(messageFrom(error, 'Baseline stok gagal disimpan.'));
     } finally {
       setActionLoading('');
     }
@@ -435,7 +440,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
         setSettingsDraft(current);
       }
     } catch (e: any) {
-      if (loadRequestRef.current === requestId) setViewError(e.message || 'Gagal memuat data manajemen.');
+      if (loadRequestRef.current === requestId) setViewError(messageFrom(e, 'Gagal memuat data manajemen.'));
     } finally {
       if (loadRequestRef.current === requestId) setLoading(false);
     }
@@ -459,7 +464,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setViewError('');
     } catch (e: any) {
       if (payrollRequestRef.current !== requestId) return;
-      setViewError(e.message || 'Gagal memuat data payroll.');
+      setViewError(messageFrom(e, 'Gagal memuat data payroll.'));
     } finally {
       if (payrollRequestRef.current === requestId) setPayrollLoading(false);
     }
@@ -475,7 +480,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast(`Draft Payroll berhasil dihitung (${res.entry_count} karyawan).`);
       await reloadPayrollIfCurrent(scopePeriod, scopeRequest);
     } catch (e: any) {
-      showError(e.message || 'Gagal membuat draft payroll.');
+      showError(messageFrom(e, 'Gagal membuat draft payroll.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -493,7 +498,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Payroll berhasil ditandai REVIEWED.');
       await reloadPayrollIfCurrent(scopePeriod, scopeRequest);
     } catch (e: any) {
-      showError(e.message || 'Gagal menyelesaikan review payroll.');
+      showError(messageFrom(e, 'Gagal menyelesaikan review payroll.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -514,7 +519,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Payroll dikunci. Data gaji tidak dapat dikhitung ulang.');
       await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
-      showError(e.message || 'Gagal mengunci payroll.');
+      showError(messageFrom(e, 'Gagal mengunci payroll.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -541,7 +546,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setPaymentReason('');
       await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
-      showError(e.message || 'Gagal menandai payroll dibayar.');
+      showError(messageFrom(e, 'Gagal menandai payroll dibayar.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -567,7 +572,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setVoidReason('');
       await reloadPayrollIfCurrent(scope.period, scopeRequest);
     } catch (e: any) {
-      showError(e.message || 'Gagal membatalkan payroll.');
+      showError(messageFrom(e, 'Gagal membatalkan payroll.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -582,7 +587,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setRevokeTarget(null);
       showToast('Sesi berhasil dicabut. Perangkat tersebut harus login kembali.');
     } catch (err: any) {
-      showError(err.message || 'Gagal mencabut sesi. Muat ulang dan coba lagi.');
+      showError(messageFrom(err, 'Gagal mencabut sesi. Muat ulang dan coba lagi.'));
     } finally {
       setActionLoading('');
     }
@@ -622,7 +627,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setAdjustmentReason('');
       showToast('Usulan penyesuaian payroll dibuat. Reviewer lain harus mengambil keputusan.');
     } catch (err: any) {
-      showError(err.message || 'Gagal mengajukan penyesuaian payroll.');
+      showError(messageFrom(err, 'Gagal mengajukan penyesuaian payroll.'));
     } finally {
       setActionLoading('');
     }
@@ -659,7 +664,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setAdjustmentReviewNote('');
       showToast(decision === 'APPROVED' ? 'Penyesuaian payroll disetujui.' : 'Penyesuaian payroll ditolak.');
     } catch (err: any) {
-      showError(err.message || 'Gagal menyimpan review penyesuaian payroll.');
+      showError(messageFrom(err, 'Gagal menyimpan review penyesuaian payroll.'));
     } finally {
       setActionLoading('');
     }
@@ -701,7 +706,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
         ? `Export tercatat sebelumnya ditemukan kembali (tanpa file ganda). Tautan berlaku sampai ${formatDateTime(download.expires_at)}.`
         : `Snapshot Excel (${res.label}) siap diunduh. Tautan berlaku sampai ${formatDateTime(download.expires_at)}.`);
     } catch (e: any) {
-      showError(e.message || 'Gagal mengekspor payroll.');
+      showError(messageFrom(e, 'Gagal mengekspor payroll.'));
     } finally {
       setPayrollLoading(false);
     }
@@ -718,7 +723,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setOneTimeSecret({ username: res.username, pin: res.tempPin });
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal mereset PIN.');
+      showError(messageFrom(err, 'Gagal mereset PIN.'));
     } finally {
       setActionLoading('');
     }
@@ -743,7 +748,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setRosterReason('');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal menambahkan jadwal.');
+      showError(messageFrom(err, 'Gagal menambahkan jadwal.'));
     } finally {
       setActionLoading('');
     }
@@ -771,7 +776,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Jadwal berhasil diubah.');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal mengubah jadwal.');
+      showError(messageFrom(err, 'Gagal mengubah jadwal.'));
     } finally {
       setActionLoading('');
     }
@@ -787,7 +792,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Jadwal dibatalkan dan tetap tersimpan di audit.');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal membatalkan jadwal.');
+      showError(messageFrom(err, 'Gagal membatalkan jadwal.'));
     } finally {
       setActionLoading('');
     }
@@ -803,7 +808,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setReviewNote('');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal menyimpan review koreksi.');
+      showError(messageFrom(err, 'Gagal menyimpan review koreksi.'));
     } finally {
       setActionLoading('');
     }
@@ -819,7 +824,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Check-out darurat tercatat. Ajukan dan selesaikan peninjauan absensi sebelum penugasan dapat ditutup.');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Emergency checkout gagal dicatat.');
+      showError(messageFrom(err, 'Emergency checkout gagal dicatat.'));
     } finally {
       setActionLoading('');
     }
@@ -840,7 +845,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Usulan penyelesaian dibuat. Manager lain wajib mereview sebelum assignment ditutup.');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Usulan penyelesaian emergency checkout gagal dibuat.');
+      showError(messageFrom(err, 'Usulan penyelesaian emergency checkout gagal dibuat.'));
     } finally {
       setActionLoading('');
     }
@@ -856,7 +861,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setReviewNote('');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal menyimpan review lembur.');
+      showError(messageFrom(err, 'Gagal menyimpan review lembur.'));
     } finally {
       setActionLoading('');
     }
@@ -878,7 +883,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast('Data pengguna diperbarui.');
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal memperbarui pengguna.');
+      showError(messageFrom(err, 'Gagal memperbarui pengguna.'));
     } finally {
       setActionLoading('');
     }
@@ -894,7 +899,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       showToast(`Akun dinonaktifkan. ${result.revoked_sessions} sesi dan ${result.revoked_devices} perangkat dicabut.`);
       await loadData(true);
     } catch (err: any) {
-      showError(err.message || 'Gagal menonaktifkan pengguna.');
+      showError(messageFrom(err, 'Gagal menonaktifkan pengguna.'));
     } finally {
       setActionLoading('');
     }
@@ -923,7 +928,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       setSettingsDraft(current);
       showToast(`Pengaturan disimpan sebagai versi ${current.version}.`);
     } catch (err: any) {
-      showError(err.message || 'Gagal menyimpan pengaturan. Muat ulang jika versi telah berubah.');
+      showError(messageFrom(err, 'Gagal menyimpan pengaturan. Muat ulang jika versi telah berubah.'));
     } finally {
       setActionLoading('');
     }
@@ -1608,7 +1613,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                           setOneTimeSecret({ username: res.user.username, pin: res.initial_pin });
                           await loadData(true);
                         } catch (err: any) {
-                          showError(err.message || 'Gagal membuat pengguna baru.');
+                          showError(messageFrom(err, 'Gagal membuat pengguna baru.'));
                         } finally {
                           setActionLoading('');
                         }

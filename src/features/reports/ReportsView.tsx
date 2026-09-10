@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FinanceData } from '../../domain/types';
 import { fmtRupiah } from '../../domain/rules';
 import { api } from '../../lib/api';
+import { getUserFacingError, sanitizeUserMessage } from '../../lib/user-facing-error';
 
 type Props = {
   isFinalizer: boolean;
@@ -51,7 +52,12 @@ const financeFields: { key: keyof FinanceData; label: string; help: string }[] =
 ];
 
 function messageFrom(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? error.message : fallback;
+  return getUserFacingError(error, fallback);
+}
+
+function blockerMessage(blocker: unknown) {
+  if (typeof blocker === 'string') return sanitizeUserMessage(blocker, 'Kesiapan bonus belum terpenuhi.');
+  return getUserFacingError(blocker, 'Kesiapan bonus belum terpenuhi.');
 }
 
 function codeFrom(error: unknown) {
@@ -182,7 +188,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           const preview = await api.previewBonus(workDate);
           if (!active) return;
           setBonusPreview(preview.preview ?? null);
-          setBonusBlockers((preview.blockers ?? []).map((blocker: any) => typeof blocker === 'string' ? blocker : blocker?.message || blocker?.code || 'Kesiapan bonus belum terpenuhi.'));
+          setBonusBlockers((preview.blockers ?? []).map(blockerMessage));
           setBonusState('success');
         } catch (error) {
           if (!active) return;
@@ -340,7 +346,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       }
       const preview = await api.previewBonus(workDate);
       setBonusPreview(preview.preview ?? null);
-      setBonusBlockers((preview.blockers ?? []).map((blocker: any) => typeof blocker === 'string' ? blocker : blocker?.message || blocker?.code || 'Kesiapan bonus belum terpenuhi.'));
+      setBonusBlockers((preview.blockers ?? []).map(blockerMessage));
       setBonusState('success');
       setBonusStale(false);
     } catch (error) {

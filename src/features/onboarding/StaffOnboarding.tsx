@@ -1,5 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../../lib/api';
+import { getUserFacingError, getErrorMessage } from '../../lib/user-facing-error';
 
 type Props = {
   onComplete: () => void;
@@ -299,14 +300,14 @@ export function StaffOnboarding({ onComplete, onLogout, onboardingVersion = 2 }:
       await api.completeOnboarding(activeVersion);
       onComplete();
     } catch (err: any) {
-      const msg = err?.message || '';
+      const msg = getErrorMessage(err);
       const match = msg.match(/Current onboarding version is (\d+)/i);
       if (match && Number(match[1])) {
         const newVer = Number(match[1]);
         setVersionConflictNewVersion(newVer);
         setCompletionError(`Materi latihan telah diperbarui ke versi ${newVer} di server.`);
       } else {
-        setCompletionError(msg || 'Progres latihan belum dapat disimpan. Anda tetap di langkah ini; periksa koneksi lalu coba lagi.');
+        setCompletionError(getUserFacingError(err, 'Progres latihan belum dapat disimpan. Anda tetap di langkah ini; periksa koneksi lalu coba lagi.'));
       }
     } finally {
       setSubmitting(false);
