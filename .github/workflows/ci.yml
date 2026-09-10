@@ -98,6 +98,8 @@ jobs:
         run: pnpm exec vercel promote "${{ steps.deployment.outputs.deployment_url }}" --yes --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
       - name: Wait for Vercel Git integration deployment
         if: steps.deployment_path.outputs.mode == 'git-integration'
+        env:
+          HOPIN_EXPECTED_SHA: ${{ github.sha }}
         run: node scripts/wait-for-production-deployment.mjs
       - name: Verify explicit Vercel deployment SHA, alias, and health
         if: steps.deployment_path.outputs.mode == 'vercel-cli'
