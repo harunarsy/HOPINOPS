@@ -931,7 +931,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
 
   return (
     <div className="app-shell management-shell">
-      <header className="topbar">
+      <header className="topbar management-topbar">
         <div className="brand">
           <span><strong>HOPIN</strong><small>{isInvestor ? 'PORTAL INVESTOR' : 'MANAJEMEN OUTLET'}</small></span>
         </div>
@@ -940,13 +940,13 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             {user.display_name.slice(0, 2).toUpperCase()}
           </div>
           {onEnterOperatorMode && !isInvestor && (
-            <button className="outline-button" onClick={onEnterOperatorMode} style={{ fontSize: '12px', padding: '6px 12px' }}>
-              Mode Shift ➔
+            <button className="outline-button topbar-action" onClick={onEnterOperatorMode}>
+              Mode Shift
             </button>
           )}
           {onOpenReports && !isInvestor && (
-            <button className="outline-button" onClick={onOpenReports} style={{ fontSize: '12px', padding: '6px 12px' }}>
-              Laporan ➔
+            <button className="outline-button topbar-action" onClick={onOpenReports}>
+              Laporan
             </button>
           )}
           <button className="logout-button" onClick={onLogout}>
@@ -968,7 +968,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
           </div>
         </section>
 
-        <nav className="tabs" aria-label="Navigasi manajemen">
+        <nav className="tabs management-tabs" aria-label="Navigasi manajemen">
           {!isInvestor ? <>
             <button className={tab === 'dashboard' ? 'active' : ''} aria-current={tab === 'dashboard' ? 'page' : undefined} onClick={() => setTab('dashboard')}>Ringkasan Shift</button>
             <button className={tab === 'stock' ? 'active' : ''} aria-current={tab === 'stock' ? 'page' : undefined} onClick={() => setTab('stock')}>Stok Area</button>
@@ -1110,7 +1110,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                   <p className="eyebrow">JADWAL KERJA BULANAN</p>
                   <h2>Lihat dan Tambah Jadwal</h2>
                 </div>
-                <div>
+                <div className="roster-filter">
                   <label style={{ ...labelStyle, marginBottom: 0 }}>
                     Bulan
                     <input type="month" value={rosterMonthDraft} onChange={(event) => { setRosterMonthDraft(event.target.value); setRosterFilterError(''); }} style={{ ...inputStyle, marginTop: '4px' }} />
@@ -1124,7 +1124,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Belum ada jadwal pada bulan ini. Tambahkan jadwal lewat formulir di bawah.</p>
               ) : (
                 <div className="table-responsive" style={{ marginTop: '16px' }}>
-                  <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <table className="management-table roster-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                       <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th>
                     </tr></thead>
@@ -1154,7 +1154,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             <div className="section-card">
               <div className="section-heading"><div><p className="eyebrow">JADWAL BARU</p><h2>Tambahkan Satu Jadwal</h2></div></div>
               {rosterUsersError && <p role="alert" style={{ color: '#991b1b', margin: '16px 0 0' }}>{rosterUsersError}</p>}
-              <form onSubmit={handleCreateRoster} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginTop: '16px' }}>
+              <form className="roster-form" onSubmit={handleCreateRoster} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginTop: '16px' }}>
                 <label style={labelStyle}>Tanggal<input required disabled={Boolean(rosterUsersError)} type="date" value={rosterDate} onChange={(event) => setRosterDate(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }} /></label>
                 <label style={labelStyle}>Petugas<select required disabled={Boolean(rosterUsersError)} value={rosterProfileId} onChange={(event) => setRosterProfileId(event.target.value)} style={{ ...inputStyle, marginTop: '4px' }}><option value="">Pilih petugas</option>{usersList.filter((entry) => entry.role !== 'INVESTOR').map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name} · {taskLabel(entry.role)}</option>)}</select></label>
                 <label style={labelStyle}>Shift<select disabled={Boolean(rosterUsersError)} value={rosterShift} onChange={(event) => setRosterShift(event.target.value as typeof rosterShift)} style={{ ...inputStyle, marginTop: '4px' }}><option value="SIANG">Shift siang</option><option value="MALAM">Shift malam</option><option value="FULL">Shift penuh</option></select></label>
@@ -1187,7 +1187,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
               {!loading && !viewError && attendanceExceptions.length === 0 ? (
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada exception kehadiran pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <table className="management-table attendance-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{attendanceExceptions.map((attendance) => {
                     const pending = (attendance.attendance_corrections ?? []).filter((correction: any) => correction.status === 'PENDING');
@@ -1215,7 +1215,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
               {!loading && !viewError && overtime.length === 0 ? (
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada catatan lembur pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <table className="management-table overtime-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Durasi terdeteksi</th><th style={{ padding: '8px' }}>Kredit</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{overtime.map((claim) => {
                     const attendance = claim.attendance_records;
@@ -1383,7 +1383,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             {/* Entries Table */}
             {payrollEntries.length > 0 ? (
               <div className="table-responsive" style={{ marginTop: '16px' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <table className="management-table payroll-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                       <th style={{ padding: '8px' }}>Karyawan</th>
@@ -1549,7 +1549,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             {!loading && !viewError && usersList.length === 0 ? (
               <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada akun yang dapat dikelola.</p>
             ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
-              <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <table className="management-table users-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                     <th style={{ padding: '8px' }}>Nama Lengkap</th>

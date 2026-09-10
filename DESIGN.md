@@ -75,6 +75,8 @@ System sans dipakai untuk instruksi, label, dan teks yang harus cepat dibaca. Ge
 
 Desktop memakai kanvas max 1250px dengan kolom utama + rail konteks. Smartphone beralih menjadi satu kolom, tab tetap horizontal-scrollable, dan submit bar menempel di bawah viewport agar aksi primer tidak hilang. Tidak ada horizontal scroll pada kartu stok.
 
+Dashboard manajemen memakai tab horizontal yang dapat digeser pada tablet sempit dan smartphone, tanpa mengecilkan label. Di bawah 900px, tabel manajemen berubah menjadi kartu berlabel agar seluruh nilai dan aksi tetap terlihat tanpa scroll halaman horizontal. Form manajemen menjadi satu kolom di smartphone. Kalibrasi dashboard operasional: `ENERGY 1`, `RHYTHM 1`, `MOTION 1`.
+
 ## Elevation & Depth
 
 Static surfaces menggunakan border hijau-pucat dan shadow rendah. Hero forest-green boleh memakai shadow lebih dalam karena menjadi orientasi shift. Modal adalah satu-satunya elevation tinggi. Scrollbar tetap terlihat dan menggunakan tema hijau-pucat global.
