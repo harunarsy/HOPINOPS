@@ -164,14 +164,26 @@ export const api = {
   updateSettings: (expected_version: number, settings: { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number; max_accuracy_m?: number; gps_sample_limit?: number; gps_timeout_seconds?: number; late_grace_minutes?: number; overtime_threshold_minutes?: number; raw_gps_retention_days?: number; system_mode?: 'PRODUCTION' | 'PILOT' | 'MAINTENANCE'; onboarding_version?: number }) =>
     request<{ outlet_id: string; version: number }>('/api/app?action=settings.update', { method: 'POST', body: JSON.stringify({ expected_version, settings }) }),
 
-  // Items
-  listItems: () => request<{ items: any[] }>('/api/app?action=items.list').then(r => r.items),
-  createItem: (item: any) => request('/api/app?action=items.create', { method: 'POST', body: JSON.stringify(item) }),
-  updateItem: (item: any) => request('/api/app?action=items.update', { method: 'POST', body: JSON.stringify(item) }),
+  // Catalog master
+  listItems: (includeArchived = false) => request<{ items: any[] }>(`/api/app?action=items.list${includeArchived ? '&include_archived=1' : ''}`).then(r => r.items),
+  createItem: (item: { area_code: 'BAR' | 'KITCHEN'; name: string; unit_code: string; low_threshold: number; section_id?: string | null }) =>
+    request('/api/app?action=items.create', { method: 'POST', body: JSON.stringify(item) }),
+  updateItem: (item: { id: string; name: string; unit_code: string; low_threshold: number }) =>
+    request('/api/app?action=items.update', { method: 'POST', body: JSON.stringify(item) }),
   archiveItem: (id: string, reason: string) => request('/api/app?action=items.archive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
-  operatorCreateItem: (item: any) => request('/api/app?action=items.operatorCreate', { method: 'POST', body: JSON.stringify(item) }),
-  operatorUpdateItem: (item: any) => request('/api/app?action=items.operatorUpdate', { method: 'POST', body: JSON.stringify(item) }),
+  restoreItem: (id: string, reason: string) => request('/api/app?action=items.restore', { method: 'POST', body: JSON.stringify({ id, reason }) }),
+  itemHistory: (id: string) => request<{ revisions: any[] }>(`/api/app?action=items.history&id=${encodeURIComponent(id)}`).then(r => r.revisions),
+  operatorCreateItem: (item: { area_code: 'BAR' | 'KITCHEN'; name: string; unit_code: string; low_threshold: number; section_id?: string | null }) =>
+    request('/api/app?action=items.operatorCreate', { method: 'POST', body: JSON.stringify(item) }),
+  operatorUpdateItem: (item: { id: string; name: string; unit_code: string; low_threshold: number }) =>
+    request('/api/app?action=items.operatorUpdate', { method: 'POST', body: JSON.stringify(item) }),
   operatorArchiveItem: (id: string, reason: string) => request('/api/app?action=items.operatorArchive', { method: 'POST', body: JSON.stringify({ id, reason }) }),
+  listUnitOptions: (includeArchived = false) => request<{ units: any[] }>(`/api/app?action=units.list${includeArchived ? '&include_archived=1' : ''}`).then(r => r.units),
+  createUnitOption: (unit: { code: string; label: string; decimal_scale: number; sort_order?: number }) =>
+    request('/api/app?action=units.create', { method: 'POST', body: JSON.stringify(unit) }),
+  archiveUnitOption: (code: string, reason: string) => request('/api/app?action=units.archive', { method: 'POST', body: JSON.stringify({ code, reason }) }),
+  restoreUnitOption: (code: string) => request('/api/app?action=units.restore', { method: 'POST', body: JSON.stringify({ code }) }),
+  unitHistory: (code: string) => request<{ revisions: any[] }>(`/api/app?action=units.history&code=${encodeURIComponent(code)}`).then(r => r.revisions),
 
   // Checklist layout server-owned
   getChecklistLayout: (area_code: 'BAR' | 'KITCHEN') => request<{ version: number; pending?: boolean; pending_version?: number | null; effective_next_cycle?: boolean; sections: { id: string; name: string; position: number; active: boolean }[]; placements: { item_id: string; section_id: string; position: number }[] }>(`/api/app?action=checklist.layout&area_code=${area_code}`),

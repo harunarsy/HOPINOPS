@@ -14,6 +14,13 @@ vi.mock('../lib/api', () => ({
     operatorCreateItem: vi.fn(),
     operatorUpdateItem: vi.fn(),
     operatorArchiveItem: vi.fn(),
+    restoreItem: vi.fn(),
+    itemHistory: vi.fn(),
+    listUnitOptions: vi.fn(),
+    createUnitOption: vi.fn(),
+    archiveUnitOption: vi.fn(),
+    restoreUnitOption: vi.fn(),
+    unitHistory: vi.fn(),
     upsertChecklistSection: vi.fn(),
     moveChecklistItem: vi.fn(),
   },
@@ -29,6 +36,10 @@ describe('CatalogManager', () => {
     vi.resetAllMocks();
     vi.mocked(api.listItems).mockResolvedValue(items);
     vi.mocked(api.getChecklistLayout).mockResolvedValue({ version: 3, sections: [], placements: [] });
+    vi.mocked(api.listUnitOptions).mockResolvedValue([
+      { code: 'pcs', label: 'pcs', decimal_scale: 0, active: true, sort_order: 30 },
+      { code: 'gram', label: 'gram', decimal_scale: 2, active: true, sort_order: 10 },
+    ]);
   });
 
   it('renders the server catalog without exposing raw item IDs', async () => {
@@ -36,6 +47,8 @@ describe('CatalogManager', () => {
     await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
     expect(screen.getByText('Kopi')).toBeDefined();
     expect(screen.queryByText(/gula.*kg/i)).toBeNull();
+    expect(screen.queryByText('Kode varian')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Satuan' })).toBeDefined();
   });
 
   it('ignores an older area response that arrives after a newer area response', async () => {
@@ -56,10 +69,11 @@ describe('CatalogManager', () => {
     vi.mocked(api.createItem).mockResolvedValue({ id: 'teh', active: true });
     render(<CatalogManager />);
     await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
-    await user.type(screen.getByPlaceholderText('sirup_gula'), 'teh');
-    await user.type(screen.getByPlaceholderText('Sirup gula'), 'Teh');
+    await user.type(screen.getByPlaceholderText('Contoh: Sirup gula'), 'Teh');
     await user.click(screen.getByRole('button', { name: /tambah varian/i }));
     await waitFor(() => expect(api.createItem).toHaveBeenCalled());
+    expect(api.createItem).toHaveBeenCalledWith(expect.objectContaining({ name: 'Teh', unit_code: 'pcs' }));
+    expect(api.createItem).not.toHaveBeenCalledWith(expect.objectContaining({ id: expect.anything() }));
     expect((await screen.findByRole('status')).textContent).toMatch(/cycle berikutnya/i);
   });
 
@@ -69,8 +83,7 @@ describe('CatalogManager', () => {
     render(<CatalogManager fixedArea="BAR" mutationScope="PRIMARY" />);
     await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
     expect(screen.queryByRole('button', { name: 'Kitchen' })).toBeNull();
-    await user.type(screen.getByPlaceholderText('sirup_gula'), 'teh');
-    await user.type(screen.getByPlaceholderText('Sirup gula'), 'Teh');
+    await user.type(screen.getByPlaceholderText('Contoh: Sirup gula'), 'Teh');
     await user.click(screen.getByRole('button', { name: /tambah varian/i }));
     await waitFor(() => expect(api.operatorCreateItem).toHaveBeenCalled());
     expect(api.createItem).not.toHaveBeenCalled();
@@ -103,12 +116,42 @@ describe('CatalogManager', () => {
     vi.mocked(api.archiveItem).mockResolvedValue({ id: 'gula', active: false });
     render(<CatalogManager />);
     const row = await screen.findByText('Gula');
-    await user.click(within(row.closest('li') as HTMLElement).getByRole('button', { name: 'Arsip' }));
-    const archive = screen.getByRole('button', { name: /arsipkan/i }) as HTMLButtonElement;
+    await user.click(within(row.closest('li') as HTMLElement).getByRole('button', { name: 'Arsipkan' }));
+    const archive = within(row.closest('li') as HTMLElement).getAllByRole('button', { name: /arsipkan/i })[1] as HTMLButtonElement;
     expect(archive.disabled).toBe(true);
-    await user.type(screen.getByPlaceholderText(/alasan arsip/i), 'tidak dipakai');
+    await user.type(screen.getByPlaceholderText(/item sudah tidak dipakai/i), 'tidak dipakai');
     await user.click(archive);
     await waitFor(() => expect(api.archiveItem).toHaveBeenCalledWith('gula', 'tidak dipakai'));
     expect((await screen.findByRole('status')).textContent).toMatch(/histori/i);
+  });
+
+  it('shows append-only field changes in the item history surface', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.itemHistory).mockResolvedValue([{
+      id: 'rev-1', action: 'UPDATE', effective_at: '2026-09-10T08:00:00.000Z', reason: 'Koreksi nama',
+      before_json: { name: 'Gula', unit_code: 'gram', low_threshold: 1, active: true },
+      after_json: { name: 'Gula aren', unit_code: 'gram', low_threshold: 2, active: true },
+    }]);
+    render(<CatalogManager />);
+    const row = await screen.findByText('Gula');
+    await user.click(within(row.closest('li') as HTMLElement).getByRole('button', { name: 'Histori' }));
+    expect(await screen.findByRole('heading', { name: 'Gula' })).toBeDefined();
+    expect(await screen.findByText('Gula → Gula aren')).toBeDefined();
+    expect(screen.getByText('Koreksi nama')).toBeDefined();
+  });
+
+  it('lets supervisors inspect unit history from the shared manager surface', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.unitHistory).mockResolvedValue([{
+      id: 'unit-rev-1', action: 'CREATE', effective_at: '2026-09-10T08:00:00.000Z', reason: 'Satuan awal',
+      after_json: { label: 'pcs', decimal_scale: 0, active: true },
+    }]);
+    render(<CatalogManager />);
+    await waitFor(() => expect(screen.getByText('Gula')).toBeDefined());
+    await user.click(screen.getByRole('button', { name: 'Kelola satuan' }));
+    const dialog = screen.getByRole('dialog', { name: 'Kelola satuan' });
+    await user.click(within(dialog).getAllByRole('button', { name: 'Histori' })[0]);
+    expect(await screen.findByRole('heading', { name: 'pcs' })).toBeDefined();
+    expect(screen.getByText('Satuan awal')).toBeDefined();
   });
 });

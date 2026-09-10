@@ -104,6 +104,24 @@ describe('Production Business API Dispatcher (api/app.ts)', () => {
     expect(appTs).toContain('SERVICE_UNAVAILABLE');
   });
 
+  it('keeps Catalog v0.2 identifiers and master history server-owned', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const appTs = fs.readFileSync(path.resolve(__dirname, '../../api/app.ts'), 'utf8');
+    const migration = fs.readFileSync(path.resolve(__dirname, '../../supabase/migrations/0031_catalog_master_v02.sql'), 'utf8');
+    expect(appTs).toContain("action === 'items.history'");
+    expect(appTs).toContain("action === 'units.history'");
+    expect(appTs).toContain("rpc_create_item_auto");
+    expect(appTs).not.toContain("rpc('rpc_create_item', {");
+    expect(migration).toContain('display_code');
+    expect(migration).toContain('alter column id set default');
+    expect(migration).toContain('item_master_revisions');
+    expect(migration).toContain('unit_option_revisions');
+    expect(migration).toContain('next_item_display_code');
+    expect(migration).toContain('rpc_archive_unit_option');
+    expect(migration).toContain('rpc_archive_item_auto');
+  });
+
 
 
   it('sanitizes Excel formulas hidden behind leading whitespace or control bytes', () => {

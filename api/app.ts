@@ -760,54 +760,49 @@ export default {
         if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
           return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan melihat master item.', 403);
         }
-        const { data, error } = await db.from('items').select('*').eq('active', true).order('name');
+        const includeArchived = new URL(request.url).searchParams.get('include_archived') === '1';
+        const query = db.from('items').select('*').order('name');
+        const { data, error } = includeArchived ? await query : await query.eq('active', true);
         if (error) throw error;
         return successResponse({ items: data ?? [] });
       }
 
       if (action === 'items.create' && request.method === 'POST') {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh menambah item.', 403);
-        const body = await readJsonObject(request, ['id', 'area_code', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
-        const decimalScale = body?.decimal_scale ?? 2;
-        const lowThreshold = body?.low_threshold ?? 0;
-        if (!body || !isItemId(body.id) || !['BAR', 'KITCHEN'].includes(body.area_code)
+        const body = await readJsonObject(request, ['area_code', 'name', 'unit_code', 'low_threshold', 'section_id']);
+        if (!body || !['BAR', 'KITCHEN'].includes(body.area_code)
           || !isNonEmptyString(body.name, 150) || !isNonEmptyString(body.unit_code, 32)
-          || !Number.isInteger(decimalScale) || decimalScale < 0 || decimalScale > 4
-          || !isQuantity(lowThreshold, true)) {
-          return invalidPayload('ID, area, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+          || !isQuantity(body.low_threshold, true)
+          || (body.section_id !== undefined && body.section_id !== null && !isUuid(body.section_id))) {
+          return invalidPayload('Area, nama, satuan, batas stok, dan kelompok item wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_create_item', {
+        const { data, error } = await db.rpc('rpc_create_item_auto', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
-          p_item_id: body.id.trim(),
           p_area_code: body.area_code,
           p_name: body.name.trim(),
           p_unit_code: body.unit_code.trim(),
-          p_decimal_scale: decimalScale,
-          p_low_threshold: lowThreshold,
+          p_low_threshold: body.low_threshold,
+          p_section_id: body.section_id ?? null,
         });
         if (error) return rpcErrorResponse(error);
-        if (!isObject(data) || data.id !== body.id.trim() || data.area_code !== body.area_code
-          || data.active !== true) return invalidRpcResult();
+        if (!isObject(data) || !isItemId(data.id) || data.area_code !== body.area_code || data.active !== true) return invalidRpcResult();
         return successResponse(data);
       }
 
       if (action === 'items.update' && request.method === 'POST') {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh mengubah item.', 403);
-        const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
+        const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'low_threshold']);
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.name, 150)
-          || !isNonEmptyString(body.unit_code, 32) || !Number.isInteger(body.decimal_scale)
-          || body.decimal_scale < 0 || body.decimal_scale > 4
-          || !isQuantity(body.low_threshold, true)) {
-          return invalidPayload('ID, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+          || !isNonEmptyString(body.unit_code, 32) || !isQuantity(body.low_threshold, true)) {
+          return invalidPayload('ID, nama, satuan, dan batas stok item wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_update_item', {
+        const { data, error } = await db.rpc('rpc_update_item_auto', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_item_id: body.id.trim(),
           p_name: body.name.trim(),
           p_unit_code: body.unit_code.trim(),
-          p_decimal_scale: body.decimal_scale,
           p_low_threshold: body.low_threshold,
         });
         if (error) return rpcErrorResponse(error);
@@ -821,7 +816,7 @@ export default {
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.reason, 500)) {
           return invalidPayload('ID item dan reason wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_archive_item', {
+        const { data, error } = await db.rpc('rpc_archive_item_auto', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_item_id: body.id.trim(),
@@ -832,48 +827,158 @@ export default {
         return successResponse(data);
       }
 
-      // B07: PRIMARY scoped catalog (own active area only; RPC enforces scope).
-      if (action === 'items.operatorCreate' && request.method === 'POST') {
-        if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
-        const body = await readJsonObject(request, ['id', 'area_code', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
-        const decimalScale = body?.decimal_scale ?? 2;
-        const lowThreshold = body?.low_threshold ?? 0;
-        if (!body || !isItemId(body.id) || !['BAR', 'KITCHEN'].includes(body.area_code)
-          || !isNonEmptyString(body.name, 150) || !isNonEmptyString(body.unit_code, 32)
-          || !Number.isInteger(decimalScale) || decimalScale < 0 || decimalScale > 4
-          || !isQuantity(lowThreshold, true)) {
-          return invalidPayload('ID, area, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+      if (action === 'items.restore' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh memulihkan item.', 403);
+        const body = await readJsonObject(request, ['id', 'reason']);
+        if (!body || !isItemId(body.id) || !isNonEmptyString(body.reason, 500)) {
+          return invalidPayload('ID item dan alasan pemulihan wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_operator_create_item', {
+        const { data, error } = await db.rpc('rpc_restore_item', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_item_id: body.id.trim(),
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.id !== body.id.trim() || data.active !== true) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'items.history' && request.method === 'GET') {
+        if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan melihat histori master item.', 403);
+        }
+        const itemId = new URL(request.url).searchParams.get('id');
+        if (!isItemId(itemId)) return invalidPayload('ID item wajib valid.');
+        const { data, error } = await db
+          .from('item_master_revisions')
+          .select('*')
+          .eq('item_id', itemId.trim())
+          .order('effective_at', { ascending: false });
+        if (error) throw error;
+        return successResponse({ revisions: data ?? [] });
+      }
+
+      if (action === 'units.list' && request.method === 'GET') {
+        if (user.role === 'INVESTOR' || !isOperationalRole(user.role)) {
+          return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan melihat master satuan.', 403);
+        }
+        const includeArchived = new URL(request.url).searchParams.get('include_archived') === '1';
+        const query = db.from('unit_options').select('*').order('sort_order').order('label');
+        const { data, error } = includeArchived ? await query : await query.eq('active', true);
+        if (error) throw error;
+        return successResponse({ units: data ?? [] });
+      }
+
+      if (action === 'units.history' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Histori satuan hanya dapat dilihat supervisor.', 403);
+        }
+        const unitCode = new URL(request.url).searchParams.get('code');
+        if (typeof unitCode !== 'string' || !/^[a-z][a-z0-9._-]{0,31}$/.test(unitCode.trim().toLowerCase())) {
+          return invalidPayload('Kode satuan wajib valid.');
+        }
+        const { data, error } = await db
+          .from('unit_option_revisions')
+          .select('*')
+          .eq('unit_code', unitCode.trim().toLowerCase())
+          .order('effective_at', { ascending: false });
+        if (error) throw error;
+        return successResponse({ revisions: data ?? [] });
+      }
+
+      if (action === 'units.create' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh menambah satuan.', 403);
+        const body = await readJsonObject(request, ['code', 'label', 'decimal_scale', 'sort_order']);
+        const sortOrder = body?.sort_order ?? 90;
+        if (!body || typeof body.code !== 'string' || !/^[a-z][a-z0-9._-]{0,31}$/.test(body.code.trim().toLowerCase())
+          || !isNonEmptyString(body.label, 40) || !Number.isInteger(body.decimal_scale)
+          || body.decimal_scale < 0 || body.decimal_scale > 4 || !Number.isInteger(sortOrder) || sortOrder < 0) {
+          return invalidPayload('Kode, nama, skala desimal, dan urutan satuan wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_create_unit_option', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_code: body.code.trim().toLowerCase(),
+          p_label: body.label.trim(),
+          p_decimal_scale: body.decimal_scale,
+          p_sort_order: sortOrder,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || typeof data.code !== 'string' || data.active !== true) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'units.archive' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh mengarsipkan satuan.', 403);
+        const body = await readJsonObject(request, ['code', 'reason']);
+        if (!body || typeof body.code !== 'string' || !/^[a-z][a-z0-9._-]{0,31}$/.test(body.code.trim().toLowerCase()) || !isNonEmptyString(body.reason, 500)) {
+          return invalidPayload('Kode dan alasan arsip satuan wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_archive_unit_option', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_code: body.code.trim().toLowerCase(),
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.code !== body.code.trim().toLowerCase() || data.active !== false) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'units.restore' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang boleh memulihkan satuan.', 403);
+        const body = await readJsonObject(request, ['code']);
+        if (!body || typeof body.code !== 'string' || !/^[a-z][a-z0-9._-]{0,31}$/.test(body.code.trim().toLowerCase())) {
+          return invalidPayload('Kode satuan wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_restore_unit_option', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_code: body.code.trim().toLowerCase(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || data.code !== body.code.trim().toLowerCase() || data.active !== true) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      // B07: PRIMARY scoped catalog (own active area only; RPC enforces scope).
+      if (action === 'items.operatorCreate' && request.method === 'POST') {
+        if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
+        const body = await readJsonObject(request, ['area_code', 'name', 'unit_code', 'low_threshold', 'section_id']);
+        if (!body || !['BAR', 'KITCHEN'].includes(body.area_code)
+          || !isNonEmptyString(body.name, 150) || !isNonEmptyString(body.unit_code, 32)
+          || !isQuantity(body.low_threshold, true)
+          || (body.section_id !== undefined && body.section_id !== null && !isUuid(body.section_id))) {
+          return invalidPayload('Area, nama, satuan, batas stok, dan kelompok item wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_operator_create_item_auto', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
           p_area_code: body.area_code,
           p_name: body.name.trim(),
           p_unit_code: body.unit_code.trim(),
-          p_decimal_scale: decimalScale,
-          p_low_threshold: lowThreshold,
+          p_low_threshold: body.low_threshold,
+          p_section_id: body.section_id ?? null,
         });
         if (error) return rpcErrorResponse(error);
-        if (!isObject(data) || data.id !== body.id.trim()) return invalidRpcResult();
+        if (!isObject(data) || !isItemId(data.id) || data.area_code !== body.area_code) return invalidRpcResult();
         return successResponse(data);
       }
 
       if (action === 'items.operatorUpdate' && request.method === 'POST') {
         if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Jalur ini hanya untuk Operator PRIMARY.', 403);
-        const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'decimal_scale', 'low_threshold']);
+        const body = await readJsonObject(request, ['id', 'name', 'unit_code', 'low_threshold']);
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.name, 150)
-          || !isNonEmptyString(body.unit_code, 32) || !Number.isInteger(body.decimal_scale)
-          || body.decimal_scale < 0 || body.decimal_scale > 4 || !isQuantity(body.low_threshold, true)) {
-          return invalidPayload('ID, nama, unit, decimal_scale, dan low_threshold item wajib valid.');
+          || !isNonEmptyString(body.unit_code, 32) || !isQuantity(body.low_threshold, true)) {
+          return invalidPayload('ID, nama, satuan, dan batas stok item wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_operator_update_item', {
+        const { data, error } = await db.rpc('rpc_operator_update_item_auto', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_item_id: body.id.trim(),
           p_name: body.name.trim(),
           p_unit_code: body.unit_code.trim(),
-          p_decimal_scale: body.decimal_scale,
           p_low_threshold: body.low_threshold,
         });
         if (error) return rpcErrorResponse(error);
@@ -887,7 +992,7 @@ export default {
         if (!body || !isItemId(body.id) || !isNonEmptyString(body.reason, 500)) {
           return invalidPayload('ID item dan reason wajib valid.');
         }
-        const { data, error } = await db.rpc('rpc_operator_archive_item', {
+        const { data, error } = await db.rpc('rpc_operator_archive_item_auto', {
           p_actor_id: user.id,
           p_outlet_id: outletId,
           p_item_id: body.id.trim(),
