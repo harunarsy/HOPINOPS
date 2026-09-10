@@ -1,11 +1,9 @@
-import './mutating-tests-disabled.mjs';
 // Ownership is fully verified before the first write. History is preserved.
 import { createClient } from '@supabase/supabase-js';
 import { webcrypto } from 'node:crypto';
 import fs from 'node:fs';
+import { loadStagingEnv } from './staging-runtime.mjs';
 
-const STAGING_REF = 'ibzlxdmnuszcmdzuocwu';
-const STAGING_HOST = `${STAGING_REF}.supabase.co`;
 const PROJECTS = ['desktop', 'mobile'];
 const KINDS = ['lifecycle', 'journey', 'onboarding', 'investor'];
 
@@ -13,23 +11,19 @@ function fail(message) {
   throw new Error(message);
 }
 
-if (process.env.E2E_MUTATIONS !== '1') fail('Teardown memerlukan E2E_MUTATIONS=1 eksplisit.');
-if (process.env.E2E_STAGING_PROJECT_REF !== STAGING_REF) fail(`Teardown hanya boleh ke staging ${STAGING_REF}.`);
-const url = process.env.SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!url || !serviceRoleKey) fail('Set SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY.');
-let hostname;
-try {
-  hostname = new URL(url).hostname;
-} catch {
-  fail(`SUPABASE_URL tidak valid: ${url}`);
+const configuredProjectRef = String(process.env.E2E_STAGING_PROJECT_REF ?? process.env.HOPIN_STAGING_PROJECT_REF ?? '').trim().toLowerCase();
+if (!/^[a-z0-9]{20}$/.test(configuredProjectRef) || configuredProjectRef === 'naanarmoktmsumkxmjvj') {
+  fail('Teardown wajib memakai project staging 20 karakter yang bukan production.');
 }
-if (hostname !== STAGING_HOST) fail(`Menolak teardown: host ${hostname} bukan staging ${STAGING_HOST}.`);
+const stagingEnv = loadStagingEnv({ HOPIN_STAGING_PROJECT_REF: configuredProjectRef });
+const url = stagingEnv.SUPABASE_URL;
+const serviceRoleKey = stagingEnv.SUPABASE_SERVICE_ROLE_KEY;
+const target = { projectRef: stagingEnv.HOPIN_STAGING_PROJECT_REF };
 
 const manifestPath = process.env.E2E_FIXTURE_MANIFEST;
 if (!manifestPath || !fs.existsSync(manifestPath)) fail(`E2E_FIXTURE_MANIFEST tidak ditemukan: ${manifestPath}`);
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-if (manifest.projectRef !== STAGING_REF) fail(`Manifest ref ${manifest.projectRef} bukan staging.`);
+if (manifest.projectRef !== target.projectRef) fail('Manifest ref bukan project staging aktif.');
 if (!/^[a-z0-9]{4,12}$/.test(manifest.runId ?? '')) fail('Manifest runId tidak valid.');
 
 const outletIds = [];

@@ -59,11 +59,11 @@ describe('UI Component Flow Tests', () => {
         options={[]}
         onLogin={vi.fn()}
         loading={false}
-        error="Nama user atau PIN salah. (API_ERROR · HTTP 401 · request_id private)"
+        error="Nama pengguna atau PIN salah. (API_ERROR · HTTP 401 · request_id private)"
       />,
     );
 
-    expect(screen.getByText('Nama user atau PIN salah.')).toBeDefined();
+    expect(screen.getByText('Nama pengguna atau PIN salah.')).toBeDefined();
     expect(screen.queryByText(/API_ERROR|HTTP 401|request_id/i)).toBeNull();
 
     const slot = container.querySelector('.login-error-slot');

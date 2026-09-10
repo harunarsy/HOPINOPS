@@ -63,15 +63,15 @@ export function getUserFacingError(
   const message = errorMessage(error);
 
   if (isLocalOrigin() && isNetworkFailure(error)) {
-    return 'Server lokal belum terhubung. Jalankan pnpm dev:full, bukan pnpm dev, lalu buka ulang halaman.';
+    return 'Server lokal belum terhubung. Jalankan pnpm dev:staging, bukan pnpm dev, lalu buka ulang halaman.';
   }
 
   if (surface === 'login' && (status === 401 || code === 'AUTH_INVALID' || code === 'INVALID_CREDENTIALS')) {
-    return 'Nama user atau PIN salah.';
+    return 'Nama pengguna atau PIN salah.';
   }
 
   if (code === 'AUTH_REQUIRED' || code === 'INVALID_SESSION' || code === 'INVALID_DEVICE' || status === 401) {
-    return surface === 'login' ? 'Nama user atau PIN salah.' : 'Sesi berakhir. Silakan masuk lagi.';
+    return surface === 'login' ? 'Nama pengguna atau PIN salah.' : 'Sesi berakhir. Silakan masuk lagi.';
   }
 
   if (code === 'ATTENDANCE_NOTE_REQUIRED') {

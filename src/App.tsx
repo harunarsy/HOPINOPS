@@ -143,7 +143,7 @@ export default function App() {
         setLoginLockSeconds(seconds);
         setLoginError('Terlalu banyak percobaan PIN salah. Silakan tunggu beberapa saat.');
       } else {
-        setLoginError(getUserFacingError(err, 'Nama user atau PIN salah.', { surface: 'login' }));
+        setLoginError(getUserFacingError(err, 'Nama pengguna atau PIN salah.', { surface: 'login' }));
       }
     } finally {
       setAuthLoading(false);

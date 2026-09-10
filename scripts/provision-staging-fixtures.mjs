@@ -1,12 +1,10 @@
-import './mutating-tests-disabled.mjs';
 // This script never reuses or repairs an existing run. Collision means abort.
 import { createClient } from '@supabase/supabase-js';
 import { randomBytes, webcrypto } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadStagingEnv } from './staging-runtime.mjs';
 
-const STAGING_REF = 'ibzlxdmnuszcmdzuocwu';
-const STAGING_HOST = `${STAGING_REF}.supabase.co`;
 const GPS = { latitude: -7.277997, longitude: 112.7464245 };
 const PROJECTS = ['desktop', 'mobile'];
 const KINDS = [
@@ -20,10 +18,15 @@ function fail(message) {
   throw new Error(message);
 }
 
-if (process.env.E2E_MUTATIONS !== '1') fail('Fixture mutasi memerlukan E2E_MUTATIONS=1 eksplisit.');
-if (process.env.E2E_STAGING_PROJECT_REF !== STAGING_REF) {
-  fail(`Fixture mutasi hanya boleh ke staging ${STAGING_REF}.`);
+const configuredProjectRef = String(process.env.E2E_STAGING_PROJECT_REF ?? process.env.HOPIN_STAGING_PROJECT_REF ?? '').trim().toLowerCase();
+if (!/^[a-z0-9]{20}$/.test(configuredProjectRef) || configuredProjectRef === 'naanarmoktmsumkxmjvj') {
+  fail('Fixture mutasi wajib memakai project staging 20 karakter yang bukan production.');
 }
+
+const stagingEnv = loadStagingEnv({
+  HOPIN_STAGING_PROJECT_REF: configuredProjectRef,
+});
+const target = { projectRef: stagingEnv.HOPIN_STAGING_PROJECT_REF };
 
 const runId = (process.env.E2E_RUN_ID ?? '').trim().toLowerCase();
 if (!/^[a-z0-9]{4,12}$/.test(runId)) fail('E2E_RUN_ID harus 4-12 karakter alnum lowercase.');
@@ -31,25 +34,9 @@ const manifestPath = process.env.E2E_FIXTURE_MANIFEST;
 if (!manifestPath) fail('E2E_FIXTURE_MANIFEST wajib diisi sebelum provisioning.');
 if (fs.existsSync(manifestPath)) fail(`Manifest sudah ada, menolak menimpa fixture run: ${manifestPath}`);
 
-const url = process.env.SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!url || !serviceRoleKey) fail('Set SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY.');
-let parsedUrl;
-try {
-  parsedUrl = new URL(url);
-} catch {
-  fail(`SUPABASE_URL tidak valid: ${url}`);
-}
-if (parsedUrl.hostname !== STAGING_HOST) {
-  fail(`Menolak fixture: SUPABASE_URL host ${parsedUrl.hostname} bukan staging ${STAGING_HOST}.`);
-}
-if (process.env.VITE_SUPABASE_URL) {
-  try {
-    if (new URL(process.env.VITE_SUPABASE_URL).hostname !== STAGING_HOST) fail('VITE_SUPABASE_URL bukan staging.');
-  } catch {
-    fail('VITE_SUPABASE_URL tidak valid.');
-  }
-}
+const url = stagingEnv.SUPABASE_URL;
+const serviceRoleKey = stagingEnv.SUPABASE_SERVICE_ROLE_KEY;
+if (stagingEnv.VITE_SUPABASE_URL !== url) fail('VITE_SUPABASE_URL harus sama dengan target staging.');
 
 const pin = process.env.E2E_FIXTURE_PIN ?? '';
 if (!/^\d{6}$/.test(pin) || /^(\d)\1{5}$/.test(pin) || ['123456', '654321', '123123', '654654', '012345', '543210', '112233', '121212'].includes(pin)) {
@@ -108,6 +95,8 @@ async function createOutlet(project) {
   const id = crypto.randomUUID();
   const { error } = await db.from('outlets').insert({ id, code: outletCode(project), name: `E2E ${runId} ${project}`, timezone: 'Asia/Jakarta', active: true });
   if (error) throw error;
+  // Track immediately so a later settings/shift failure is still cleaned up.
+  createdOutletIds.push(id);
   const { error: settingsError } = await db.from('outlet_settings').insert({
     outlet_id: id,
     latitude: GPS.latitude,
@@ -176,11 +165,10 @@ async function deactivatePartialFixture() {
 try {
   for (const project of PROJECTS) {
     outletIds[project] = await createOutlet(project);
-    createdOutletIds.push(outletIds[project]);
   }
   const manifest = {
     runId,
-    projectRef: STAGING_REF,
+    projectRef: target.projectRef,
     gps: GPS,
     clientIps: { desktop: desktopIp, mobile: mobileIp },
     outlets: Object.fromEntries(PROJECTS.map((project) => [project, { id: outletIds[project], code: outletCode(project) }])),

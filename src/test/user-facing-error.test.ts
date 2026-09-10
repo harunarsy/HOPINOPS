@@ -4,7 +4,7 @@ import { getUserFacingError, sanitizeUserMessage } from '../lib/user-facing-erro
 describe('user-facing error policy', () => {
   it('maps login authentication failures to human copy without diagnostics', () => {
     const message = getUserFacingError(
-      Object.assign(new Error('Nama user atau PIN salah. Internal detail'), {
+      Object.assign(new Error('Nama pengguna atau PIN salah. Internal detail'), {
         code: 'API_ERROR',
         status: 401,
         request_id: 'private-request-id',
@@ -13,7 +13,7 @@ describe('user-facing error policy', () => {
       { surface: 'login' },
     );
 
-    expect(message).toBe('Nama user atau PIN salah.');
+    expect(message).toBe('Nama pengguna atau PIN salah.');
     expect(message).not.toMatch(/API_ERROR|HTTP|request_id|private-request-id/i);
   });
 
@@ -25,9 +25,9 @@ describe('user-facing error policy', () => {
   });
 
   it('rejects diagnostic strings when a component only has a rendered message', () => {
-    expect(sanitizeUserMessage('Nama user atau PIN salah. (API_ERROR · HTTP 401)', 'Nama user atau PIN salah.'))
-      .toBe('Nama user atau PIN salah.');
+    expect(sanitizeUserMessage('Nama pengguna atau PIN salah. (API_ERROR · HTTP 401)', 'Nama pengguna atau PIN salah.'))
+      .toBe('Nama pengguna atau PIN salah.');
     expect(sanitizeUserMessage('VERSION_CONFLICT', 'Coba lagi.')).toBe('Coba lagi.');
-    expect(sanitizeUserMessage('Nama user atau PIN salah.', 'Fallback.')).toBe('Nama user atau PIN salah.');
+    expect(sanitizeUserMessage('Nama pengguna atau PIN salah.', 'Fallback.')).toBe('Nama pengguna atau PIN salah.');
   });
 });

@@ -214,9 +214,13 @@
 .login-error-slot{max-height:0;margin-top:0;overflow:hidden;opacity:0;transform:translateY(-8px);transition:max-height .24s cubic-bezier(.16,1,.3,1),margin-top .24s ease,opacity .18s ease,transform .24s cubic-bezier(.16,1,.3,1)}
 .login-error-slot.is-visible{max-height:96px;margin-top:12px;opacity:1;transform:translateY(0)}
 .login-error{margin:0}
+.login-lockout{margin-top:12px;border:1px solid #e7b5ac;border-radius:10px;background:var(--red-bg);color:#963f33;padding:10px 14px;font-size:12px;line-height:1.5;text-align:center}
 .login-connection{display:flex;flex-direction:column;align-items:center;gap:5px;margin-top:16px;color:#476058;font-family:'DM Mono',monospace;font-size:10px;line-height:1.45;text-align:center;letter-spacing:.02em}
 .connection-status-line{display:inline-flex;align-items:center;gap:6px}
 .connection-status-icon{width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:#c98732;box-shadow:0 0 0 3px rgba(201,135,50,.14)}
 .login-connection-online .connection-status-icon{background:#3d8766;box-shadow:0 0 0 3px rgba(61,135,102,.14)}
 .login-connection-offline .connection-status-icon{background:#b95745;box-shadow:0 0 0 3px rgba(185,87,69,.14)}
 @media (max-width:650px){.pin-rail{max-width:none}.pin-rail input{height:52px!important;font-size:18px}.login-connection{margin-top:15px}}
+@media (prefers-reduced-motion: reduce){
+  .login-error-slot,.user-picker-menu,.picker-chevron,.primary-button,.user-picker-trigger{transition:none!important;animation:none!important}
+}

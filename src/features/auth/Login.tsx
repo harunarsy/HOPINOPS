@@ -27,7 +27,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
   const selectedUser = options.find((o) => o.username === username);
   const disabled = loading || lockoutSeconds > 0;
   const visibleError = error
-    ? sanitizeUserMessage(error, 'Nama user atau PIN salah.')
+    ? sanitizeUserMessage(error, 'Nama pengguna atau PIN salah.')
     : '';
 
   useEffect(() => {
@@ -155,11 +155,6 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
         <div className="login-brand">
           <div><strong>HOPIN</strong><small>CAFE OPERATIONS</small></div>
         </div>
-        <div className="login-copy">
-          <p className="eyebrow">STOK HARI INI · LOGIN USER</p>
-          <h1>Mulai shift tanpa<br /><em>catatan tercecer.</em></h1>
-          <p>Catat stok Bar dan Kitchen di satu tempat dengan sinkronisasi server resmi.</p>
-        </div>
         <form noValidate onSubmit={handleSubmit}>
           <div className="login-field">
             <label htmlFor="user-picker">Pilih Pengguna</label>
@@ -186,12 +181,14 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
                 <span className="picker-chevron" aria-hidden="true" />
               </button>
               {pickerOpen && (
-                <div className="user-picker-menu" role="listbox">
+                <div className="user-picker-menu" role="listbox" aria-label="Daftar pengguna">
                   {options.map((opt) => (
                     <button
                       key={opt.username}
                       type="button"
                       className={`user-picker-option${opt.username === username ? ' is-selected' : ''}`}
+                      role="option"
+                      aria-selected={opt.username === username}
                       onClick={() => {
                         setUsername(opt.username);
                         setPin('');
@@ -290,20 +287,7 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
           </div>
 
           {lockoutSeconds > 0 && (
-            <div
-              role="alert"
-              style={{
-                background: '#fff1f2',
-                border: '1px solid #fecdd3',
-                color: '#be123c',
-                padding: '10px 14px',
-                borderRadius: '8px',
-                fontSize: '12px',
-                lineHeight: '1.5',
-                marginTop: '12px',
-                textAlign: 'center',
-              }}
-            >
+            <div role="alert" className="login-lockout">
               <strong>Terlalu banyak percobaan salah (3x).</strong>
               <br />
               Silakan tunggu <strong>{lockoutSeconds} detik</strong> sebelum mencoba kembali.
@@ -347,13 +331,6 @@ export function Login({ options, onLogin, loading, error, lockoutSeconds = 0 }: 
         </div>
       </div>
 
-      <div className="login-aside">
-        <div className="aside-stamp">OPS<br /><small>PRODUCTION<br />V1.0</small></div>
-        <p className="eyebrow">HOPIN OPERATIONS</p>
-        <h2>Sistem operasional shift,<br />stok harian, & absensi GPS.</h2>
-        <div className="aside-line" />
-        <p>Waktu tercatat resmi mengikuti WIB Server.</p>
-      </div>
     </div>
   );
 }

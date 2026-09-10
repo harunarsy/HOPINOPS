@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 export type Role = 'OWNER' | 'SUPERVISOR' | 'OPERATOR' | 'INVESTOR';
-export const STAGING_PROJECT_REF = 'ibzlxdmnuszcmdzuocwu';
+export const STAGING_PROJECT_REF = process.env.E2E_STAGING_PROJECT_REF ?? '';
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4173';
 
 type Project = 'desktop' | 'mobile';
@@ -27,8 +27,8 @@ export type FixtureManifest = {
 };
 
 function assertStagingRef(projectRef: string) {
-  if (projectRef !== STAGING_PROJECT_REF) {
-    throw new Error(`Mutating E2E hanya boleh ke staging ${STAGING_PROJECT_REF}; ditolak ref ${projectRef || '(kosong)'}.`);
+  if (!/^[a-z0-9]{20}$/.test(projectRef) || projectRef === 'naanarmoktmsumkxmjvj') {
+    throw new Error('Mutating E2E hanya boleh ke project staging remote yang valid; target production ditolak.');
   }
 }
 

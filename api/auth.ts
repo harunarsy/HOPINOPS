@@ -295,7 +295,11 @@ export async function loginWithPin(
   const token = randomHex(32);
   const deviceToken = randomHex(32);
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + sessionLifetimeMs).toISOString();
+  // Leave a small clock-skew margin for the database-side `<= 12 hours`
+  // validation. Without the margin, a request created exactly on the
+  // boundary can be rejected when the API clock is a few milliseconds ahead
+  // of the Supabase clock.
+  const expiresAt = new Date(now.getTime() + sessionLifetimeMs - 60_000).toISOString();
   const [sessionTokenHash, deviceTokenHash] = await Promise.all([
     hashSessionToken(token),
     hashSessionToken(deviceToken),
@@ -646,7 +650,7 @@ export default {
         const responseHeaders = new Headers();
         if (!result) {
           responseHeaders.append('Set-Cookie', deviceCookie(antiAbuseDeviceToken));
-          return jsonResponse({ error: 'Nama user atau PIN salah.' }, 401, responseHeaders);
+          return jsonResponse({ error: 'Nama pengguna atau PIN salah.' }, 401, responseHeaders);
         }
         if (result.locked) {
           const retryAfter = Math.max(1, Number(result.retryAfterSeconds) || 60);

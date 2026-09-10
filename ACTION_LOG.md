@@ -1,5 +1,15 @@
 # HOPIN Action Log
 
+## Remote Staging dan Smoke Operator — 11 September 2026
+
+- Workflow lokal dialihkan ke `pnpm dev:staging` dengan Supabase staging remote; jalur database lokal, snapshot production, dan command Docker tidak lagi menjadi workflow aktif.
+- Project staging persistent `hopinops-staging` di region Singapore berhasil dibuat dan divalidasi tanpa menyalin data production. Credential tetap berada di `.env.staging.local` (ignored, permission terbatas) dan tidak masuk log/commit.
+- Migration `0001`–`0031` diterapkan ke staging. Direct Postgres terblokir oleh koneksi IPv6 workstation, lalu fallback SQL Management API menyelesaikan seluruh 31 migration tanpa database lokal.
+- `pnpm ops:staging-smoke` lulus pada fixture sintetis disposable: login/PIN error sanitization + UI mobile, assignment, opening/autosave, movement + replay idempoten, handover, closing, laporan Bar+Kitchen, role restriction settings, logout/session. Fixture 2 outlet + 8 profile dinonaktifkan otomatis pada `finally`.
+- Gate lokal lulus: `pnpm lint`, `pnpm test -- --run` (98 test), `pnpm build`, `pnpm test:smoke` (2 pass, 2 conditional full-stack test skip pada preview read-only), node syntax check, dan `git diff --check`.
+- Hardening login: expiry diberi margin clock-skew sebelum batas database 12 jam; copy login tetap generik `Nama pengguna atau PIN salah.` tanpa HTTP/API detail.
+- Read-only production baseline sebelum release: `/api/health` `ok`, `build-info` masih commit `b388aba`; belum ada commit/push baru pada saat entri ini dibuat.
+
 ## Release Candidate Gate Aktif 8 September 2026
 
 - Pengguna menyetujui kelanjutan pgTAP staging, E2E desktop/mobile, fixture disposable, audit independen, audit UX/a11y/responsive/copy, full regression, dan commit kandidat release.
