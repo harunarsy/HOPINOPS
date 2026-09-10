@@ -217,7 +217,7 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
       {notice && <p role="status" style={{ color: '#1e5b48' }}>{notice}</p>}
 
       {canMutate && <>
-        <div style={{ display: 'grid', gap: '8px', marginTop: '16px', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+        <div className="catalog-fields" style={{ display: 'grid', gap: '8px', marginTop: '16px', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
           <label style={{ fontSize: '12px' }}>Kode varian<input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="sirup_gula" style={inputStyle} /></label>
           <label style={{ fontSize: '12px' }}>Nama varian<input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Sirup gula" style={inputStyle} /></label>
           <label style={{ fontSize: '12px' }}>Satuan<input value={newUnit} onChange={(event) => setNewUnit(event.target.value)} placeholder="pcs" style={inputStyle} /></label>

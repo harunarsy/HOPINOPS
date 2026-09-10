@@ -48,8 +48,11 @@
 .management-shell,.management-shell .workspace,.management-shell .section-card{min-width:0;max-width:100%}
 .management-topbar .topbar-action{padding:6px 12px;font-size:12px}
 .management-tabs{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-gutter:stable}
-.management-tabs button{flex:0 0 auto;scroll-snap-align:start}
+.management-tabs button{flex:0 0 auto;scroll-snap-align:center}
 .management-shell input,.management-shell select,.management-shell textarea{max-width:100%;min-width:0}
+.segmented-btn{min-height:44px;border:1px solid #c7d8cf;border-radius:9px;background:#fff;color:var(--forest-2);padding:8px 13px;font-size:11px;font-weight:700}
+.segmented-btn:hover{background:var(--mint)}
+.segmented-btn.active{border-color:var(--forest-2);background:var(--forest-2);color:#fff}
 
 @media (max-width:1050px){
   .management-topbar{height:auto;min-height:72px;gap:16px;padding-top:10px;padding-bottom:10px}
@@ -124,6 +127,8 @@
   .roster-filter{width:100%}
   .roster-form{grid-template-columns:minmax(0,1fr)!important}
   .roster-form .primary-button{width:100%}
+  .catalog-fields{grid-template-columns:minmax(0,1fr)!important}
+  .catalog-fields+button{width:100%}
   .management-table td{grid-template-columns:minmax(88px,.38fr) minmax(0,1fr);gap:9px}
 }
 
