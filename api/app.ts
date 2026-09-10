@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import ExcelJS from 'exceljs';
-import { assertRuntimeDatabaseTarget } from './runtime';
+import { assertRuntimeDatabaseTarget } from './runtime.js';
 
 export type ApiRequest = {
   headers: Headers | Record<string, string | string[] | undefined>;

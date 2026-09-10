@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { assertRuntimeDatabaseTarget } from './runtime';
+import { assertRuntimeDatabaseTarget } from './runtime.js';
 
 export type ApiRequest = {
   headers: Headers | Record<string, string | string[] | undefined>;
