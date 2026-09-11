@@ -36,6 +36,27 @@ const countStateLabel: Record<CountState, string> = {
   VARIANCE: 'Selisih',
 };
 
+function formatWib(value: string | null | undefined, withSeconds = false) {
+  if (!value) return 'Waktu belum tercatat';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Waktu belum tercatat';
+  return new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    dateStyle: 'medium',
+    timeStyle: withSeconds ? 'medium' : 'short',
+  }).format(date);
+}
+
+function movementsFallbackCount(value: unknown, cutoff: string) {
+  if (!Array.isArray(value)) return 0;
+  const cutoffTime = Date.parse(cutoff);
+  if (!Number.isFinite(cutoffTime)) return 0;
+  return value.filter((movement: any) => {
+    const occurred = Date.parse(String(movement?.server_occurred_at ?? ''));
+    return Number.isFinite(occurred) && occurred <= cutoffTime;
+  }).length;
+}
+
 type Props = {
   profileId: string;
   outletId: string;
@@ -189,6 +210,18 @@ export function StockWorkspace({
   }, [onDirtyChange, queueSummary, openingCounts, closingCounts, isOpeningConfirmed, isClosingConfirmed, closingCompleted]);
   const isDayShift = shift === 'SIANG';
   const isNightOrFull = shift === 'MALAM' || shift === 'FULL';
+  const handoverReferenceRecord = cycleData?.handover_reference;
+  const handoverCardRecord = isNightOrFull ? handoverReferenceRecord : handoverRecord;
+  const handoverCardMovements = isNightOrFull
+    ? (handoverReferenceRecord?.movements ?? [])
+    : (cycleData?.movements ?? []);
+  const handoverMovementCount = Number.isInteger(cycleData?.handover_movement_count)
+    ? cycleData.handover_movement_count
+    : (handoverCardRecord?.movement_cutoff_at
+      ? movementsFallbackCount(handoverCardMovements, handoverCardRecord.movement_cutoff_at)
+      : 0);
+  const handoverCardIsOpeningReference = openingRecord?.reference_source_type === 'HANDOVER'
+    || openingReference?.source_type === 'HANDOVER';
   const isRequiredFinal = isDayShift
     ? isHandoverConfirmed || handoverCompleted
     : isNightOrFull
@@ -1123,9 +1156,9 @@ export function StockWorkspace({
               ? 'Closing shift telah dikonfirmasi.'
               : isHandoverConfirmed || handoverCompleted
                 ? 'Handover shift telah diselesaikan.'
-              : isOpeningConfirmed
-              ? 'Catat perubahan stok masuk dan keluar secara real-time.'
-              : 'Konfirmasi stok awal sebelum mencatat transaksi.'}
+                : isOpeningConfirmed
+                  ? 'Catat perubahan stok jika memang ada. Jika tidak ada perubahan, lanjutkan ke closing.'
+                  : 'Konfirmasi stok awal sebelum mencatat transaksi.'}
           </p>
           {!queueStateLoaded && !queueError && (
             <p style={{ color: '#476058', fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>
@@ -1313,6 +1346,65 @@ export function StockWorkspace({
             )}
           </div>
 
+          {isNightOrFull && handoverCardRecord?.status === 'CONFIRMED' && (
+            <section className="handover-card" aria-labelledby="handover-reference-title">
+              <p className="eyebrow">
+                {handoverCardIsOpeningReference ? 'HANDOVER SHIFT SIANG · PATOKAN OPENING' : 'HISTORI HANDOVER SHIFT SIANG'}
+              </p>
+              <h3 id="handover-reference-title">
+                {handoverCardIsOpeningReference ? 'Patokan serah-terima' : 'Riwayat serah-terima'} {areaLabel(area)}
+              </h3>
+              <p className="handover-meta">
+                {handoverCardRecord.confirmed_by_profile?.display_name || 'Petugas shift siang'}
+                {' · '}{formatWib(handoverCardRecord.confirmed_at, true)} WIB
+                {' · '}{areaLabel(area)}
+              </p>
+              <p className="handover-summary">
+                {handoverMovementCount} perubahan stok tercatat sampai handover.{' '}
+                {handoverCardIsOpeningReference
+                  ? 'Saldo di bawah menjadi patokan opening shift ini.'
+                  : 'Saldo di bawah disimpan sebagai histori area dan tidak mengubah patokan opening shift ini.'}
+              </p>
+              <details className="handover-details">
+                <summary>Perlihatkan saldo dan histori perubahan</summary>
+                <div className="handover-lines">
+                  {(handoverCardRecord.stock_handover_lines ?? []).map((line: any) => {
+                    const item = items.find((candidate) => candidate.id === line.item_id);
+                    return (
+                      <div className="handover-line" key={line.item_id}>
+                        <span>
+                          <strong>{item?.name || line.item_id}</strong>
+                          <small>{item?.unit_code || 'unit'} · awal {fmtNumber(line.opening_qty)}</small>
+                        </span>
+                        <span className="handover-qty">{fmtNumber(line.system_qty)} {item?.unit_code || ''}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {handoverCardRecord.movement_cutoff_at && (
+                  <div className="handover-history">
+                    <strong>Histori perubahan sampai {formatWib(handoverCardRecord.movement_cutoff_at, true)} WIB</strong>
+                    {movementsFallbackCount(handoverCardMovements, handoverCardRecord.movement_cutoff_at) === 0 ? (
+                      <p className="muted">Tidak ada perubahan stok sebelum handover.</p>
+                    ) : (
+                      <ul>
+                        {handoverCardMovements
+                          .filter((movement: any) => Date.parse(String(movement.server_occurred_at ?? '')) <= Date.parse(handoverCardRecord.movement_cutoff_at))
+                          .map((movement: any) => (
+                            <li key={movement.id}>
+                              {items.find((item) => item.id === movement.item_id)?.name || movement.item_id}
+                              {' · '}{movement.direction === 'IN' ? '+' : '-'}{fmtNumber(movement.quantity)} {movement.unit_code_snapshot}
+                              {' · '}{movementCategoryLabel(movement.category)}
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </details>
+            </section>
+          )}
+
           {!isOpeningConfirmed && openingReferenceReady && missingOpeningReferences.length === 0 && (
             <button
               type="button"
@@ -1497,7 +1589,14 @@ export function StockWorkspace({
 
           <div style={{ marginTop: '16px' }}>
             {movements.length === 0 ? (
-              <p className="muted" style={{ textAlign: 'center', padding: '24px' }}>Belum ada catatan barang masuk / keluar pada shift ini.</p>
+              <div className="no-movement-action" role="status">
+                <p>Catat perubahan stok jika memang ada. Jika tidak ada perubahan, lanjutkan ke closing.</p>
+                {isNightOrFull && !isClosingConfirmed && !closingCompleted && (
+                  <button type="button" className="outline-button" onClick={() => setTab('closing')}>
+                    Tidak ada perubahan stok, lanjut ke closing
+                  </button>
+                )}
+              </div>
             ) : (
               <div style={{ display: 'grid', gap: '8px' }}>
                 {movements.map((m: any) => {

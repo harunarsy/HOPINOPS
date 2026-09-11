@@ -10,23 +10,23 @@ function disposableManifest(runId = 'safe42') {
     id: `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`,
     username: `e2e-${runId}-${project === 'desktop' ? 'd' : 'm'}-${kind}`,
     displayName: `E2E ${runId} ${project} ${kind}`.toUpperCase(),
-    role: kind === 'investor' ? 'INVESTOR' : 'OPERATOR',
+    role: kind === 'investor' ? 'INVESTOR' : kind === 'supervisor' ? 'SUPERVISOR' : 'OPERATOR',
   });
   return {
     runId,
     projectRef: STAGING_REF,
     gps: { latitude: -7.27, longitude: 112.74 },
-    clientIps: { desktop: '198.51.100.42', mobile: '198.51.100.44' },
+    clientIps: { desktop: '198.51.100.42', mobile: '198.51.100.44', manager: '198.51.100.46' },
     outlets: {
       desktop: { id: '00000000-0000-4000-8000-000000000101', code: `e2e-${runId}-desktop` },
       mobile: { id: '00000000-0000-4000-8000-000000000102', code: `e2e-${runId}-mobile` },
     },
     users: {
       desktop: {
-        lifecycle: user('desktop', 'lifecycle', 1), journey: user('desktop', 'journey', 2), onboarding: user('desktop', 'onboarding', 3), investor: user('desktop', 'investor', 4),
+        lifecycle: user('desktop', 'lifecycle', 1), journey: user('desktop', 'journey', 2), onboarding: user('desktop', 'onboarding', 3), supervisor: user('desktop', 'supervisor', 4), investor: user('desktop', 'investor', 5),
       },
       mobile: {
-        lifecycle: user('mobile', 'lifecycle', 5), journey: user('mobile', 'journey', 6), onboarding: user('mobile', 'onboarding', 7), investor: user('mobile', 'investor', 8),
+        lifecycle: user('mobile', 'lifecycle', 6), journey: user('mobile', 'journey', 7), onboarding: user('mobile', 'onboarding', 8), supervisor: user('mobile', 'supervisor', 9), investor: user('mobile', 'investor', 10),
       },
     },
   };

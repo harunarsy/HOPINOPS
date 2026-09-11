@@ -583,27 +583,25 @@ export default {
         const { data: shifts, error: shiftsError } = await db.from('shift_templates').select('*').eq('outlet_id', outlet?.id).eq('active', true);
         if (shiftsError) throw shiftsError;
 
-        // Decision B04: Training completion is once per user lifetime.
-        // Retrieve any completed onboarding first to avoid repeated training upon version changes.
-        const { data: completedOnboardings, error: completedError } = await db
-          .from('onboarding_progress')
-          .select('*')
-          .eq('profile_id', user.id)
-          .not('completed_at', 'is', null)
-          .order('completed_at', { ascending: false })
-          .limit(1);
-        if (completedError) throw completedError;
-
-        let onboarding = completedOnboardings?.[0] ?? null;
-        if (!onboarding) {
-          const { data: activeOnboardings, error: activeError } = await db
-            .from('onboarding_progress')
-            .select('*')
-            .eq('profile_id', user.id)
-            .order('started_at', { ascending: false })
-            .limit(1);
-          if (activeError) throw activeError;
-          onboarding = activeOnboardings?.[0] ?? null;
+        // Onboarding state is projected by the database so a supervisor reset
+        // can be deferred safely while an operator is still working. Forced
+        // PIN changes take precedence and cannot call the operator-only RPC.
+        let onboarding = null;
+        if (user.role === 'OPERATOR' && !user.force_pin_change) {
+          const { data: onboardingState, error: onboardingError } = await db.rpc('rpc_get_onboarding_state', {
+            p_actor_id: user.id,
+            p_outlet_id: outletId,
+          });
+          if (onboardingError) return rpcErrorResponse(onboardingError);
+          if (!isObject(onboardingState)
+            || !isPositiveInteger(onboardingState.onboarding_version)
+            || (onboardingState.progress !== null && !isObject(onboardingState.progress))
+            || typeof onboardingState.reset_required !== 'boolean'
+            || typeof onboardingState.reset_deferred !== 'boolean'
+            || (onboardingState.reset_requested_at !== null && typeof onboardingState.reset_requested_at !== 'string')) {
+            return invalidRpcResult();
+          }
+          onboarding = onboardingState;
         }
 
         const workDate = getWibDate();
@@ -1705,7 +1703,112 @@ export default {
         const { data: closing } = await db.from('stock_closings').select('*, stock_closing_lines(*)').eq('cycle_id', cycleId).maybeSingle();
         const { data: items } = await db.from('items').select('*').eq('area_code', cycle.area_code).eq('active', true);
 
-        return successResponse({ cycle, opening, movements: movements ?? [], handover, closing, items: items ?? [] });
+        let handoverWithProfile = handover;
+        if (handover?.confirmed_by) {
+          const { data: confirmer } = await db
+            .from('profiles')
+            .select('id, display_name')
+            .eq('id', handover.confirmed_by)
+            .maybeSingle();
+          handoverWithProfile = {
+            ...handover,
+            confirmed_by_profile: confirmer ?? null,
+          };
+        }
+
+        // A MALAM cycle has its own opening/closing records, while the
+        // authoritative handover lives on the same-day SIANG cycle. Load that
+        // area-scoped handover separately so staff can inspect the actual
+        // source history before confirming the night opening. FULL cycles may
+        // also display the same history when it already exists, but it is not
+        // silently treated as the FULL opening source.
+        let handoverReference = null;
+        if (cycle.shift_code === 'MALAM' || cycle.shift_code === 'FULL') {
+          let sourceHandoverId = opening?.reference_source_type === 'HANDOVER'
+            ? opening.reference_source_id
+            : null;
+          let sourceCycle = null;
+
+          if (!sourceHandoverId) {
+            const { data: sourceCycles } = await db
+              .from('work_cycles')
+              .select('id, work_date, shift_code, area_code, status')
+              .eq('outlet_id', outletId)
+              .eq('work_date', cycle.work_date)
+              .eq('shift_code', 'SIANG')
+              .eq('area_code', cycle.area_code)
+              .limit(1);
+            const sourceCycleId = sourceCycles?.[0]?.id;
+            if (sourceCycleId) {
+              const { data: sourceRows } = await db
+                .from('stock_handovers')
+                .select('id')
+                .eq('cycle_id', sourceCycleId)
+                .eq('status', 'CONFIRMED')
+                .order('confirmed_at', { ascending: false })
+                .limit(1);
+              sourceHandoverId = sourceRows?.[0]?.id ?? null;
+            }
+          }
+
+          if (sourceHandoverId) {
+            const { data: sourceHandover } = await db
+              .from('stock_handovers')
+              .select('*, stock_handover_lines(*)')
+              .eq('id', sourceHandoverId)
+              .maybeSingle();
+            if (sourceHandover) {
+              const { data: sourceCycleRow } = await db
+                .from('work_cycles')
+                .select('id, work_date, shift_code, area_code, status')
+                .eq('id', sourceHandover.cycle_id)
+                .eq('outlet_id', outletId)
+                .maybeSingle();
+              sourceCycle = sourceCycleRow ?? null;
+              if (sourceCycle?.area_code === cycle.area_code && sourceCycle?.shift_code === 'SIANG') {
+                const { data: sourceMovements } = await db
+                  .from('stock_movements')
+                  .select('*')
+                  .eq('cycle_id', sourceHandover.cycle_id)
+                  .lte('server_occurred_at', sourceHandover.movement_cutoff_at)
+                  .order('server_occurred_at', { ascending: false });
+                let confirmer = null;
+                if (sourceHandover.confirmed_by) {
+                  const { data: confirmerRow } = await db
+                    .from('profiles')
+                    .select('id, display_name')
+                    .eq('id', sourceHandover.confirmed_by)
+                    .maybeSingle();
+                  confirmer = confirmerRow ?? null;
+                }
+                handoverReference = {
+                  ...sourceHandover,
+                  confirmed_by_profile: confirmer,
+                  source_cycle: sourceCycle,
+                  movements: sourceMovements ?? [],
+                };
+              }
+            }
+          }
+        }
+
+        const handoverMovementRows = handoverReference?.movements ?? movements ?? [];
+        const handoverForCount = handoverReference ?? handoverWithProfile;
+        const handoverMovementCount = handoverForCount?.movement_cutoff_at
+          ? handoverMovementRows.filter((movement: any) => movement.server_occurred_at
+            && Date.parse(movement.server_occurred_at) <= Date.parse(handoverForCount.movement_cutoff_at)).length
+          : 0;
+
+        return successResponse({
+          cycle,
+          opening,
+          movements: movements ?? [],
+          handover: handoverWithProfile,
+          handover_reference: handoverReference,
+          handover_movement_count: handoverMovementCount,
+          closing,
+          items: items ?? [],
+        });
       }
 
       if (action === 'management.stock.readiness' && request.method === 'GET') {
@@ -2828,34 +2931,46 @@ export default {
       // 12. ONBOARDING
       if (action === 'onboarding.get' && request.method === 'GET') {
         if (user.role !== 'OPERATOR') return errorResponse('FORBIDDEN', 'Guided onboarding hanya untuk Operator.', 403);
-        const { data: settings, error: settingsError } = await db
-          .from('outlet_settings')
-          .select('onboarding_version')
-          .eq('outlet_id', outletId)
-          .maybeSingle();
-        if (settingsError) throw settingsError;
-        if (!settings || !isPositiveInteger(settings.onboarding_version)) return errorResponse('NOT_FOUND', 'Versi onboarding outlet tidak ditemukan.', 404);
-
-        // B04: Check if operator has already completed ANY onboarding version
-        const { data: completedRows } = await db
-          .from('onboarding_progress')
-          .select('*')
-          .eq('profile_id', user.id)
-          .not('completed_at', 'is', null)
-          .order('completed_at', { ascending: false })
-          .limit(1);
-
-        let progress = completedRows?.[0] ?? null;
-        if (!progress) {
-          const { data: currentVersionProgress } = await db
-            .from('onboarding_progress')
-            .select('*')
-            .eq('profile_id', user.id)
-            .eq('onboarding_version', settings.onboarding_version)
-            .maybeSingle();
-          progress = currentVersionProgress ?? null;
+        const { data, error } = await db.rpc('rpc_get_onboarding_state', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data)
+          || !isPositiveInteger(data.onboarding_version)
+          || (data.progress !== null && !isObject(data.progress))
+          || typeof data.reset_required !== 'boolean'
+          || typeof data.reset_deferred !== 'boolean'
+          || (data.reset_requested_at !== null && typeof data.reset_requested_at !== 'string')) {
+          return invalidRpcResult();
         }
-        return successResponse({ onboarding_version: settings.onboarding_version, progress: progress ?? null });
+        return successResponse(data);
+      }
+
+      if (action === 'onboarding.reset' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner atau Supervisor yang dapat mereset tutorial.', 403);
+        }
+        const body = await readJsonObject(request, ['profile_id', 'reason']);
+        if (!body || !isUuid(body.profile_id) || !isNonEmptyString(body.reason, 1000)) {
+          return invalidPayload('profile_id dan alasan reset wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_request_onboarding_reset', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_target_profile_id: body.profile_id,
+          p_reason: body.reason.trim(),
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data)
+          || !isUuid(data.reset_id)
+          || data.profile_id !== body.profile_id
+          || !isPositiveInteger(data.onboarding_version)
+          || typeof data.requested_at !== 'string'
+          || !['NEXT_BOOTSTRAP', 'AFTER_SHIFT'].includes(data.effective)) {
+          return invalidRpcResult();
+        }
+        return successResponse(data);
       }
 
       if (action === 'onboarding.complete' && request.method === 'POST') {
@@ -2905,7 +3020,91 @@ export default {
         if (user.role === 'SUPERVISOR') query = query.eq('profiles.role', 'OPERATOR');
         const { data, error } = await query;
         if (error) throw error;
-        const users = (data ?? []).map((scope: any) => scope.profiles).sort((a: any, b: any) => a.display_name.localeCompare(b.display_name));
+        const baseUsers = (data ?? []).map((scope: any) => scope.profiles);
+        const operatorIds = baseUsers.filter((profile: any) => profile?.role === 'OPERATOR').map((profile: any) => profile.id);
+        const resetByProfile = new Map<string, any>();
+
+        if (operatorIds.length > 0) {
+          const { data: resetRows, error: resetError } = await db
+            .from('onboarding_reset_events')
+            .select('id, profile_id, requested_by, requested_at, deferred_until_assignment_id')
+            .eq('outlet_id', outletId)
+            .in('profile_id', operatorIds)
+            .order('requested_at', { ascending: false })
+            .order('id', { ascending: false });
+          if (resetError) throw resetError;
+
+          const latestRows = (resetRows ?? []).filter((row: any) => {
+            if (resetByProfile.has(row.profile_id)) return false;
+            resetByProfile.set(row.profile_id, row);
+            return true;
+          });
+
+          const { data: activeAssignments, error: assignmentError } = await db
+            .from('work_assignments')
+            .select('profile_id, id, status, work_cycles!inner(outlet_id)')
+            .eq('work_cycles.outlet_id', outletId)
+            .in('profile_id', operatorIds)
+            .in('status', ['ACTIVE', 'PENDING_TASKS']);
+          if (assignmentError) throw assignmentError;
+          const activeAssignmentProfiles = new Set((activeAssignments ?? []).map((row: any) => row.profile_id));
+
+          const { data: activeAttendance, error: attendanceError } = await db
+            .from('attendance_records')
+            .select('profile_id')
+            .eq('outlet_id', outletId)
+            .in('profile_id', operatorIds)
+            .not('check_in_event_id', 'is', null)
+            .is('check_out_event_id', null);
+          if (attendanceError) throw attendanceError;
+          const activeAttendanceProfiles = new Set((activeAttendance ?? []).map((row: any) => row.profile_id));
+
+          const { data: completionRows, error: completionError } = await db
+            .from('onboarding_progress')
+            .select('profile_id, completed_at')
+            .in('profile_id', operatorIds)
+            .not('completed_at', 'is', null)
+            .order('completed_at', { ascending: false });
+          if (completionError) throw completionError;
+          const latestCompletionByProfile = new Map<string, string>();
+          for (const completion of completionRows ?? []) {
+            if (!latestCompletionByProfile.has(completion.profile_id)) {
+              latestCompletionByProfile.set(completion.profile_id, completion.completed_at);
+            }
+          }
+
+          const requesterIds = [...new Set(latestRows.map((row: any) => row.requested_by).filter(Boolean))];
+          const requesterNames = new Map<string, string>();
+          if (requesterIds.length > 0) {
+            const { data: requesters, error: requesterError } = await db
+              .from('profiles')
+              .select('id, display_name')
+              .in('id', requesterIds);
+            if (requesterError) throw requesterError;
+            for (const requester of requesters ?? []) requesterNames.set(requester.id, requester.display_name);
+          }
+
+          for (const [profileId, reset] of resetByProfile) {
+            const completedAt = latestCompletionByProfile.get(profileId);
+            const resetPending = !completedAt || new Date(reset.requested_at).getTime() > new Date(completedAt).getTime();
+            resetByProfile.set(profileId, {
+              id: reset.id,
+              requested_at: reset.requested_at,
+              requested_by: reset.requested_by,
+              requested_by_name: requesterNames.get(reset.requested_by) ?? null,
+              pending: resetPending,
+              deferred: resetPending && (activeAssignmentProfiles.has(profileId) || activeAttendanceProfiles.has(profileId)),
+              deferred_until_assignment_id: reset.deferred_until_assignment_id ?? null,
+            });
+          }
+        }
+
+        const users = baseUsers
+          .map((profile: any) => ({
+            ...profile,
+            onboarding_reset: profile.role === 'OPERATOR' ? (resetByProfile.get(profile.id) ?? null) : null,
+          }))
+          .sort((a: any, b: any) => a.display_name.localeCompare(b.display_name));
         return successResponse({ users });
       }
 

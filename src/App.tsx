@@ -34,6 +34,7 @@ export default function App() {
   const [activeAssignment, setActiveAssignment] = useState<any>(null);
   const [activeAttendance, setActiveAttendance] = useState<any>(null);
   const [onboardingProgress, setOnboardingProgress] = useState<any>(null);
+  const [onboardingState, setOnboardingState] = useState<any>(null);
   const [workDate, setWorkDate] = useState<string>('');
   const [cycleData, setCycleData] = useState<any>(null);
 
@@ -86,7 +87,10 @@ export default function App() {
       setItems(data.items || []);
       setActiveAssignment(data.activeAssignment || null);
       setActiveAttendance(data.activeAttendance || null);
-      setOnboardingProgress(data.onboarding || null);
+      setOnboardingState(data.onboarding || null);
+      // Keep compatibility with older bootstrap mocks and pre-v0.3 payloads
+      // while preferring the new server projection's nested progress row.
+      setOnboardingProgress(data.onboarding?.progress ?? data.onboarding ?? null);
       setWorkDate(data.workDate || '');
       setCycleData(nextCycleData);
       setAssignmentError('');
@@ -212,6 +216,7 @@ export default function App() {
       setActiveAssignment(null);
       setActiveAttendance(null);
       setOnboardingProgress(null);
+      setOnboardingState(null);
       setWorkDate('');
       setCycleData(null);
       setForceShiftMode(false);
@@ -638,7 +643,10 @@ export default function App() {
   }
 
   // 4. ONBOARDING FOR OPERATORS
-  const needsOnboarding = currentUser.role === 'OPERATOR' && !onboardingProgress?.completed_at;
+  const onboardingResetRequired = onboardingState?.reset_required === true
+    && onboardingState?.reset_deferred !== true;
+  const needsOnboarding = currentUser.role === 'OPERATOR'
+    && (!onboardingProgress?.completed_at || onboardingResetRequired);
   if (needsOnboarding) {
     return (
       <>

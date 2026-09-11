@@ -11,14 +11,14 @@ export const STAGING_PROJECT_REF = process.env.E2E_STAGING_PROJECT_REF ?? '';
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4173';
 
 type Project = 'desktop' | 'mobile';
-type FixtureKind = 'lifecycle' | 'journey' | 'onboarding' | 'investor';
+type FixtureKind = 'lifecycle' | 'journey' | 'onboarding' | 'supervisor' | 'investor';
 
 export type FixtureUser = { id: string; username: string; displayName: string; role: string };
 export type FixtureManifest = {
   runId: string;
   projectRef: string;
   gps: { latitude: number; longitude: number };
-  clientIps: { desktop: string; mobile: string };
+  clientIps: { desktop: string; mobile: string; manager?: string };
   outlets: { desktop: { id: string; code: string }; mobile: { id: string; code: string } };
   users: {
     desktop: Record<FixtureKind, FixtureUser>;
@@ -63,7 +63,7 @@ function expectedUsername(runId: string, project: Project, kind: FixtureKind) {
 
 function assertManifestIsolation(manifest: FixtureManifest) {
   const projects: Project[] = ['desktop', 'mobile'];
-  const kinds: FixtureKind[] = ['lifecycle', 'journey', 'onboarding', 'investor'];
+  const kinds: FixtureKind[] = ['lifecycle', 'journey', 'onboarding', 'supervisor', 'investor'];
   const outletIds = projects.map((project) => manifest.outlets?.[project]?.id);
   const outletCodes = projects.map((project) => manifest.outlets?.[project]?.code);
   if (outletIds.some((id) => !id) || new Set(outletIds).size !== 2) {
@@ -87,7 +87,7 @@ function assertManifestIsolation(manifest: FixtureManifest) {
       usernames.push(user.username.toLowerCase());
     }
   }
-  if (new Set(ids).size !== 8 || new Set(usernames).size !== 8) {
+  if (new Set(ids).size !== 10 || new Set(usernames).size !== 10) {
     throw new Error('Manifest: semua profile ID dan username fixture wajib unik.');
   }
   if (!manifest.clientIps?.desktop || !manifest.clientIps?.mobile || manifest.clientIps.desktop === manifest.clientIps.mobile) {

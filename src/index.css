@@ -224,3 +224,29 @@
 @media (prefers-reduced-motion: reduce){
   .login-error-slot,.user-picker-menu,.picker-chevron,.primary-button,.user-picker-trigger{transition:none!important;animation:none!important}
 }
+
+/* Handover is a source-of-truth card, kept compact enough for a phone while
+   remaining expandable when a supervisor needs the movement history. */
+.handover-card{margin-top:16px;border:1px solid #b8d6c4;border-radius:14px;background:#f0f7f2;padding:16px;color:var(--forest)}
+.handover-card h3{margin:0;font-size:18px;line-height:1.25}
+.handover-meta{margin:7px 0 0;color:#476058;font-family:'DM Mono',monospace;font-size:11px;line-height:1.5}
+.handover-summary{margin:12px 0 0;font-size:13px;line-height:1.5;color:#31594b}
+.handover-details{margin-top:14px;border-top:1px solid #cce2d4;padding-top:11px}
+.handover-details summary{cursor:pointer;font-weight:700;font-size:12px;color:#1e5b48;min-height:32px;display:flex;align-items:center}
+.handover-lines{display:grid;gap:7px;margin-top:10px}
+.handover-line{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #d6e7dc;border-radius:9px;background:#fff;padding:9px 10px;font-size:12px}
+.handover-line>span:first-child{min-width:0}
+.handover-line strong,.handover-line small{display:block;overflow-wrap:anywhere}
+.handover-line small{margin-top:2px;color:#547066;font-size:10px}
+.handover-qty{flex:0 0 auto;font-family:'DM Mono',monospace;font-weight:700;color:#123d32;white-space:nowrap}
+.handover-history{margin-top:13px;border-top:1px dashed #cce2d4;padding-top:10px;font-size:11px;line-height:1.5}
+.handover-history ul{margin:7px 0 0;padding-left:18px;color:#476058}
+.no-movement-action{display:grid;justify-items:center;gap:12px;border:1px dashed #b8d6c4;border-radius:12px;background:#f8fcf9;padding:20px 16px;text-align:center}
+.no-movement-action p{margin:0;color:#476058;font-size:13px;line-height:1.5}
+.no-movement-action .outline-button{width:auto;min-height:44px;margin:0}
+@media (max-width:650px){
+  .handover-card{padding:14px}
+  .handover-line{align-items:flex-start;flex-direction:column;gap:5px}
+  .handover-qty{white-space:normal}
+  .no-movement-action .outline-button{width:100%}
+}

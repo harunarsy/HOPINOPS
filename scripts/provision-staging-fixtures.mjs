@@ -11,6 +11,7 @@ const KINDS = [
   { kind: 'lifecycle', role: 'OPERATOR', job_title: 'BARISTA' },
   { kind: 'journey', role: 'OPERATOR', job_title: 'KITCHEN' },
   { kind: 'onboarding', role: 'OPERATOR', job_title: 'BARISTA' },
+  { kind: 'supervisor', role: 'SUPERVISOR', job_title: 'SUPERVISOR' },
   { kind: 'investor', role: 'INVESTOR', job_title: 'INVESTOR' },
 ];
 
@@ -46,7 +47,8 @@ const desktopIp = process.env.E2E_DESKTOP_CLIENT_IP ?? process.env.E2E_CLIENT_IP
 const mobileIp = process.env.E2E_MOBILE_CLIENT_IP ?? '198.51.100.44';
 const failedLoginIp = process.env.E2E_FAILED_LOGIN_IP ?? '198.51.100.43';
 const mobileFailedLoginIp = process.env.E2E_MOBILE_FAILED_LOGIN_IP ?? '198.51.100.45';
-if (new Set([desktopIp, mobileIp, failedLoginIp, mobileFailedLoginIp]).size !== 4) {
+const managerIp = process.env.E2E_MANAGER_CLIENT_IP ?? '198.51.100.46';
+if (new Set([desktopIp, mobileIp, failedLoginIp, mobileFailedLoginIp, managerIp]).size !== 5) {
   fail('Semua IP E2E (desktop, mobile, failed-login desktop/mobile) wajib berbeda.');
 }
 
@@ -61,7 +63,7 @@ function displayName(project, kind) {
 }
 
 const expectedUsernames = PROJECTS.flatMap((project) => KINDS.map(({ kind }) => username(project, kind)));
-if (new Set(expectedUsernames).size !== 8) fail('Username fixture harus unik.');
+if (new Set(expectedUsernames).size !== 10) fail('Username fixture harus unik.');
 const db = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
 });
@@ -170,7 +172,7 @@ try {
     runId,
     projectRef: target.projectRef,
     gps: GPS,
-    clientIps: { desktop: desktopIp, mobile: mobileIp },
+    clientIps: { desktop: desktopIp, mobile: mobileIp, manager: managerIp },
     outlets: Object.fromEntries(PROJECTS.map((project) => [project, { id: outletIds[project], code: outletCode(project) }])),
     users: { desktop: {}, mobile: {} },
   };
@@ -183,7 +185,7 @@ try {
 
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  console.log(`provision ok run ${runId}: 2 outlets + 8 profiles; manifest ${manifestPath}`);
+  console.log(`provision ok run ${runId}: 2 outlets + 10 profiles; manifest ${manifestPath}`);
 } catch (error) {
   try {
     await deactivatePartialFixture();

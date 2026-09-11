@@ -137,6 +137,95 @@ async function login(api, username, pin) {
   return assertStatus(result, 200, 'Login operator');
 }
 
+async function resetTutorial(api, profileId, reason, label) {
+  const result = assertStatus(
+    await api.post('/api/app?action=onboarding.reset', { profile_id: profileId, reason }),
+    200,
+    `${label} reset tutorial`,
+  );
+  if (result.profile_id !== profileId || !result.reset_id || !Number.isInteger(result.onboarding_version)
+    || !['NEXT_BOOTSTRAP', 'AFTER_SHIFT'].includes(result.effective)) {
+    fail(`${label} response reset tutorial tidak lengkap.`);
+  }
+  return result;
+}
+
+async function runOnboardingResetSmoke({ baseUrl, managerUsername, managerPin, managerIp, targetUsername, targetPin, deferredApi, deferredProfileId, forbiddenApi }) {
+  if (!managerUsername || !managerPin) return 'SKIP: fixture Supervisor belum dikonfigurasi';
+  if (!targetUsername || !targetPin) fail('Fixture target onboarding untuk reset belum dikonfigurasi.');
+
+  const managerApi = await createApi(baseUrl, managerIp || '127.0.0.3');
+  const targetApi = await createApi(baseUrl, '127.0.0.4');
+  try {
+    const manager = await login(managerApi, managerUsername, managerPin);
+    if (manager.user?.role !== 'SUPERVISOR' && manager.user?.role !== 'OWNER') {
+      fail('Fixture reset tutorial harus ber-role SUPERVISOR atau OWNER.');
+    }
+    const managerBoot = assertStatus(await managerApi.get('/api/app?action=bootstrap'), 200, 'Bootstrap Supervisor reset tutorial');
+    if (!managerBoot.outlet?.id) fail('Bootstrap Supervisor tidak mengembalikan outlet.');
+
+    const target = await login(targetApi, targetUsername, targetPin);
+    if (target.user?.role !== 'OPERATOR' || !target.user?.id) fail('Target reset tutorial harus operator aktif.');
+    const targetBoot = assertStatus(await targetApi.get('/api/app?action=bootstrap'), 200, 'Bootstrap target reset tutorial');
+    const targetVersion = Number(targetBoot.onboarding?.onboarding_version ?? targetBoot.settings?.onboarding_version);
+    if (!Number.isInteger(targetVersion) || targetVersion <= 0) fail('Versi onboarding target tidak tersedia.');
+
+    if (forbiddenApi) {
+      const forbidden = await forbiddenApi.post('/api/app?action=onboarding.reset', {
+        profile_id: target.user.id,
+        reason: 'Percobaan akses reset dari operator.',
+      });
+      assertStatus(forbidden, 403, 'Pembatasan reset tutorial operator');
+    }
+
+    const reset = await resetTutorial(managerApi, target.user.id, 'Verifikasi alur ulang tutorial operator.', 'Supervisor');
+    if (reset.effective !== 'NEXT_BOOTSTRAP') fail('Target tanpa shift aktif seharusnya mendapat reset NEXT_BOOTSTRAP.');
+
+    // The reset must not revoke the target's existing authenticated session.
+    const afterReset = assertStatus(await targetApi.get('/api/app?action=bootstrap'), 200, 'Bootstrap target setelah reset tutorial');
+    if (afterReset.user?.id !== target.user.id || afterReset.onboarding?.reset_required !== true || afterReset.onboarding?.reset_deferred !== false) {
+      fail('Reset tutorial langsung tidak muncul sebagai wajib pada bootstrap target.');
+    }
+    assertStatus(await targetApi.get('/api/app?action=sessions.list'), 200, 'Session target setelah reset tutorial');
+
+    // Re-authenticate with the same PIN after logout to prove authentication
+    // credentials were not changed by the reset event.
+    assertStatus(await targetApi.post('/api/auth?action=logout'), 200, 'Logout target reset tutorial');
+    const reLogin = await login(targetApi, targetUsername, targetPin);
+    if (reLogin.user?.id !== target.user.id) fail('PIN/session target berubah setelah reset tutorial.');
+    const completed = assertStatus(
+      await targetApi.post('/api/app?action=onboarding.complete', { version: targetVersion }),
+      200,
+      'Selesaikan tutorial setelah reset',
+    );
+    if (completed.reset_applied !== true) fail('Completion tutorial tidak menandai reset yang diterapkan.');
+    const onboardingAfterCompletion = assertStatus(await targetApi.get('/api/app?action=onboarding.get'), 200, 'Status onboarding setelah completion');
+    if (onboardingAfterCompletion.reset_required !== false || onboardingAfterCompletion.reset_deferred !== false
+      || onboardingAfterCompletion.progress?.completed_at == null) {
+      fail('Status reset tutorial tidak kembali selesai setelah completion.');
+    }
+
+    // Reset an operator that still owns an active assignment. The session and
+    // workspace must remain usable, while the reset is deferred until checkout.
+    if (deferredApi && deferredProfileId) {
+      const deferred = await resetTutorial(managerApi, deferredProfileId, 'Verifikasi reset setelah shift aktif selesai.', 'Supervisor');
+      if (deferred.effective !== 'AFTER_SHIFT') fail('Reset operator dengan assignment aktif harus ditunda sampai shift selesai.');
+      const deferredBoot = assertStatus(await deferredApi.get('/api/app?action=bootstrap'), 200, 'Bootstrap operator dengan reset tertunda');
+      if (deferredBoot.onboarding?.reset_required === true || deferredBoot.onboarding?.reset_deferred !== true) {
+        fail('Reset tertunda mengganggu workspace shift aktif.');
+      }
+    }
+
+    // A second operator (when available) must not be able to reset anyone.
+    return 'PASS';
+  } finally {
+    await managerApi.post('/api/auth?action=logout').catch(() => {});
+    await targetApi.post('/api/auth?action=logout').catch(() => {});
+    await managerApi.context.dispose();
+    await targetApi.context.dispose();
+  }
+}
+
 function activeItems(items, area) {
   return (items || [])
     .filter((item) => item?.active !== false && (!area || item.area_code === area))
@@ -321,6 +410,79 @@ async function runStockCycle(api, items, { workDate, shift, area }) {
   return { assignment, cycleId, cycle: await cycleState(api, cycleId), movement, closing };
 }
 
+async function runNoMovementHandover(api, items) {
+  const label = 'SIANG KITCHEN tanpa perubahan';
+  const workDate = runDate();
+  const assignmentData = await claim(api, workDate, 'SIANG', 'KITCHEN');
+  const assignment = assignmentData.assignment;
+  const cycleId = assignment?.cycle_id;
+  if (!cycleId) fail(`${label} tidak mengembalikan cycle.`);
+
+  await ensureOpening(api, cycleId, items, label);
+  const before = await cycleState(api, cycleId);
+  if (before.cycle?.status !== 'OPEN' || (before.movements ?? []).length !== 0) {
+    fail(`${label} harus berada pada status OPEN tanpa movement sebelum handover.`);
+  }
+
+  const handover = assertStatus(
+    await api.post('/api/app?action=handover.complete', { cycle_id: cycleId }),
+    200,
+    `${label} handover`,
+  );
+  if (!handover.handover?.handover_id) fail(`${label} handover tidak lengkap.`);
+
+  const after = await cycleState(api, cycleId);
+  if ((after.movements ?? []).length !== 0 || after.handover_movement_count !== 0) {
+    fail(`${label} membuat movement palsu atau movement_count bukan 0.`);
+  }
+  const openingLines = after.opening?.stock_opening_lines ?? [];
+  const handoverLines = after.handover?.stock_handover_lines ?? [];
+  for (const openingLine of openingLines) {
+    const handoverLine = handoverLines.find((line) => line.item_id === openingLine.item_id);
+    if (!handoverLine || Number(handoverLine.system_qty) !== Number(openingLine.counted_qty)
+      || Number(handoverLine.incoming_qty) !== 0 || Number(handoverLine.outgoing_qty) !== 0) {
+      fail(`${label} tidak menyimpan saldo opening sebagai saldo handover tanpa movement.`);
+    }
+  }
+  return { assignment, cycleId, workDate, cycle: after };
+}
+
+async function runNightFromHandover(api, items, workDate) {
+  const label = 'MALAM KITCHEN dari handover';
+  const assignmentData = await claim(api, workDate, 'MALAM', 'KITCHEN');
+  const assignment = assignmentData.assignment;
+  const cycleId = assignment?.cycle_id;
+  if (!cycleId) fail(`${label} tidak mengembalikan cycle.`);
+
+  const beforeOpening = await cycleState(api, cycleId);
+  if (beforeOpening.handover_reference?.status !== 'CONFIRMED'
+    || beforeOpening.handover_reference?.source_cycle?.area_code !== 'KITCHEN'
+    || beforeOpening.handover_movement_count !== 0) {
+    fail(`${label} tidak membaca handover Kitchen tanpa movement sebagai histori sumber.`);
+  }
+
+  await ensureOpening(api, cycleId, items, label);
+  const opened = await cycleState(api, cycleId);
+  if (opened.opening?.reference_source_type !== 'HANDOVER'
+    || opened.opening?.reference_source_id !== opened.handover_reference?.id) {
+    fail(`${label} opening tidak membekukan handover Kitchen sebagai sumber.`);
+  }
+  const closingLines = activeItems(items, 'KITCHEN').map((item) => {
+    const opening = (opened.opening?.stock_opening_lines ?? []).find((line) => line.item_id === item.id);
+    return {
+      item_id: item.id,
+      counted_qty: countedForScale(Number(opening?.counted_qty || 0), item.decimalScale),
+    };
+  });
+  const closing = assertStatus(
+    await api.post('/api/app?action=closing.confirm', { cycle_id: cycleId, lines: closingLines }),
+    200,
+    `${label} closing tanpa movement`,
+  );
+  if (!closing.closing?.closing_id) fail(`${label} closing tidak lengkap.`);
+  return { assignment, cycleId, cycle: await cycleState(api, cycleId) };
+}
+
 async function tryAttendance(api, assignment, label) {
   if (!assignment?.id) return 'SKIP: assignment hari ini tidak tersedia';
   const today = wibToday();
@@ -435,6 +597,18 @@ async function main() {
   const secondPin = secondUsername
     ? assertPin(requiredEnv('HOPIN_LOCAL_SMOKE_SECOND_PIN'), 'HOPIN_LOCAL_SMOKE_SECOND_PIN')
     : null;
+  const managerUsername = process.env.HOPIN_LOCAL_SMOKE_MANAGER_USERNAME
+    ? assertUsername(process.env.HOPIN_LOCAL_SMOKE_MANAGER_USERNAME, 'HOPIN_LOCAL_SMOKE_MANAGER_USERNAME')
+    : null;
+  const managerPin = managerUsername
+    ? assertPin(requiredEnv('HOPIN_LOCAL_SMOKE_MANAGER_PIN'), 'HOPIN_LOCAL_SMOKE_MANAGER_PIN')
+    : null;
+  const onboardingUsername = process.env.HOPIN_LOCAL_SMOKE_ONBOARDING_USERNAME
+    ? assertUsername(process.env.HOPIN_LOCAL_SMOKE_ONBOARDING_USERNAME, 'HOPIN_LOCAL_SMOKE_ONBOARDING_USERNAME')
+    : null;
+  const onboardingPin = onboardingUsername
+    ? assertPin(requiredEnv('HOPIN_LOCAL_SMOKE_ONBOARDING_PIN'), 'HOPIN_LOCAL_SMOKE_ONBOARDING_PIN')
+    : null;
   const api = await createApi(baseUrl, clientIp);
   const secondApi = secondUsername ? await createApi(baseUrl, '127.0.0.2') : null;
 
@@ -454,6 +628,13 @@ async function main() {
     if (boot.user?.role !== 'OPERATOR' || !boot.outlet?.id || !Array.isArray(boot.items)) {
       fail('Bootstrap operator tidak memiliki outlet, role, atau katalog lengkap.');
     }
+    let secondUser = null;
+    if (secondApi) {
+      secondUser = await login(secondApi, secondUsername, secondPin);
+      if (secondUser.user?.role !== 'OPERATOR' || secondUser.user?.force_pin_change) {
+        fail('Akun smoke kedua harus operator aktif tanpa force PIN change.');
+      }
+    }
     // Outlet settings are intentionally management-only. Verify the operator
     // receives a safe authorization response instead of treating that as a
     // broken operator journey.
@@ -466,7 +647,22 @@ async function main() {
 
     const items = boot.items;
     const siang = await runStockCycle(api, items, { workDate: runDate(), shift: 'SIANG', area: 'BAR' });
+    const noMovementHandover = await runNoMovementHandover(api, items);
+    const nightFromHandover = secondApi
+      ? await runNightFromHandover(secondApi, items, noMovementHandover.workDate)
+      : null;
     const malam = await runStockCycle(api, items, { workDate: runDate(), shift: 'MALAM', area: 'KITCHEN' });
+    const onboardingResetResult = await runOnboardingResetSmoke({
+      baseUrl,
+      managerUsername,
+      managerPin,
+      managerIp: process.env.HOPIN_LOCAL_SMOKE_MANAGER_CLIENT_IP,
+      targetUsername: onboardingUsername,
+      targetPin: onboardingPin,
+      deferredApi: api,
+      deferredProfileId: loginUser.user?.id,
+      forbiddenApi: secondApi,
+    });
     // Claim a disposable assignment for today's WIB date so the attendance
     // branch is exercised on every fresh fixture instead of being skipped when
     // the randomized stock cycles fall on another date.
@@ -484,10 +680,6 @@ async function main() {
 
     let reportResult = 'SKIP: second actor belum dikonfigurasi';
     if (secondApi) {
-      const secondLoginUser = await login(secondApi, secondUsername, secondPin);
-      if (secondLoginUser.user?.role !== 'OPERATOR' || secondLoginUser.user?.force_pin_change) {
-        fail('Akun smoke kedua harus operator aktif tanpa force PIN change.');
-      }
       const reportDate = runDate();
       const bar = await runStockCycle(api, items, { workDate: reportDate, shift: 'FULL', area: 'BAR' });
       await runStockCycle(secondApi, items, { workDate: reportDate, shift: 'FULL', area: 'KITCHEN' });
@@ -520,7 +712,10 @@ async function main() {
     console.log(`- UI login mobile/error: PASS`);
     console.log(`- Bootstrap, katalog, satuan, kelompok, sesi: PASS`);
     console.log(`- Opening + autosave + movement + replay + handover: PASS (${siang.assignment?.id ? 'Bar' : 'n/a'})`);
+    console.log(`- Opening + handover tanpa movement: PASS (${noMovementHandover.assignment?.id ? 'Kitchen' : 'n/a'})`);
+    console.log(`- Histori handover → opening malam → closing tanpa movement: ${nightFromHandover ? 'PASS (Kitchen)' : 'SKIP: second actor belum dikonfigurasi'}`);
     console.log(`- Opening + movement + closing: PASS (${malam.assignment?.id ? 'Kitchen' : 'n/a'})`);
+    console.log(`- Reset tutorial Supervisor, deferred reset, dan pembatasan operator: ${onboardingResetResult}`);
     console.log(`- Attendance: ${attendanceResult}`);
     console.log(`- Finance/report dua area: ${reportResult}`);
     console.log('- Logout dan proteksi session: PASS');

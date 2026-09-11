@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { loadStagingEnv } from './staging-runtime.mjs';
 
 const PROJECTS = ['desktop', 'mobile'];
-const KINDS = ['lifecycle', 'journey', 'onboarding', 'investor'];
+const KINDS = ['lifecycle', 'journey', 'onboarding', 'supervisor', 'investor'];
 
 function fail(message) {
   throw new Error(message);
@@ -48,7 +48,7 @@ for (const project of PROJECTS) {
   }
 }
 if (new Set(outletIds).size !== 2) fail('Manifest harus memuat tepat 2 outlet unik.');
-if (new Set(profileIds).size !== 8 || new Set(usernames).size !== 8) fail('Manifest harus memuat tepat 8 profile ID dan username unik.');
+if (new Set(profileIds).size !== 10 || new Set(usernames).size !== 10) fail('Manifest harus memuat tepat 10 profile ID dan username unik.');
 
 const db = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
@@ -65,7 +65,7 @@ for (const outlet of outlets) {
 
 const { data: profiles, error: profilesError } = await db.from('profiles').select('id, username').in('id', profileIds);
 if (profilesError) throw profilesError;
-if ((profiles ?? []).length !== 8) fail(`Teardown profile tidak lengkap: ${(profiles ?? []).length}/8.`);
+if ((profiles ?? []).length !== 10) fail(`Teardown profile tidak lengkap: ${(profiles ?? []).length}/10.`);
 for (const profile of profiles) {
   const manifestUser = PROJECTS.flatMap((project) => KINDS.map((kind) => manifest.users[project][kind])).find((user) => user.id === profile.id);
   if (!manifestUser || profile.username !== manifestUser.username) fail(`BATAL: profile manifest bukan milik run: ${profile.id}`);
@@ -84,7 +84,7 @@ for (const scope of scopes ?? []) {
     activeScopeByProfile.set(scope.profile_id, scope.outlet_id);
   }
 }
-if (activeScopeByProfile.size !== 8) fail(`BATAL: scope aktif fixture tidak lengkap: ${activeScopeByProfile.size}/8.`);
+if (activeScopeByProfile.size !== 10) fail(`BATAL: scope aktif fixture tidak lengkap: ${activeScopeByProfile.size}/10.`);
 
 const encoder = new TextEncoder();
 async function scopeKey(scope, value) {
@@ -103,6 +103,7 @@ const ips = [
   manifest.clientIps?.mobile,
   process.env.E2E_FAILED_LOGIN_IP ?? '198.51.100.43',
   process.env.E2E_MOBILE_FAILED_LOGIN_IP ?? '198.51.100.45',
+  manifest.clientIps?.manager ?? '198.51.100.46',
   '::1', '127.0.0.1', '::ffff:127.0.0.1', 'unknown',
 ].filter(Boolean);
 
@@ -135,4 +136,4 @@ if (activeScopesError) throw activeScopesError;
 if ((activeOutlets ?? 0) !== 0 || (activeProfiles ?? 0) !== 0 || (activeScopes ?? 0) !== 0) {
   fail(`Verifikasi teardown gagal: outlets=${activeOutlets} profiles=${activeProfiles} scopes=${activeScopes}.`);
 }
-console.log(`teardown ok run ${manifest.runId}: 2 outlets + 8 profiles deactivated, sessions/devices/rate-limits cleared, history preserved.`);
+console.log(`teardown ok run ${manifest.runId}: 2 outlets + 10 profiles deactivated, sessions/devices/rate-limits cleared, history preserved.`);

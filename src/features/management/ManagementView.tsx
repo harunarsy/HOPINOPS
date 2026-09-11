@@ -248,10 +248,13 @@ const [rosterFilterError, setRosterFilterError] = useState('');
   const [deactivateTarget, setDeactivateTarget] = useState<any | null>(null);
   const [deactivateReason, setDeactivateReason] = useState('');
   const [resetTarget, setResetTarget] = useState<any | null>(null);
+  const [tutorialResetTarget, setTutorialResetTarget] = useState<any | null>(null);
+  const [tutorialResetReason, setTutorialResetReason] = useState('');
   const [oneTimeSecret, setOneTimeSecret] = useState<{ username: string; pin: string } | null>(null);
 
   const isInvestor = user.role === 'INVESTOR';
   const isOwner = user.role === 'OWNER';
+  const canResetTutorial = user.role === 'OWNER' || user.role === 'SUPERVISOR';
   const emergencyCandidates = (dashboardData?.attendance ?? []).filter((attendance: any) =>
     attendance.status === 'CHECKED_IN'
     && attendance.profile_id !== user.id
@@ -724,6 +727,30 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       await loadData(true);
     } catch (err: any) {
       showError(messageFrom(err, 'Gagal mereset PIN.'));
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleResetTutorial = async () => {
+    if (!tutorialResetTarget) return;
+    const reason = tutorialResetReason.trim();
+    if (!reason) {
+      showError('Alasan reset tutorial wajib diisi.');
+      return;
+    }
+    setActionLoading('reset-tutorial');
+    try {
+      const result = await api.resetOnboarding(tutorialResetTarget.id, reason);
+      setTutorialResetTarget(null);
+      setTutorialResetReason('');
+      showToast(result.effective === 'AFTER_SHIFT'
+        ? 'Reset tutorial dijadwalkan setelah shift selesai.'
+        : 'Reset tutorial akan tampil saat operator membuka aplikasi berikutnya.');
+      cacheRef.current.delete('users');
+      await loadData(true);
+    } catch (err: any) {
+      showError(messageFrom(err, 'Gagal mereset tutorial operator.'));
     } finally {
       setActionLoading('');
     }
@@ -1574,12 +1601,34 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                       </td>
                       <td style={{ padding: '8px' }}>
                         {u.force_pin_change ? <span style={{ color: '#d97706' }}>Wajib Ganti</span> : 'Aktif'}
+                        {u.onboarding_reset && (
+                          <small className="muted" style={{ display: 'block', marginTop: '5px', fontSize: '10px' }}>
+                            {u.onboarding_reset.pending
+                              ? (u.onboarding_reset.deferred ? 'Reset tutorial tertunda' : 'Reset tutorial siap dijalankan')
+                              : 'Reset tutorial terakhir'}
+                            {' · '}{formatDateTime(u.onboarding_reset.requested_at)}
+                            {u.onboarding_reset.requested_by_name ? ` · oleh ${u.onboarding_reset.requested_by_name}` : ''}
+                          </small>
+                        )}
                       </td>
                       <td style={{ padding: '8px', textAlign: 'right' }}>
-                        {isOwner ? <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', flexWrap: 'wrap' }}>
-                          <button type="button" className="outline-button" onClick={() => setUserEdit({ ...u })} style={{ fontSize: '11px', padding: '5px 8px' }}>Ubah</button>
-                          {u.id !== user.id && <button type="button" className="outline-button" onClick={() => setResetTarget(u)} style={{ fontSize: '11px', padding: '5px 8px' }}>Reset PIN</button>}
-                          {u.id !== user.id && <button type="button" className="outline-button" onClick={() => { setDeactivateReason(''); setDeactivateTarget(u); }} style={{ fontSize: '11px', padding: '5px 8px', color: '#b91c1c', borderColor: '#fecaca' }}>Nonaktifkan</button>}
+                        {(isOwner || canResetTutorial) ? <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', flexWrap: 'wrap' }}>
+                          {isOwner && <>
+                            <button type="button" className="outline-button" onClick={() => setUserEdit({ ...u })} style={{ fontSize: '11px', padding: '5px 8px' }}>Ubah</button>
+                            {u.id !== user.id && <button type="button" className="outline-button" onClick={() => setResetTarget(u)} style={{ fontSize: '11px', padding: '5px 8px' }}>Reset PIN</button>}
+                            {u.id !== user.id && <button type="button" className="outline-button" onClick={() => { setDeactivateReason(''); setDeactivateTarget(u); }} style={{ fontSize: '11px', padding: '5px 8px', color: '#b91c1c', borderColor: '#fecaca' }}>Nonaktifkan</button>}
+                          </>}
+                          {canResetTutorial && u.role === 'OPERATOR' && (
+                            <button
+                              type="button"
+                              className="outline-button"
+                              onClick={() => { setTutorialResetReason(''); setTutorialResetTarget(u); }}
+                              style={{ fontSize: '11px', padding: '5px 8px' }}
+                            >
+                              Reset tutorial
+                            </button>
+                          )}
+                          {u.onboarding_reset?.deferred && <small className="muted" style={{ width: '100%', textAlign: 'right' }}>Reset tutorial tertunda sampai shift selesai.</small>}
                         </div> : <span className="muted">Hanya dapat dilihat</span>}
                       </td>
                     </tr>
@@ -1943,6 +1992,37 @@ const [rosterFilterError, setRosterFilterError] = useState('');
           <Dialog titleId="reset-pin-title" title="Reset PIN Pengguna?" onClose={() => setResetTarget(null)}>
             <p className="muted" style={{ fontSize: '13px', margin: '0 0 18px' }}>PIN <strong>{resetTarget.display_name}</strong> akan diganti. Semua sesi pengguna tersebut dicabut. PIN sementara hanya ditampilkan satu kali.</p>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}><button type="button" className="outline-button" onClick={() => setResetTarget(null)}>Batal</button><button type="button" className="primary-button" onClick={handleResetPin} disabled={actionLoading === 'reset-pin'}>{actionLoading === 'reset-pin' ? 'Mereset...' : 'Reset dan Tampilkan PIN'}</button></div>
+          </Dialog>
+        )}
+
+        {tutorialResetTarget && (
+          <Dialog
+            titleId="reset-tutorial-title"
+            title="Reset tutorial operator?"
+            onClose={() => { setTutorialResetTarget(null); setTutorialResetReason(''); }}
+          >
+            <form onSubmit={(event) => { event.preventDefault(); void handleResetTutorial(); }}>
+              <p className="muted" style={{ fontSize: '13px', lineHeight: 1.55, margin: '0 0 16px' }}>
+                Tutorial <strong>{tutorialResetTarget.display_name}</strong> akan dimulai lagi pada login atau refresh berikutnya. Login, PIN, perangkat, shift aktif, absensi, dan data stok tidak dihapus. Jika operator masih bertugas, reset berlaku setelah shift selesai.
+              </p>
+              <label style={labelStyle} htmlFor="reset-tutorial-reason">Alasan reset tutorial</label>
+              <textarea
+                id="reset-tutorial-reason"
+                required
+                maxLength={1000}
+                rows={3}
+                value={tutorialResetReason}
+                onChange={(event) => setTutorialResetReason(event.target.value)}
+                placeholder="Contoh: Operator perlu mengulang materi alur handover."
+                style={{ ...inputStyle, resize: 'vertical', marginBottom: '16px' }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
+                <button type="button" className="outline-button" onClick={() => { setTutorialResetTarget(null); setTutorialResetReason(''); }} disabled={actionLoading === 'reset-tutorial'}>Batal</button>
+                <button type="submit" className="primary-button" disabled={actionLoading === 'reset-tutorial' || !tutorialResetReason.trim()}>
+                  {actionLoading === 'reset-tutorial' ? 'Mereset...' : 'Reset tutorial'}
+                </button>
+              </div>
+            </form>
           </Dialog>
         )}
 

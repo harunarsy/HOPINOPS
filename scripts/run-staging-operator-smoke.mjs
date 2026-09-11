@@ -13,7 +13,9 @@ const manifestPath = env.E2E_FIXTURE_MANIFEST;
 if (!manifestPath || !existsSync(manifestPath)) throw new Error('Fixture manifest staging tidak ditemukan.');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const lifecycle = manifest.users?.desktop?.lifecycle;
+const supervisor = manifest.users?.desktop?.supervisor;
 if (!lifecycle?.username) throw new Error('Manifest staging tidak memiliki operator lifecycle.');
+if (!supervisor?.username) throw new Error('Manifest staging tidak memiliki fixture supervisor.');
 
 const baseUrl = env.E2E_BASE_URL || `http://localhost:${env.PORT || 3000}`;
 const runnerEnv = {
@@ -30,6 +32,11 @@ const runnerEnv = {
   // to its own outlet and must not be used for this cross-area assertion.
   HOPIN_LOCAL_SMOKE_SECOND_USERNAME: manifest.users?.desktop?.journey?.username,
   HOPIN_LOCAL_SMOKE_SECOND_PIN: env.E2E_FIXTURE_PIN,
+  HOPIN_LOCAL_SMOKE_MANAGER_USERNAME: supervisor.username,
+  HOPIN_LOCAL_SMOKE_MANAGER_PIN: env.E2E_FIXTURE_PIN,
+  HOPIN_LOCAL_SMOKE_MANAGER_CLIENT_IP: manifest.clientIps?.manager,
+  HOPIN_LOCAL_SMOKE_ONBOARDING_USERNAME: manifest.users?.desktop?.onboarding?.username,
+  HOPIN_LOCAL_SMOKE_ONBOARDING_PIN: env.E2E_FIXTURE_PIN,
 };
 
 const result = spawnSync(process.execPath, [path.join(process.cwd(), 'scripts/run-local-operator-smoke.mjs')], {

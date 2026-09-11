@@ -69,12 +69,13 @@ ada; tidak ada fallback ke production.
 
 ## Smoke operator staging
 
-`pnpm ops:staging-smoke` membuat dua outlet dan akun operator sintetis dengan PIN
-acak, menjalankan login, error sanitization, status koneksi, assignment,
-opening, autosave, movement, handover/closing, attendance, katalog, laporan, dan
-logout, lalu menonaktifkan fixture pada blok `finally`. Manifest hanya berada di
-direktori temporer dan tidak memuat PIN di output. Tidak ada akun operator
-production atau data production yang dipakai.
+`pnpm ops:staging-smoke` membuat dua outlet dan akun operator/supervisor sintetis
+dengan PIN acak, menjalankan login, sanitasi error, status koneksi, assignment,
+opening, autosave, movement, handover/closing, handover tanpa movement, attendance,
+katalog, laporan, reset tutorial immediate/deferred, dan logout, lalu menonaktifkan
+fixture pada blok `finally`. Manifest hanya berada di direktori temporer dan tidak
+memuat PIN di output. Tidak ada akun operator production atau data production yang
+dipakai.
 
 Perintah ini sengaja memerlukan kredensial staging lokal. Jika project belum ada,
 secret tidak cocok, atau target meragukan, command berhenti sebelum mutation.
@@ -126,6 +127,13 @@ Browser tidak membutuhkan environment variable database apa pun.
 - Login memakai session cookie, lockout PIN server-authoritative, dan single-device binding.
 - Error API internal tidak dirender ke pengguna. Login gagal selalu berbunyi
   `Nama pengguna atau PIN salah.` dan muncul pada slot animasi di bawah rail PIN.
+- Shift siang wajib menyelesaikan opening dan handover; movement boleh kosong.
+  Shift malam/full membaca handover area yang sama sebelum opening dan dapat lanjut
+  ke closing tanpa membuat transaksi movement palsu.
+- Supervisor/Owner dapat memakai `Reset tutorial` per operator dengan alasan wajib.
+  Reset tidak mencabut login, PIN, perangkat, assignment, absensi, atau data stok;
+  reset yang diminta saat shift aktif ditunda sampai shift selesai dan seluruh event
+  tetap tercatat append-only.
 - Timestamp server dan nomor revisi dipertahankan untuk opening, movement,
   closing, attendance, laporan, dan perubahan katalog.
 - Arsip menggantikan hard delete; histori master dan transaksi tetap immutable.

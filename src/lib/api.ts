@@ -321,9 +321,22 @@ export const api = {
     request<{ url: string; expires_at: string }>('/api/app?action=payroll.export.download', { method: 'POST', body: JSON.stringify({ export_id, expected_run_version: expected_export_version, idempotency_key }) }).then(r => ({ signed_url: r.url, expires_at: r.expires_at })),
 
   // Onboarding & Users
-  getOnboarding: () => request<{ onboarding_version: number; progress: any | null }>('/api/app?action=onboarding.get'),
+  getOnboarding: () => request<{
+    onboarding_version: number;
+    progress: any | null;
+    reset_required: boolean;
+    reset_deferred: boolean;
+    reset_requested_at: string | null;
+  }>('/api/app?action=onboarding.get'),
   completeOnboarding: (version?: number) => request('/api/app?action=onboarding.complete', { method: 'POST', body: JSON.stringify(version ? { version } : {}) }),
   replayOnboarding: (version: number) => request<{ profile_id: string; onboarding_version: number; replay_count: number }>('/api/app?action=onboarding.replay', { method: 'POST', body: JSON.stringify({ version }) }),
+  resetOnboarding: (profile_id: string, reason: string) => request<{
+    reset_id: string;
+    profile_id: string;
+    onboarding_version: number;
+    requested_at: string;
+    effective: 'NEXT_BOOTSTRAP' | 'AFTER_SHIFT';
+  }>('/api/app?action=onboarding.reset', { method: 'POST', body: JSON.stringify({ profile_id, reason }) }),
   listUsers: () => request<{ users: any[] }>('/api/app?action=users.list').then(r => r.users),
   createUser: (user: any) => request('/api/app?action=users.create', { method: 'POST', body: JSON.stringify(user) }),
   updateUser: (user: { id: string; expected_version: number; display_name: string; role: 'OPERATOR' | 'SUPERVISOR' | 'OWNER' | 'INVESTOR'; job_title: string }) =>
