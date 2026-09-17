@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(32);
+select plan(34);
 
 create temporary table required_functions (signature text primary key) on commit drop;
 insert into required_functions values
@@ -423,6 +423,23 @@ select throws_ok(
   '22023',
   'INVALID_EMERGENCY_CHECKOUT: Version, reason, dan idempotency key wajib valid.',
   'Self emergency checkout rejects invalid version payload (B05)'
+);
+
+-- 0033: display codes must never truncate past 999 (lpad(text, 3, '0') bug).
+update public.item_code_sequences
+set next_value = 999
+where area_code = 'KITCHEN';
+
+select is(
+  public.next_item_display_code('KITCHEN'),
+  'KIT-999',
+  'Item code keeps three digits at 999 (0033)'
+);
+
+select is(
+  public.next_item_display_code('KITCHEN'),
+  'KIT-1000',
+  'Item code does not truncate past 999 (0033)'
 );
 
 select * from finish();
