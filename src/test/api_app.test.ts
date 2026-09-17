@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import appHandler, { canonicalJson, sanitizeExcelCell } from '../../api/app';
+import appHandler, { canonicalJson, isSnapshotLines, sanitizeExcelCell } from '../../api/app';
 
 describe('Production Business API Dispatcher (api/app.ts)', () => {
   it('rejects requests without an action parameter with 404', async () => {
@@ -142,5 +142,42 @@ describe('Production Business API Dispatcher (api/app.ts)', () => {
     expect(() => canonicalJson(() => null)).toThrow(TypeError);
     expect(() => canonicalJson(Array(1))).toThrow(TypeError);
     expect(() => canonicalJson(new Date())).toThrow(TypeError);
+  });
+});
+
+describe('Physical snapshot validation (opening/closing confirm)', () => {
+  const itemA = '11111111-2222-3333-4444-555555555555';
+  const itemB = '11111111-2222-3333-4444-666666666666';
+
+  it('accepts the opening payload shape sent by the client (reference_qty included)', () => {
+    expect(isSnapshotLines([
+      { item_id: itemA, reference_qty: 0, counted_qty: 0, reason_code: null, notes: null },
+      { item_id: itemB, reference_qty: 4.5, counted_qty: 4.5, reason_code: null, notes: null },
+    ])).toBe(true);
+  });
+
+  it('accepts the closing payload shape sent by the client (balance fields included)', () => {
+    expect(isSnapshotLines([
+      {
+        item_id: itemA,
+        opening_qty: 0,
+        incoming_qty: 2,
+        outgoing_qty: 1,
+        system_qty: 1,
+        counted_qty: 1,
+        reason_code: null,
+        notes: null,
+      },
+    ])).toBe(true);
+  });
+
+  it('still rejects incomplete, duplicated, or malformed snapshots', () => {
+    expect(isSnapshotLines([])).toBe(false);
+    expect(isSnapshotLines('nope')).toBe(false);
+    expect(isSnapshotLines([{ counted_qty: 0 }])).toBe(false);
+    expect(isSnapshotLines([{ item_id: itemA }])).toBe(false);
+    expect(isSnapshotLines([{ item_id: itemA, counted_qty: -1 }])).toBe(false);
+    expect(isSnapshotLines([{ item_id: itemA, counted_qty: 'x' }])).toBe(false);
+    expect(isSnapshotLines([{ item_id: itemA, counted_qty: 0 }, { item_id: itemA, counted_qty: 0 }])).toBe(false);
   });
 });

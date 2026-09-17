@@ -394,7 +394,7 @@ function isOperationalRole(role: string) {
   return role === 'OPERATOR' || role === 'OWNER' || role === 'SUPERVISOR';
 }
 
-function snapshotLines(value: unknown) {
+export function snapshotLines(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.map((line: any) => ({
     item_id: line?.item_id,
@@ -423,10 +423,15 @@ function isDraftLines(value: unknown): value is Array<Record<string, any>> {
   return true;
 }
 
-function isSnapshotLines(value: unknown): value is Array<Record<string, any>> {
+export function isSnapshotLines(value: unknown): value is Array<Record<string, any>> {
   // Confirmations must carry a complete, typed physical snapshot. Never turn a
   // malformed payload into an empty snapshot or an implicit zero baseline.
-  return isDraftLines(value) && value.length > 0 && value.every((line: any) =>
+  // Clients also send derived display fields (reference_qty on opening,
+  // opening_qty/incoming_qty/outgoing_qty/system_qty on closing); the server
+  // re-derives them from the database, so validate the sanitized lines that are
+  // actually forwarded to the RPC instead of rejecting the extra fields.
+  const lines = snapshotLines(value);
+  return isDraftLines(lines) && lines.length > 0 && lines.every((line: any) =>
     typeof line.reason_code === 'string' || line.reason_code === null || line.reason_code === undefined
   );
 }

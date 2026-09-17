@@ -18,10 +18,31 @@ type GpsSample = {
 
 type LocationFailure = 'DENIED' | 'TIMEOUT' | 'UNAVAILABLE';
 
+type LocationIssue = LocationFailure | 'INSECURE' | 'IN_APP_BROWSER';
+
 type LocationResult = {
   samples: GpsSample[];
   failure?: LocationFailure;
+  issue?: LocationIssue;
 };
+
+const LOCATION_ISSUE_MESSAGES: Record<LocationIssue, string> = {
+  DENIED: 'Izin lokasi ditolak. Buka ikon kunci di address bar → izinkan Lokasi, lalu tekan Coba Lagi.',
+  IN_APP_BROWSER: 'Aplikasi ini terbuka dari dalam aplikasi lain (WhatsApp/Instagram). Buka di Chrome atau Safari agar popup izin lokasi muncul.',
+  INSECURE: 'Popup izin lokasi hanya muncul di koneksi aman (https). Buka alamat aplikasi versi https.',
+  TIMEOUT: 'GPS belum dapat sinyal. Coba di area terbuka, lalu tekan Coba Lagi.',
+  UNAVAILABLE: 'Lokasi tidak tersedia di perangkat/browser ini. Pastikan GPS aktif, lalu tekan Coba Lagi.',
+};
+
+function detectInAppBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  if (/Android/i.test(ua) && (/(^|;\s)wv\)/.test(ua) || /\bwv\b/i.test(ua))) return true;
+  if (/FBAN|FBAV|Instagram|Line\/|WhatsApp|Twitter/i.test(ua)) return true;
+  // iOS in-app browser (WKWebView) tidak memuat token Safari; Safari/Chrome iOS (CriOS) memuatnya.
+  if (/iPhone|iPad|iPod/i.test(ua) && !/Safari|CriOS|FxiOS|EdgiOS/i.test(ua)) return true;
+  return false;
+}
 
 export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel }: Props) {
   const [sliderPos, setSliderPos] = useState(0);
@@ -36,8 +57,16 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
   const isCheckIn = actionType === 'CHECK_IN';
 
   const collectGpsSamples = async (): Promise<LocationResult> => {
+    // Popup izin lokasi tidak mungkin muncul di kondisi ini — beri pesan yang
+    // bisa ditindaklanjuti alih-alih menunggu timeout tanpa penjelasan.
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      return { samples: [], failure: 'UNAVAILABLE', issue: 'INSECURE' };
+    }
     if (!navigator.geolocation) {
-      return { samples: [], failure: 'UNAVAILABLE' };
+      return { samples: [], failure: 'UNAVAILABLE', issue: 'UNAVAILABLE' };
+    }
+    if (detectInAppBrowser()) {
+      return { samples: [], failure: 'UNAVAILABLE', issue: 'IN_APP_BROWSER' };
     }
 
     return new Promise((resolve) => {
@@ -45,12 +74,17 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
       let settled = false;
       let watchId: number | undefined;
 
-      const finish = (failure?: LocationFailure) => {
+      const finish = (issue?: LocationIssue) => {
         if (settled) return;
         settled = true;
         if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
         clearTimeout(timeoutId);
-        resolve({ samples, failure: samples.length === 0 ? failure ?? 'UNAVAILABLE' : undefined });
+        if (samples.length > 0) {
+          resolve({ samples });
+          return;
+        }
+        const failure: LocationFailure = issue === 'DENIED' || issue === 'TIMEOUT' ? issue : 'UNAVAILABLE';
+        resolve({ samples, failure, issue: issue ?? 'UNAVAILABLE' });
       };
 
       const timeoutId = window.setTimeout(() => finish('TIMEOUT'), 10000);
@@ -68,12 +102,12 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
             if (samples.length === 3) finish();
           },
           (error) => {
-            const failure: LocationFailure = error.code === 1
+            const issue: LocationIssue = error.code === 1
               ? 'DENIED'
               : error.code === 3
                 ? 'TIMEOUT'
                 : 'UNAVAILABLE';
-            finish(failure);
+            finish(issue);
           },
           { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
         );
@@ -101,7 +135,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
         setNeedsNote(true);
         setStatus('IDLE');
         setSliderPos(0);
-        setErrorMessage('Lokasi GPS tidak tersedia. Catatan alasan wajib diisi.');
+        setErrorMessage(`${LOCATION_ISSUE_MESSAGES[location.issue ?? 'UNAVAILABLE']} Catatan alasan wajib diisi.`);
         return;
       }
 
@@ -257,7 +291,16 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
 
       {status === 'ERROR' && (
         <div style={{ display: 'flex', gap: '10px' }}>
-          <button type="button" className="primary-button" style={{ flex: 1 }} onClick={() => void performAttendance()}>
+          <button
+            type="button"
+            className="primary-button"
+            style={{ flex: 1 }}
+            onClick={() => {
+              // Coba ulang harus meminta GPS lagi (mis. setelah izin diaktifkan).
+              locationRef.current = null;
+              void performAttendance();
+            }}
+          >
             Coba Lagi
           </button>
           <button type="button" className="outline-button" style={{ flex: 1 }} onClick={cancelAttempt}>

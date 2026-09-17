@@ -103,6 +103,9 @@ test.describe('Authenticated staging API flows', () => {
     // Confirm opening (counted == reference; blank never allowed)
     const lines = (ref.body?.data?.lines ?? []).map((l: any) => ({
       item_id: l.item_id,
+      // Klien asli ikut mengirim reference_qty (field tampilan) — ikutkan agar
+      // regresi validasi payload konfirmasi tertangkap end-to-end.
+      reference_qty: Number(l.reference_qty) || 0,
       counted_qty: Number(l.reference_qty) || 0,
       reason_code: null,
       notes: null,
