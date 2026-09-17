@@ -57,12 +57,12 @@ function proposedLabel(correction: any) {
   const proposed = correction?.proposed_json ?? {};
   const value = proposed.occurred_at ?? proposed.status ?? proposed.lateness_status ?? proposed.exception_status;
   if (!value) return 'Tidak ada nilai usulan';
-  if (proposed.occurred_at) return new Date(value).toLocaleString('id-ID');
+  if (proposed.occurred_at) return new Date(value).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' });
   return taskLabel(value);
 }
 
 function formatDateTime(value: string) {
-  return new Date(value).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
+  return new Date(value).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function getPayrollAdjustments(entry: any) {
