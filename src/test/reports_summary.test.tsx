@@ -239,8 +239,51 @@ describe('ReportsView stock summary (E3/U05)', () => {
       expect(screen.getByText('Kopi Susu')).toBeDefined();
     });
     expect(screen.getByText('Gula Pasir')).toBeDefined();
-    expect(screen.getByText(/5,500 kilo · Aman/)).toBeDefined();
-    expect(screen.getByText(/0,00 kg · Habis/)).toBeDefined();
+    expect(screen.getByText('5,500 kilo')).toBeDefined();
+    expect(screen.getByText('0,00 kg')).toBeDefined();
+  });
+
+  it('sorts stock lines habis, hampir habis, aman and colors each category', async () => {
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      stock_lines: [
+        { item_id: 'aman-item', item_name: 'Aman Item', unit_code: 'pcs', decimal_scale_snapshot: 0, area_code: 'BAR', closing_qty: 10, stock_status: 'AMAN' },
+        { item_id: 'habis-item', item_name: 'Habis Item', unit_code: 'pcs', decimal_scale_snapshot: 0, area_code: 'BAR', closing_qty: 0, stock_status: 'HABIS' },
+        { item_id: 'hampir-item', item_name: 'Hampir Item', unit_code: 'pcs', decimal_scale_snapshot: 0, area_code: 'BAR', closing_qty: 1, stock_status: 'HAMPIR_HABIS' },
+      ],
+    } as any);
+    render(
+      <ReportsView isFinalizer={false} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Habis Item')).toBeDefined();
+    });
+
+    const ordered = screen.getAllByRole('listitem')
+      .map((node) => node.textContent ?? '')
+      .filter((text) => /Habis Item|Hampir Item|Aman Item/.test(text));
+    expect(ordered[0]).toContain('Habis Item');
+    expect(ordered[1]).toContain('Hampir Item');
+    expect(ordered[2]).toContain('Aman Item');
+
+    const badge = (label: string) => screen.getAllByText(label).find((node) => node.style.background) as HTMLElement;
+    expect(badge('Habis').style.color).toBe('#b91c1c');
+    expect(badge('Hampir habis').style.color).toBe('#b45309');
+    expect(badge('Aman').style.color).toBe('#1e5b48');
+  });
+
+  it('renders the finance report above the stock report', async () => {
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /rincian keuangan/i })).toBeDefined();
+    });
+    const finance = screen.getByRole('heading', { name: /rincian keuangan/i });
+    const stock = screen.getByRole('heading', { name: /stok penutup per area/i });
+    expect(finance.compareDocumentPosition(stock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('sends the optional finance note with the draft and omits the key when blank', async () => {
