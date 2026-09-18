@@ -31,7 +31,8 @@ insert into public.roster_entries (
   outlet_id, work_date, shift_code, profile_id, expected_area, status,
   pay_treatment, override_reason, created_by, source
 )
-select c.outlet_id, c.work_date, c.shift_code, wa.profile_id, c.area_code, 'COMPLETED',
+select c.outlet_id, c.work_date, c.shift_code, wa.profile_id, c.area_code,
+       case when wa.status = 'COMPLETED' then 'COMPLETED' else 'SCHEDULED' end,
        'BASE', null, wa.profile_id, 'OPERASIONAL'
 from public.work_assignments wa
 join public.work_cycles c on c.id = wa.cycle_id
@@ -43,6 +44,19 @@ where c.outlet_id = '11111111-1111-1111-1111-111111111111'
     select 1 from public.roster_entries r
     where r.profile_id = wa.profile_id and r.work_date = c.work_date
   );
+
+-- 1b) Selaraskan status roster operasional dengan status assignment: shift yang
+--     masih berjalan tetap SCHEDULED, hanya assignment COMPLETED yang COMPLETED.
+update public.roster_entries r
+set status = case when wa.status = 'COMPLETED' then 'COMPLETED' else 'SCHEDULED' end,
+    version = r.version + 1,
+    updated_at = now()
+from public.work_assignments wa
+where wa.roster_entry_id = r.id
+  and r.outlet_id = '11111111-1111-1111-1111-111111111111'
+  and r.work_date >= '2026-09-17'
+  and r.source = 'OPERASIONAL'
+  and r.status is distinct from case when wa.status = 'COMPLETED' then 'COMPLETED' else 'SCHEDULED' end;
 
 -- 2) Tautkan assignment ke roster + matikan deviasi.
 update public.work_assignments wa

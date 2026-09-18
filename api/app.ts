@@ -273,6 +273,29 @@ function rpcErrorResponse(error: any) {
     return errorResponse(code, 'Catatan alasan wajib diisi jika lokasi GPS tidak terverifikasi.', 400);
   }
 
+  // Operators cannot act on a generic "payload invalid" message. Surface the
+  // domain failure (which item set, which category, which scale) so the floor
+  // staff knows what to fix without asking a manager.
+  const domainMessages: Record<string, string> = {
+    INCOMPLETE_ITEMS: 'Daftar item belum lengkap: server meminta tepat satu baris untuk setiap item yang diminta (tanpa item lain dan tanpa duplikat).',
+    VARIANCE_CATEGORY_REQUIRED: 'Ada item dengan selisih: pilih kategori alasan selisih untuk item tersebut.',
+    INVALID_VARIANCE_CATEGORY: 'Kategori alasan selisih tidak sesuai. "Stok Awal Baru" hanya untuk item yang belum punya referensi; item lain pakai kategori selisih biasa.',
+    INVALID_SCALE: 'Jumlah fisik tidak sesuai satuan item (satuan pcs/pack tidak menerima desimal).',
+    INVALID_REFERENCE: 'Referensi patokan item hilang atau negatif. Muat ulang halaman lalu tetapkan stok patokan.',
+    REFERENCE_NOT_FOUND: 'Patokan stok awal belum lengkap. Tetapkan stok patokan untuk item yang belum punya referensi, lalu konfirmasi ulang.',
+    BASELINE_NOT_REQUIRED: 'Stok patokan tidak diperlukan: semua item sudah punya referensi.',
+    BASELINE_REQUIRED: 'Stok patokan wajib diisi jumlah fisiknya, bukan nol otomatis.',
+    INVALID_LINES: 'Baris item tidak valid: jumlah fisik wajib angka dan tidak boleh negatif.',
+    OPENING_EXISTS: 'Stok awal sudah dikonfirmasi dan tidak dapat ditimpa.',
+    INVALID_CYCLE_STATE: 'Status cycle tidak sesuai untuk tindakan ini. Muat ulang halaman.',
+    VERSION_CONFLICT: 'Data sudah berubah sejak halaman dimuat. Muat ulang halaman lalu coba lagi.',
+    IDEMPOTENCY_CONFLICT: 'Perintah terkirim dua kali dengan isi berbeda. Muat ulang halaman lalu coba lagi.',
+    INVALID_ARGUMENT: 'Data yang dikirim belum lengkap.',
+  };
+  if (domainCode && domainMessages[domainCode]) {
+    return errorResponse(domainCode, domainMessages[domainCode], status);
+  }
+
   const publicMessage = status === 400
     ? 'Payload perintah tidak valid.'
     : status === 403

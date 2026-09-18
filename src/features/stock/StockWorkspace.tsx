@@ -507,9 +507,11 @@ export function StockWorkspace({
         (openingRecord.stock_opening_lines ?? []).map((line: any) => [line.item_id, Number(line.reference_qty)]),
       );
     }
-    if (openingReference?.state !== 'AVAILABLE') return new Map<string, number>();
+    // Keep the reference lines that DO exist even when the cycle still needs a
+    // physical baseline for new items. Emptying the map here made every item
+    // look "missing" and sent the whole catalog to the baseline RPC.
     return new Map(
-      openingReference.lines
+      (openingReference?.lines ?? [])
         .filter((line) => line.reference_qty !== null && Number.isFinite(Number(line.reference_qty)))
         .map((line) => [line.item_id, Number(line.reference_qty)]),
     );
@@ -1326,7 +1328,12 @@ export function StockWorkspace({
               </>
             ) : openingReference?.state === 'INITIALIZATION_REQUIRED' ? (
               <>
-                <strong>Referensi stok awal belum tersedia.</strong> Masukkan jumlah fisik eksplisit untuk setiap item yang belum memiliki referensi. Kolom kosong berarti belum dihitung, bukan nol.
+                <strong>
+                  {missingOpeningReferences.length > 0
+                    ? `Stok patokan belum lengkap: ${missingOpeningReferences.map((item) => item.name).join(', ')}.`
+                    : 'Referensi stok awal belum tersedia.'}
+                </strong>{' '}
+                Isi jumlah fisik item di atas, lalu tekan <strong>Tetapkan stok patokan</strong> di bawah agar patokan item tersebut terkunci. Kolom kosong berarti belum dihitung, bukan nol.
               </>
             ) : missingOpeningReferences.length > 0 ? (
               <strong>Stok patokan belum lengkap untuk {missingOpeningReferences.map((item) => item.name).join(', ')}. Konfirmasi diblokir.</strong>
