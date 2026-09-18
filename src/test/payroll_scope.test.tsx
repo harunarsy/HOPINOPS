@@ -9,6 +9,8 @@ vi.mock('../lib/api', () => ({
   api: {
     getDashboard: vi.fn(),
     getManagementStockReadiness: vi.fn(),
+    getStockHistory: vi.fn(),
+    getStockClosingDetail: vi.fn(),
     recordCyclePhysicalBaseline: vi.fn(),
     correctCyclePhysicalBaseline: vi.fn(),
     listRoster: vi.fn(),
@@ -16,6 +18,8 @@ vi.mock('../lib/api', () => ({
     listAttendanceExceptions: vi.fn(),
     listOvertime: vi.fn(),
     getPayrollRun: vi.fn(),
+    listPayrollCompensations: vi.fn(),
+    savePayrollCompensation: vi.fn(),
     previewPayroll: vi.fn(),
     reviewPayroll: vi.fn(),
     finalizePayroll: vi.fn(),
@@ -47,10 +51,12 @@ describe('ManagementView payroll period isolation', () => {
     vi.resetAllMocks();
     vi.mocked(api.getDashboard).mockResolvedValue({} as any);
     vi.mocked(api.getManagementStockReadiness).mockResolvedValue({ work_date: wibDateKey(), cycles: [] } as any);
-    vi.mocked(api.listRoster).mockResolvedValue([] as any);
+    vi.mocked(api.getStockHistory).mockResolvedValue({ from: '', to: '', rows: [] } as any);
+    vi.mocked(api.listRoster).mockResolvedValue({ roster: [], unplanned: [] } as any);
     vi.mocked(api.listUsers).mockResolvedValue([] as any);
     vi.mocked(api.listAttendanceExceptions).mockResolvedValue([] as any);
     vi.mocked(api.listOvertime).mockResolvedValue([] as any);
+    vi.mocked(api.listPayrollCompensations).mockResolvedValue({ policy: null, profiles: [] } as any);
   });
 
   function monthInput() {
@@ -91,10 +97,13 @@ describe('ManagementView payroll period isolation', () => {
 
   it('keeps the roster visible and disables schedule creation when the users list fails', async () => {
     const user = userEvent.setup();
-    vi.mocked(api.listRoster).mockResolvedValue([{
-      id: 'roster-1', work_date: wibDateKey(), shift_code: 'SIANG', expected_area: 'BAR',
-      pay_treatment: 'BASE', status: 'SCHEDULED', profiles: { display_name: 'Petugas Bar' },
-    }] as any);
+    vi.mocked(api.listRoster).mockResolvedValue({
+      roster: [{
+        id: 'roster-1', work_date: wibDateKey(), shift_code: 'SIANG', expected_area: 'BAR',
+        pay_treatment: 'BASE', status: 'SCHEDULED', source: 'MANUAL', profiles: { display_name: 'Petugas Bar' },
+      }],
+      unplanned: [],
+    } as any);
     vi.mocked(api.listUsers).mockRejectedValue(new Error('server error'));
 
     render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);

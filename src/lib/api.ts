@@ -163,8 +163,14 @@ export const api = {
 
   // Bootstrap & Settings
   bootstrap: () => request<any>('/api/app?action=bootstrap'),
-  getDashboard: (date?: string) => request<any>(`/api/app?action=dashboard.get${date ? `&date=${date}` : ''}`),
+  getDashboard: (date?: string, historyDays?: number) => request<any>(`/api/app?action=dashboard.get${date ? `&date=${date}` : ''}${historyDays ? `&history_days=${historyDays}` : ''}`),
   getManagementStockReadiness: (date?: string) => request<{ work_date: string; cycles: any[] }>(`/api/app?action=management.stock.readiness${date ? `&date=${encodeURIComponent(date)}` : ''}`),
+  getStockHistory: (from?: string, to?: string) => {
+    const validFrom = validIsoDate(from);
+    const validTo = validIsoDate(to);
+    return request<{ from: string; to: string; rows: any[] }>(`/api/app?action=management.stock.history${validFrom ? `&from=${encodeURIComponent(validFrom)}` : ''}${validTo ? `&to=${encodeURIComponent(validTo)}` : ''}`);
+  },
+  getStockClosingDetail: (cycle_id: string) => request<{ cycle: any; closing: any | null; lines: any[] }>(`/api/app?action=management.stock.closingDetail&cycle_id=${encodeURIComponent(cycle_id)}`),
   getInvestorReports: () => request<{ reports: any[] }>('/api/app?action=investor.reports').then(r => r.reports),
   getSettings: () => request<{ outlet_id: string; version: number; latitude?: number | null; longitude?: number | null; geofence_radius_m: number; max_accuracy_m: number; gps_sample_limit: number; gps_timeout_seconds: number; late_grace_minutes: number; overtime_threshold_minutes: number; raw_gps_retention_days: number; system_mode: 'PRODUCTION' | 'PILOT' | 'MAINTENANCE'; onboarding_version: number }>('/api/app?action=settings.get'),
   updateSettings: (expected_version: number, settings: { latitude?: number | null; longitude?: number | null; geofence_radius_m?: number; max_accuracy_m?: number; gps_sample_limit?: number; gps_timeout_seconds?: number; late_grace_minutes?: number; overtime_threshold_minutes?: number; raw_gps_retention_days?: number; system_mode?: 'PRODUCTION' | 'PILOT' | 'MAINTENANCE'; onboarding_version?: number }) =>
@@ -201,7 +207,7 @@ export const api = {
   // Roster & Swap
   listRoster: (month?: string) => {
     const validMonth = validIsoMonth(month);
-    return request<{ roster: any[] }>(`/api/app?action=roster.list${validMonth ? `&month=${encodeURIComponent(validMonth)}` : ''}`).then(r => r.roster);
+    return request<{ roster: any[]; unplanned?: any[] }>(`/api/app?action=roster.list${validMonth ? `&month=${encodeURIComponent(validMonth)}` : ''}`);
   },
   saveRoster: (entry: { work_date: string; shift_code: 'SIANG' | 'MALAM' | 'FULL'; profile_id: string; expected_area?: 'BAR' | 'KITCHEN' | null; pay_treatment?: 'BASE' | 'EXTRA' | 'MAKEUP'; override_reason?: string | null } & ({ id?: null; expected_version?: null } | { id: string; expected_version: number })) =>
     request<{ id: string; version: number }>('/api/app?action=roster.save', { method: 'POST', body: JSON.stringify(entry) }),
@@ -294,8 +300,11 @@ export const api = {
 
   // Payroll Lifecycle
   getPayrollRun: (period?: string) => request<{ run: any | null; entries: any[]; adjustments: any[] }>(`/api/app?action=payroll.get${period ? `&period=${period}` : ''}`),
+  listPayrollCompensations: () => request<{ policy: any | null; profiles: any[] }>('/api/app?action=payroll.compensation.list'),
+  savePayrollCompensation: (payload: { profile_id: string; expected_version: number | null; effective_from: string; monthly_base: number; daily_rate: number; hourly_rate: number }) =>
+    request<{ id: string; profile_id: string; version: number; monthly_base: number; daily_rate: number; hourly_rate: number; effective_from: string }>('/api/app?action=payroll.compensation.save', { method: 'POST', body: JSON.stringify(payload) }),
   previewPayroll: (period_month: string, expected_version?: number) =>
-    request<{ run_id: string; status: string; version: number; entry_count: number; blockers: any[] }>('/api/app?action=payroll.preview', { method: 'POST', body: JSON.stringify({ period_month, expected_version }) }),
+    request<{ run_id: string; status: string; version: number; entry_count: number; blockers: any[]; warnings: any[] }>('/api/app?action=payroll.preview', { method: 'POST', body: JSON.stringify({ period_month, expected_version }) }),
   adjustPayrollEntry: (entry_id: string, expected_entry_version: number, adjustment_type: string, amount: number, reason: string, idempotency_key: string) =>
     request<{ adjustment_id: string; entry_id: string; status: 'PENDING'; version: number; adjustment_type: string; amount: number; entry_version: number; idempotent_replay: boolean }>('/api/app?action=payroll.entry.adjust', { method: 'POST', body: JSON.stringify({ entry_id, expected_entry_version, adjustment_type, amount, reason, idempotency_key }) }),
   reviewPayrollAdjustment: (adjustment_id: string, expected_adjustment_version: number, expected_entry_version: number, status: 'APPROVED' | 'REJECTED', note: string, idempotency_key: string) =>

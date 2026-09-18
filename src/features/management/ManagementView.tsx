@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { api } from '../../lib/api';
-import { fmtRupiah, wibDate, wibDateKey } from '../../domain/rules';
+import { fmtRupiah, wibDate, wibDateKey, wibClock, wibDateTimeShort, wibDateShort } from '../../domain/rules';
 import { CatalogManager } from './CatalogManager';
 import { getUserFacingError } from '../../lib/user-facing-error';
 
@@ -12,7 +12,7 @@ type Decision = 'APPROVED' | 'REJECTED';
 type ManagementCache = {
   dashboard?: any;
   stock?: { work_date: string; cycles: any[] };
-  roster?: { entries: any[]; users: any[] };
+  roster?: { entries: any[]; unplanned?: any[]; users: any[] };
   exceptions?: { attendance: any[]; overtime: any[] };
   sessions?: Session[];
   users?: any[];
@@ -63,6 +63,34 @@ function proposedLabel(correction: any) {
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] as string));
+}
+
+function attendanceEventTime(attendance: any, eventType: 'CHECK_IN' | 'CHECK_OUT') {
+  const events = attendance?.attendance_events ?? [];
+  const event = events.find((entry: any) => entry.event_type === eventType);
+  return event?.server_occurred_at ?? event?.client_occurred_at ?? null;
+}
+
+function scheduleWindowLabel(attendance: any) {
+  if (!attendance?.scheduled_start_at && !attendance?.scheduled_end_at) return 'Tanpa jadwal';
+  return `${wibClock(attendance.scheduled_start_at)}–${wibClock(attendance.scheduled_end_at)}`;
+}
+
+function rosterSourceLabel(source?: string | null) {
+  if (source === 'OPERASIONAL') return 'Operasional';
+  if (source === 'MANUAL') return 'Manual';
+  return source ? source.replace(/_/g, ' ').toLowerCase() : 'Manual';
+}
+
+function realizationLabel(realization: any) {
+  if (!realization) return '—';
+  const checkIn = realization.check_in_at ? wibClock(realization.check_in_at) : '—';
+  const checkOut = realization.check_out_at ? wibClock(realization.check_out_at) : '—';
+  return `${checkIn} – ${checkOut}`;
 }
 
 function getPayrollAdjustments(entry: any) {
@@ -154,6 +182,13 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
   const [stockCounts, setStockCounts] = useState<Record<string, string>>({});
   const [stockReason, setStockReason] = useState('');
   const [stockFormError, setStockFormError] = useState('');
+  const [stockHistory, setStockHistory] = useState<{ from: string; to: string; rows: any[] } | null>(null);
+  const [stockHistoryFromDraft, setStockHistoryFromDraft] = useState(`${wibDateKey().slice(0, 8)}01`);
+  const [stockHistoryToDraft, setStockHistoryToDraft] = useState(wibDateKey());
+  const [stockHistoryRange, setStockHistoryRange] = useState({ from: `${wibDateKey().slice(0, 8)}01`, to: wibDateKey() });
+  const [stockHistoryError, setStockHistoryError] = useState('');
+  const [stockHistoryDetail, setStockHistoryDetail] = useState<Record<string, any>>({});
+  const [stockHistoryOpen, setStockHistoryOpen] = useState<string[]>([]);
   const [investorReports, setInvestorReports] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -161,6 +196,7 @@ export function ManagementView({ user, onLogout, onEnterOperatorMode, onOpenRepo
 
   // Roster, attendance, overtime, and settings state
   const [roster, setRoster] = useState<any[]>([]);
+  const [rosterUnplanned, setRosterUnplanned] = useState<any[]>([]);
   const [rosterUsersError, setRosterUsersError] = useState('');
 const defaultRosterMonth = wibDateKey().slice(0, 7);
 const defaultReviewFrom = `${wibDateKey().slice(0, 8)}01`;
@@ -206,6 +242,15 @@ const [rosterFilterError, setRosterFilterError] = useState('');
   const exportKeyRef = useRef(new Map<string, string>());
   const [payrollAdjustments, setPayrollAdjustments] = useState<any[]>([]);
   const [payrollLoading, setPayrollLoading] = useState(false);
+  const [payrollWarnings, setPayrollWarnings] = useState<any[]>([]);
+  const [payrollCompensations, setPayrollCompensations] = useState<{ policy: any | null; profiles: any[] } | null>(null);
+  const [compensationTarget, setCompensationTarget] = useState<any | null>(null);
+  const [compensationMonthlyBase, setCompensationMonthlyBase] = useState('');
+  const [compensationDailyRate, setCompensationDailyRate] = useState('');
+  const [compensationHourlyRate, setCompensationHourlyRate] = useState('');
+  const [compensationEffectiveFrom, setCompensationEffectiveFrom] = useState(`${wibDateKey().slice(0, 8)}01`);
+  const [compensationError, setCompensationError] = useState('');
+  const [payrollExpanded, setPayrollExpanded] = useState<string[]>([]);
   const [paymentRef, setPaymentRef] = useState('');
   const [paymentReason, setPaymentReason] = useState('');
   const [voidReason, setVoidReason] = useState('');
@@ -357,6 +402,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       if (tab === 'roster' && cached.roster) {
         setRosterUsersError('');
         setRoster(cached.roster.entries);
+        setRosterUnplanned(cached.roster.unplanned ?? []);
         setUsersList(cached.roster.users);
         setRosterProfileId((current) => current || cached.roster!.users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
       }
@@ -407,10 +453,14 @@ const [rosterFilterError, setRosterFilterError] = useState('');
           throw new Error('Jadwal belum dapat dimuat. Coba lagi.');
         }
 
-        setRoster(rosterResult.value);
+        const rosterPayload: any = rosterResult.value;
+        const rosterEntries = Array.isArray(rosterPayload?.roster) ? rosterPayload.roster : (Array.isArray(rosterPayload) ? rosterPayload : []);
+        const rosterUnplannedEntries = Array.isArray(rosterPayload?.unplanned) ? rosterPayload.unplanned : [];
+        setRoster(rosterEntries);
+        setRosterUnplanned(rosterUnplannedEntries);
         if (usersResult.status === 'fulfilled') {
           const users = usersResult.value;
-          cacheRef.current.set(cacheKey, { roster: { entries: rosterResult.value, users } });
+          cacheRef.current.set(cacheKey, { roster: { entries: rosterEntries, unplanned: rosterUnplannedEntries, users } });
           setRosterUsersError('');
           setUsersList(users);
           setRosterProfileId((current) => current || users.find((entry: any) => entry.role !== 'INVESTOR')?.id || '');
@@ -430,6 +480,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
         setOvertime(claims);
       } else if (tab === 'payroll') {
         await loadPayroll(payrollPeriod);
+        await loadCompensations();
       } else if (tab === 'users') {
         const users = await api.listUsers();
         if (loadRequestRef.current !== requestId) return;
@@ -448,6 +499,26 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       if (loadRequestRef.current === requestId) setLoading(false);
     }
   }, [isInvestor, payrollPeriod, reviewRangeApplied, rosterMonthApplied, tab]);
+
+  useEffect(() => {
+    if (tab !== 'stock' || isInvestor) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const history = await api.getStockHistory(stockHistoryRange.from, stockHistoryRange.to);
+        if (!cancelled) {
+          setStockHistory(history);
+          setStockHistoryError('');
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setStockHistory(null);
+          setStockHistoryError(messageFrom(error, 'Riwayat stok belum dapat dimuat.'));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, isInvestor, stockHistoryRange]);
 
   const loadPayroll = async (period: string) => {
     const requestId = payrollRequestRef.current + 1;
@@ -473,6 +544,145 @@ const [rosterFilterError, setRosterFilterError] = useState('');
     }
   };
 
+  const loadCompensations = async () => {
+    try {
+      const data = await api.listPayrollCompensations();
+      setPayrollCompensations(data);
+    } catch {
+      setPayrollCompensations(null);
+    }
+  };
+
+  const openCompensationForm = (profile: any) => {
+    setCompensationTarget(profile);
+    setCompensationMonthlyBase(profile.compensation ? String(profile.compensation.monthly_base) : '');
+    setCompensationDailyRate(profile.compensation ? String(profile.compensation.daily_rate) : '0');
+    setCompensationHourlyRate(profile.compensation ? String(profile.compensation.hourly_rate) : '0');
+    setCompensationEffectiveFrom(profile.compensation?.effective_from ?? `${payrollPeriod}-01`);
+    setCompensationError('');
+  };
+
+  const submitCompensation = async () => {
+    if (!compensationTarget) return;
+    const monthly = Number(compensationMonthlyBase);
+    const daily = Number(compensationDailyRate || '0');
+    const hourly = Number(compensationHourlyRate || '0');
+    if (!Number.isInteger(monthly) || monthly < 0 || !Number.isInteger(daily) || daily < 0 || !Number.isInteger(hourly) || hourly < 0) {
+      setCompensationError('Nominal wajib angka bulat non-negatif (contoh: 3000000).');
+      return;
+    }
+    if (!isValidIsoDate(compensationEffectiveFrom)) {
+      setCompensationError('Tanggal efektif wajib valid.');
+      return;
+    }
+    setActionLoading('compensation');
+    try {
+      await api.savePayrollCompensation({
+        profile_id: compensationTarget.profile_id,
+        expected_version: compensationTarget.compensation?.version ?? null,
+        effective_from: compensationEffectiveFrom,
+        monthly_base: monthly,
+        daily_rate: daily,
+        hourly_rate: hourly,
+      });
+      showToast(`Kompensasi ${compensationTarget.display_name} tersimpan.`);
+      setCompensationTarget(null);
+      await loadCompensations();
+    } catch (error: any) {
+      setCompensationError(messageFrom(error, 'Kompensasi gagal disimpan.'));
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const applyStockHistoryRange = () => {
+    if (!isValidIsoDate(stockHistoryFromDraft) || !isValidIsoDate(stockHistoryToDraft)) {
+      setStockHistoryError('Rentang tanggal riwayat wajib valid.');
+      return;
+    }
+    if (stockHistoryFromDraft > stockHistoryToDraft) {
+      setStockHistoryError('Tanggal awal harus sebelum tanggal akhir.');
+      return;
+    }
+    setStockHistoryError('');
+    setStockHistoryRange({ from: stockHistoryFromDraft, to: stockHistoryToDraft });
+  };
+
+  const toggleStockHistoryDetail = async (cycleId: string) => {
+    setStockHistoryOpen((current) => current.includes(cycleId) ? current.filter((id) => id !== cycleId) : [...current, cycleId]);
+    if (stockHistoryDetail[cycleId]) return;
+    try {
+      const detail = await api.getStockClosingDetail(cycleId);
+      setStockHistoryDetail((current) => ({ ...current, [cycleId]: detail }));
+    } catch (error: any) {
+      setStockHistoryDetail((current) => ({ ...current, [cycleId]: { error: messageFrom(error, 'Rincian closing gagal dimuat.') } }));
+    }
+  };
+
+  const printStockClosing = async (cycleId: string) => {
+    let detail = stockHistoryDetail[cycleId];
+    if (!detail || detail.error) {
+      try {
+        detail = await api.getStockClosingDetail(cycleId);
+        setStockHistoryDetail((current) => ({ ...current, [cycleId]: detail }));
+      } catch (error: any) {
+        showError(messageFrom(error, 'Rincian closing gagal dimuat untuk ekspor PDF.'));
+        return;
+      }
+    }
+    const cycle = detail.cycle ?? {};
+    const closing = detail.closing ?? {};
+    const lines: any[] = detail.lines ?? [];
+    const rows = lines.map((line, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeHtml(line.item_name ?? line.item_id)}</td>
+        <td class="num">${line.opening_qty}</td>
+        <td class="num">${line.incoming_qty}</td>
+        <td class="num">${line.outgoing_qty}</td>
+        <td class="num">${line.system_qty}</td>
+        <td class="num">${line.counted_qty}</td>
+        <td class="num ${Number(line.variance_qty) < 0 ? 'neg' : Number(line.variance_qty) > 0 ? 'pos' : ''}">${line.variance_qty}</td>
+        <td>${escapeHtml(line.reason_code ?? '')}</td>
+        <td>${escapeHtml(line.notes ?? '')}</td>
+      </tr>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Riwayat Stok ${escapeHtml(cycle.work_date ?? '')}</title>
+      <style>
+        body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 24px; color: #111827; }
+        h1 { font-size: 18px; margin: 0 0 6px; }
+        .meta { font-size: 12px; color: #374151; margin-bottom: 16px; line-height: 1.7; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { border: 1px solid #d1d5db; padding: 5px 6px; text-align: left; }
+        th { background: #f3f4f6; }
+        .num { text-align: right; }
+        .neg { color: #b91c1c; }
+        .pos { color: #047857; }
+        .sign { margin-top: 40px; display: flex; justify-content: space-between; font-size: 12px; }
+        .sign div { width: 40%; border-top: 1px solid #111827; padding-top: 6px; text-align: center; }
+      </style></head><body>
+      <h1>Laporan Riwayat Stok — ${cycle.area_code === 'BAR' ? 'Bar' : 'Kitchen'}</h1>
+      <div class="meta">
+        Tanggal: <b>${escapeHtml(cycle.work_date ?? '—')}</b> · Shift: <b>${escapeHtml(taskLabel(cycle.shift_code))}</b> · Status cycle: <b>${escapeHtml(taskLabel(cycle.status))}</b><br/>
+        Closing: <b>${closing.id ? `${escapeHtml(taskLabel(closing.status))} oleh ${escapeHtml(closing.confirmed_by_name ?? '—')} pada ${escapeHtml(closing.confirmed_at ? formatDateTime(closing.confirmed_at) : '—')}` : 'Belum closing'}</b><br/>
+        Diekspor: ${escapeHtml(formatDateTime(new Date().toISOString()))} WIB
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>Item</th><th>Patokan</th><th>Masuk</th><th>Keluar</th><th>Sistem</th><th>Hitung</th><th>Selisih</th><th>Alasan</th><th>Catatan</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="10">Tidak ada baris.</td></tr>'}</tbody>
+      </table>
+      <div class="sign"><div>Disiapkan</div><div>Disetujui</div></div>
+      </body></html>`;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showError('Popup diblokir browser. Izinkan popup untuk ekspor PDF.');
+      return;
+    }
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
   const handlePreviewPayroll = async () => {
     if (payrollLoadedPeriod !== payrollPeriod) return showError('Periode payroll masih dimuat. Tunggu sampai data periode terbaru tampil.');
     const scopePeriod = payrollPeriod;
@@ -480,6 +690,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
     setPayrollLoading(true);
     try {
       const res = await api.previewPayroll(scopePeriod, payrollRun?.version);
+      setPayrollWarnings(res.warnings ?? res.blockers ?? []);
       showToast(`Draft Payroll berhasil dihitung (${res.entry_count} karyawan).`);
       await reloadPayrollIfCurrent(scopePeriod, scopeRequest);
     } catch (e: any) {
@@ -1099,6 +1310,58 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 </div>
               )}
             </div>
+            <div className="section-card">
+              <div className="section-heading" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <p className="eyebrow">RIWAYAT OPERASIONAL</p>
+                  <h2>7 Hari Terakhir</h2>
+                  <p className="muted" style={{ marginTop: '7px' }}>Rekap live dari absensi &amp; closing: siapa masuk, jam kerja, dan status tiap area.</p>
+                </div>
+                <button type="button" className="outline-button" onClick={() => void loadData(true)} disabled={loading}>Muat ulang</button>
+              </div>
+              {(() => {
+                const history = dashboardData?.history;
+                if (!history) return <p className="muted" style={{ padding: '16px 0 0' }}>Riwayat belum tersedia.</p>;
+                const dates: string[] = [];
+                for (const cycle of history.cycles ?? []) if (cycle.work_date && !dates.includes(cycle.work_date)) dates.push(cycle.work_date);
+                for (const row of history.attendance ?? []) if (row.work_date && !dates.includes(row.work_date)) dates.push(row.work_date);
+                for (const row of history.reports ?? []) if (row.work_date && !dates.includes(row.work_date)) dates.push(row.work_date);
+                dates.sort((a, b) => (a < b ? 1 : -1));
+                if (dates.length === 0) return <p className="muted" style={{ padding: '16px 0 0' }}>Belum ada aktivitas operasional pada 7 hari terakhir.</p>;
+                return <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
+                  {dates.map((date) => {
+                    const dayCycles = (history.cycles ?? []).filter((cycle: any) => cycle.work_date === date);
+                    const dayAttendance = (history.attendance ?? []).filter((row: any) => row.work_date === date);
+                    const dayReport = (history.reports ?? []).find((row: any) => row.work_date === date);
+                    return <div key={date} style={{ padding: '12px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <strong>{wibDateShort(date)}</strong>
+                        <span className={`tag ${dayReport && ['SUBMITTED', 'APPROVED', 'FINALIZED'].includes(dayReport.status) ? 'good' : dayReport ? 'warn' : 'neutral'}`} style={{ fontSize: '11px' }}>
+                          Laporan: {dayReport ? taskLabel(dayReport.status) : 'Belum ada'}
+                        </span>
+                      </div>
+                      {dayCycles.length > 0 && <div style={{ display: 'grid', gap: '4px', marginTop: '8px' }}>
+                        {dayCycles.map((cycle: any) => {
+                          const primary = (cycle.work_assignments ?? []).find((assignment: any) => assignment.duty_role === 'PRIMARY');
+                          return <small key={cycle.id} style={{ color: '#476058' }}>
+                            <b>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</b> — {primary?.profiles?.display_name ?? 'Belum ada PJ'} · {taskLabel(cycle.status)}
+                          </small>;
+                        })}
+                      </div>}
+                      {dayAttendance.length > 0 && <div style={{ display: 'grid', gap: '4px', marginTop: '8px' }}>
+                        {dayAttendance.map((row: any) => {
+                          const checkIn = (row.attendance_events ?? []).find((event: any) => event.event_type === 'CHECK_IN');
+                          const checkOut = (row.attendance_events ?? []).find((event: any) => event.event_type === 'CHECK_OUT');
+                          return <small key={row.id} style={{ color: '#476058' }}>
+                            {row.profiles?.display_name ?? 'Petugas'}: masuk {wibClock(checkIn?.server_occurred_at)} · keluar {wibClock(checkOut?.server_occurred_at)} · {taskLabel(row.status)}
+                          </small>;
+                        })}
+                      </div>}
+                    </div>;
+                  })}
+                </div>;
+              })()}
+            </div>
           </div>
         )}
 
@@ -1130,6 +1393,80 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 </div>
               )}
             </div>
+
+            <div className="section-card">
+              <div className="section-heading" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <p className="eyebrow">RIWAYAT STOK</p>
+                  <h2>Pergerakan per Tanggal</h2>
+                  <p className="muted" style={{ marginTop: '7px' }}>Patokan → masuk → keluar → hitung fisik → selisih, lengkap dengan ekspor PDF.</p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'end', flexWrap: 'wrap' }}>
+                  <label style={labelStyle}>Dari<input type="date" value={stockHistoryFromDraft} onChange={(event) => { setStockHistoryFromDraft(event.target.value); setStockHistoryError(''); }} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <label style={labelStyle}>Sampai<input type="date" value={stockHistoryToDraft} onChange={(event) => { setStockHistoryToDraft(event.target.value); setStockHistoryError(''); }} style={{ ...inputStyle, marginTop: '4px' }} /></label>
+                  <button type="button" className="outline-button" onClick={applyStockHistoryRange} disabled={loading}>Terapkan</button>
+                </div>
+              </div>
+              {stockHistoryError && <p role="alert" style={{ color: '#991b1b', margin: '16px 0 0' }}>{stockHistoryError}</p>}
+              {!stockHistoryError && (stockHistory?.rows ?? []).length === 0 ? (
+                <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Belum ada riwayat stok pada rentang ini.</p>
+              ) : (
+                <div className="table-responsive" style={{ marginTop: '16px' }}>
+                  <table className="management-table stock-history-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
+                      <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>PJ Utama</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Closing</th><th style={{ padding: '8px', textAlign: 'right' }}>Item</th><th style={{ padding: '8px', textAlign: 'right' }}>Selisih</th><th style={{ padding: '8px' }}>Aksi</th>
+                    </tr></thead>
+                    <tbody>{(stockHistory?.rows ?? []).map((row: any) => {
+                      const detail = stockHistoryDetail[row.cycle_id];
+                      const open = stockHistoryOpen.includes(row.cycle_id);
+                      return [
+                        <tr key={row.cycle_id} style={{ borderBottom: '1px solid #eef3f0', verticalAlign: 'top' }}>
+                          <td style={{ padding: '8px' }}>{row.work_date}</td>
+                          <td style={{ padding: '8px', fontWeight: 600 }}>{taskLabel(row.area_code)}</td>
+                          <td style={{ padding: '8px' }}>{taskLabel(row.shift_code)}</td>
+                          <td style={{ padding: '8px' }}>{row.primary_name ?? '—'}</td>
+                          <td style={{ padding: '8px' }}><span className={`tag ${row.cycle_status === 'COMPLETED' ? 'good' : row.cycle_status === 'CLOSING_READY' ? 'warn' : 'neutral'}`}>{taskLabel(row.cycle_status)}</span></td>
+                          <td style={{ padding: '8px' }}>{row.closing_id ? <><strong>{taskLabel(row.closing_status)}</strong><br /><span className="muted">{row.confirmed_by_name ?? '—'} · {row.confirmed_at ? wibDateTimeShort(row.confirmed_at) : '—'}</span></> : <span className="muted">Belum closing</span>}</td>
+                          <td style={{ padding: '8px', textAlign: 'right' }}>{row.line_count}/{row.total_items}</td>
+                          <td style={{ padding: '8px', textAlign: 'right', color: Number(row.variance_count) > 0 ? '#b45309' : undefined }}>{row.variance_count}</td>
+                          <td style={{ padding: '8px' }}>
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              <button type="button" className="outline-button" onClick={() => void toggleStockHistoryDetail(row.cycle_id)} style={{ padding: '5px 8px', fontSize: '11px' }}>{open ? 'Tutup' : 'Rincian'}</button>
+                              {row.closing_id && <button type="button" className="outline-button" onClick={() => void printStockClosing(row.cycle_id)} style={{ padding: '5px 8px', fontSize: '11px' }}>Ekspor PDF</button>}
+                            </div>
+                          </td>
+                        </tr>,
+                        open ? <tr key={`${row.cycle_id}-detail`} style={{ borderBottom: '1px solid #eef3f0', background: '#f8faf9' }}>
+                          <td colSpan={9} style={{ padding: '10px 12px' }}>
+                            {!detail ? <span className="muted">Memuat rincian…</span> : detail.error ? <span style={{ color: '#991b1b' }}>{detail.error}</span> : (
+                              <div className="table-responsive">
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                  <thead><tr style={{ color: '#476058', borderBottom: '1px solid #cddcd4' }}>
+                                    <th style={{ padding: '6px' }}>Item</th><th style={{ padding: '6px', textAlign: 'right' }}>Patokan</th><th style={{ padding: '6px', textAlign: 'right' }}>Masuk</th><th style={{ padding: '6px', textAlign: 'right' }}>Keluar</th><th style={{ padding: '6px', textAlign: 'right' }}>Sistem</th><th style={{ padding: '6px', textAlign: 'right' }}>Hitung</th><th style={{ padding: '6px', textAlign: 'right' }}>Selisih</th><th style={{ padding: '6px' }}>Alasan / catatan</th>
+                                  </tr></thead>
+                                  <tbody>{(detail.lines ?? []).map((line: any) => (
+                                    <tr key={line.item_id} style={{ borderBottom: '1px solid #eef3f0' }}>
+                                      <td style={{ padding: '6px', fontWeight: 600 }}>{line.item_name ?? line.item_id} <span className="muted">({line.unit_code})</span></td>
+                                      <td style={{ padding: '6px', textAlign: 'right' }}>{line.opening_qty}</td>
+                                      <td style={{ padding: '6px', textAlign: 'right' }}>{line.incoming_qty}</td>
+                                      <td style={{ padding: '6px', textAlign: 'right' }}>{line.outgoing_qty}</td>
+                                      <td style={{ padding: '6px', textAlign: 'right' }}>{line.system_qty}</td>
+                                      <td style={{ padding: '6px', textAlign: 'right' }}>{line.counted_qty}</td>
+                                      <td style={{ padding: '6px', textAlign: 'right', fontWeight: 700, color: Number(line.variance_qty) < 0 ? '#b91c1c' : Number(line.variance_qty) > 0 ? '#047857' : undefined }}>{line.variance_qty}</td>
+                                      <td style={{ padding: '6px' }}>{line.reason_code ? taskLabel(line.reason_code) : '—'}{line.notes ? ` · ${line.notes}` : ''}</td>
+                                    </tr>
+                                  ))}</tbody>
+                                </table>
+                              </div>
+                            )}
+                          </td>
+                        </tr> : null,
+                      ];
+                    })}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1158,7 +1495,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 <div className="table-responsive" style={{ marginTop: '16px' }}>
                   <table className="management-table roster-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
-                      <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th>
+                      <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Perlakuan upah</th><th style={{ padding: '8px' }}>Sumber</th><th style={{ padding: '8px' }}>Realisasi (masuk–keluar)</th><th style={{ padding: '8px' }}>Status</th><th style={{ padding: '8px' }}>Aksi</th>
                     </tr></thead>
                     <tbody>{roster.map((entry) => (
                       <tr key={entry.id} style={{ borderBottom: '1px solid #eef3f0' }}>
@@ -1167,6 +1504,8 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                         <td style={{ padding: '8px' }}>{taskLabel(entry.shift_code)}</td>
                         <td style={{ padding: '8px' }}>{entry.expected_area ? taskLabel(entry.expected_area) : 'Fleksibel'}</td>
                         <td style={{ padding: '8px' }}>{taskLabel(entry.pay_treatment)}</td>
+                        <td style={{ padding: '8px' }}><span className={`tag ${entry.source === 'OPERASIONAL' ? 'good' : 'neutral'}`}>{rosterSourceLabel(entry.source)}</span></td>
+                        <td style={{ padding: '8px' }}>{entry.realization ? <>{realizationLabel(entry.realization)}<br /><span className="muted">{taskLabel(entry.realization.attendance_status)}</span></> : <span className="muted">Belum ada absensi</span>}</td>
                         <td style={{ padding: '8px' }}><span className={`tag ${entry.status === 'COMPLETED' ? 'good' : 'neutral'}`}>{taskLabel(entry.status)}</span></td>
                         <td style={{ padding: '8px' }}>
                           {entry.status === 'SCHEDULED' && (user.role === 'OWNER' || user.role === 'SUPERVISOR') ? (
@@ -1179,6 +1518,30 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                       </tr>
                     ))}</tbody>
                   </table>
+                </div>
+              )}
+
+              {rosterUnplanned.length > 0 && (
+                <div style={{ marginTop: '24px' }}>
+                  <p className="eyebrow">AKTUAL TANPA JADWAL</p>
+                  <p className="muted" style={{ margin: '7px 0 0' }}>Shift berikut tercatat langsung dari operasional (claim/check-in) dan belum punya baris jadwal pada bulan ini.</p>
+                  <div className="table-responsive" style={{ marginTop: '12px' }}>
+                    <table className="management-table roster-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                      <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
+                        <th style={{ padding: '8px' }}>Tanggal</th><th style={{ padding: '8px' }}>Petugas</th><th style={{ padding: '8px' }}>Shift</th><th style={{ padding: '8px' }}>Area</th><th style={{ padding: '8px' }}>Status operasional</th><th style={{ padding: '8px' }}>Realisasi (masuk–keluar)</th>
+                      </tr></thead>
+                      <tbody>{rosterUnplanned.map((row) => (
+                        <tr key={row.assignment_id} style={{ borderBottom: '1px solid #eef3f0' }}>
+                          <td style={{ padding: '8px' }}>{row.work_date}</td>
+                          <td style={{ padding: '8px', fontWeight: 600 }}>{row.profiles?.display_name ?? row.profiles?.username ?? 'Pengguna'}</td>
+                          <td style={{ padding: '8px' }}>{taskLabel(row.shift_code)}</td>
+                          <td style={{ padding: '8px' }}>{taskLabel(row.area_code)}</td>
+                          <td style={{ padding: '8px' }}><span className={`tag ${row.assignment_status === 'COMPLETED' ? 'good' : 'neutral'}`}>{taskLabel(row.assignment_status)}</span>{row.schedule_deviation ? <span className="muted"> · di luar jadwal</span> : null}</td>
+                          <td style={{ padding: '8px' }}>{row.realization ? <>{realizationLabel(row.realization)}<br /><span className="muted">{taskLabel(row.realization.attendance_status)}</span></> : <span className="muted">Belum ada absensi</span>}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -1220,12 +1583,17 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada exception kehadiran pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
                 <table className="management-table attendance-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
+                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Jadwal</th><th style={{ padding: '8px' }}>Masuk / Keluar</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{attendanceExceptions.map((attendance) => {
                     const pending = (attendance.attendance_corrections ?? []).filter((correction: any) => correction.status === 'PENDING');
                     return (
                       <tr key={attendance.id} style={{ borderBottom: '1px solid #eef3f0', verticalAlign: 'top' }}>
                         <td style={{ padding: '8px' }}><strong>{attendance.profiles?.display_name ?? 'Pengguna'}</strong><br /><span className="muted">{attendance.work_date} · {taskLabel(attendance.status)}</span></td>
+                        <td style={{ padding: '8px' }}>{scheduleWindowLabel(attendance)}<br /><span className="muted">WIB</span></td>
+                        <td style={{ padding: '8px' }}>
+                          <span style={{ display: 'block' }}>Masuk: <b>{wibClock(attendanceEventTime(attendance, 'CHECK_IN'))}</b></span>
+                          <span style={{ display: 'block' }}>Keluar: <b>{wibClock(attendanceEventTime(attendance, 'CHECK_OUT'))}</b></span>
+                        </td>
                         <td style={{ padding: '8px' }}>{taskLabel(attendance.lateness_status)}<br /><span className="muted">{taskLabel(attendance.exception_status)}</span></td>
                         <td style={{ padding: '8px' }}>{pending.length ? pending.map((correction: any) => <div key={correction.id}><strong>{taskLabel(correction.correction_type)}:</strong> {proposedLabel(correction)}</div>) : 'Belum ada permintaan koreksi'}</td>
                         <td style={{ padding: '8px', color: '#476058' }}>{pending.map((correction: any) => <div key={correction.id}>{correction.reason}</div>)}</td>
@@ -1412,6 +1780,18 @@ const [rosterFilterError, setRosterFilterError] = useState('');
               )}
             </div>
 
+            {payrollWarnings.length > 0 && (
+              <div style={{ margin: '12px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px' }}>
+                <strong style={{ fontSize: '13px', color: '#92400e' }}>Draft sementara — {payrollWarnings.length} catatan belum selesai</strong>
+                <p className="muted" style={{ margin: '6px 0 0', fontSize: '12px' }}>Draft tetap dihitung dari data operasional; review &amp; finalisasi menunggu catatan berikut selesai:</p>
+                <ul style={{ margin: '8px 0 0', paddingLeft: '18px', fontSize: '12px', color: '#92400e' }}>
+                  {payrollWarnings.map((warning: any, index: number) => (
+                    <li key={`${warning.code ?? 'warning'}-${index}`}>{warning.message ?? warning.code}{warning.count ? ` (${warning.count})` : ''}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Entries Table */}
             {payrollEntries.length > 0 ? (
               <div className="table-responsive" style={{ marginTop: '16px' }}>
@@ -1420,6 +1800,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                     <tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
                       <th style={{ padding: '8px' }}>Karyawan</th>
                       <th style={{ padding: '8px' }}>Jabatan</th>
+                      <th style={{ padding: '8px' }}>Kehadiran</th>
                       <th style={{ padding: '8px', textAlign: 'right' }}>Gaji Pokok</th>
                       <th style={{ padding: '8px', textAlign: 'right' }}>Lembur</th>
                       <th style={{ padding: '8px', textAlign: 'right' }}>Potongan</th>
@@ -1457,6 +1838,27 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                           </div>}
                         </td>
                         <td style={{ padding: '8px', color: '#476058' }}>{e.profiles?.job_title || 'STAFF'}</td>
+                        <td style={{ padding: '8px' }}>
+                          {(() => {
+                            const summary = e.attendance_summary ?? {};
+                            const shifts = Array.isArray(summary.shifts) ? summary.shifts : [];
+                            const expanded = payrollExpanded.includes(e.id);
+                            return <>
+                              <span>{summary.worked_days ?? 0} hari · {summary.worked_hours ?? 0} jam</span>
+                              {shifts.length > 0 && <>
+                                <br />
+                                <button type="button" className="outline-button" onClick={() => setPayrollExpanded((current) => expanded ? current.filter((id) => id !== e.id) : [...current, e.id])} style={{ padding: '4px 7px', fontSize: '10px', marginTop: '4px' }}>{expanded ? 'Tutup shift' : `Lihat ${shifts.length} shift`}</button>
+                              </>}
+                              {expanded && <div style={{ display: 'grid', gap: '4px', marginTop: '6px', minWidth: '210px' }}>
+                                {shifts.map((shift: any, index: number) => (
+                                  <span key={`${shift.work_date}-${index}`} className="muted" style={{ fontSize: '11px' }}>
+                                    {shift.work_date} · {taskLabel(shift.shift_code)} {taskLabel(shift.area_code)} · {wibClock(shift.check_in_at)}–{wibClock(shift.check_out_at)}
+                                  </span>
+                                ))}
+                              </div>}
+                            </>;
+                          })()}
+                        </td>
                         <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.base_amount)}</td>
                         <td style={{ padding: '8px', textAlign: 'right' }}>{fmtRupiah(e.approved_overtime_amount)}</td>
                         <td style={{ padding: '8px', textAlign: 'right', color: Number(e.absence_deduction) > 0 ? '#dc2626' : undefined }}>
@@ -1485,6 +1887,38 @@ const [rosterFilterError, setRosterFilterError] = useState('');
             )}
 
             {payrollLoading && <p role="status" className="muted" style={{ padding: '12px', textAlign: 'center' }}>Memproses payroll...</p>}
+
+            <div style={{ marginTop: '20px', padding: '16px', background: '#f8faf9', borderRadius: '8px', border: '1px solid #e0ece6' }}>
+              <div className="section-heading" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <p className="eyebrow">KOMPENSASI KARYAWAN</p>
+                  <h2 style={{ fontSize: '16px' }}>Gaji Pokok &amp; Rate</h2>
+                  <p className="muted" style={{ marginTop: '6px', fontSize: '12px' }}>Payroll menarik shift &amp; jam masuk dari Review Kehadiran; nominal dasar diatur di sini.</p>
+                </div>
+              </div>
+              {!payrollCompensations || (payrollCompensations.profiles ?? []).length === 0 ? (
+                <p className="muted" style={{ margin: '12px 0 0' }}>Belum ada staff operasional aktif untuk diatur kompensasinya.</p>
+              ) : (
+                <div className="table-responsive" style={{ marginTop: '12px' }}>
+                  <table className="management-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}>
+                      <th style={{ padding: '8px' }}>Karyawan</th><th style={{ padding: '8px' }}>Jabatan</th><th style={{ padding: '8px', textAlign: 'right' }}>Gaji Pokok / bulan</th><th style={{ padding: '8px', textAlign: 'right' }}>Rate harian</th><th style={{ padding: '8px', textAlign: 'right' }}>Rate lembur / jam</th><th style={{ padding: '8px' }}>Efektif</th><th style={{ padding: '8px' }}>Aksi</th>
+                    </tr></thead>
+                    <tbody>{(payrollCompensations.profiles ?? []).map((profile: any) => (
+                      <tr key={profile.profile_id} style={{ borderBottom: '1px solid #eef3f0' }}>
+                        <td style={{ padding: '8px', fontWeight: 600 }}>{profile.display_name}</td>
+                        <td style={{ padding: '8px', color: '#476058' }}>{profile.job_title || taskLabel(profile.role)}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{profile.compensation ? fmtRupiah(profile.compensation.monthly_base) : <span className="muted">Belum diatur</span>}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{profile.compensation ? fmtRupiah(profile.compensation.daily_rate) : '—'}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{profile.compensation ? fmtRupiah(profile.compensation.hourly_rate) : '—'}</td>
+                        <td style={{ padding: '8px' }}>{profile.compensation?.effective_from ?? '—'}</td>
+                        <td style={{ padding: '8px' }}><button type="button" className="outline-button" onClick={() => openCompensationForm(profile)} style={{ padding: '5px 8px', fontSize: '11px' }}>{profile.compensation ? 'Ubah' : 'Atur'}</button></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
 
             {/* Modal Mark Paid */}
             {payModal && (
@@ -1540,6 +1974,30 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                       {payrollLoading ? 'Membatalkan...' : 'Batalkan dan Buat Draft Pengganti'}
                     </button>
                   </div>
+              </Dialog>
+            )}
+
+            {/* Modal Kompensasi */}
+            {compensationTarget && (
+              <Dialog titleId="compensation-title" title={`Kompensasi ${compensationTarget.display_name}`} onClose={() => setCompensationTarget(null)}>
+                <p className="muted" style={{ fontSize: '12px', margin: '0 0 16px' }}>
+                  Gaji pokok bulanan dipakai sebagai dasar payroll; rate lembur per jam dipakai untuk overtime yang disetujui.
+                </p>
+                <label style={labelStyle} htmlFor="compensation-base">Gaji pokok / bulan (Rp)</label>
+                <input id="compensation-base" type="number" min="0" step="1000" value={compensationMonthlyBase} onChange={(event) => setCompensationMonthlyBase(event.target.value)} placeholder="Contoh: 3000000" style={{ ...inputStyle, marginBottom: '12px' }} />
+                <label style={labelStyle} htmlFor="compensation-daily">Rate harian (Rp, opsional)</label>
+                <input id="compensation-daily" type="number" min="0" step="1000" value={compensationDailyRate} onChange={(event) => setCompensationDailyRate(event.target.value)} placeholder="0" style={{ ...inputStyle, marginBottom: '12px' }} />
+                <label style={labelStyle} htmlFor="compensation-hourly">Rate lembur / jam (Rp)</label>
+                <input id="compensation-hourly" type="number" min="0" step="1000" value={compensationHourlyRate} onChange={(event) => setCompensationHourlyRate(event.target.value)} placeholder="Contoh: 25000" style={{ ...inputStyle, marginBottom: '12px' }} />
+                <label style={labelStyle} htmlFor="compensation-effective">Berlaku mulai</label>
+                <input id="compensation-effective" type="date" value={compensationEffectiveFrom} onChange={(event) => setCompensationEffectiveFrom(event.target.value)} style={{ ...inputStyle, marginBottom: '16px' }} />
+                {compensationError && <p role="alert" style={{ color: '#991b1b', fontSize: '12px', margin: '0 0 12px' }}>{compensationError}</p>}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                  <button type="button" className="outline-button" onClick={() => setCompensationTarget(null)}>Batal</button>
+                  <button type="button" className="primary-button" onClick={submitCompensation} disabled={actionLoading === 'compensation'}>
+                    {actionLoading === 'compensation' ? 'Menyimpan...' : 'Simpan Kompensasi'}
+                  </button>
+                </div>
               </Dialog>
             )}
 

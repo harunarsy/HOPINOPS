@@ -690,16 +690,49 @@ export default {
           return errorResponse('FORBIDDEN', 'Hanya Owner & Supervisor yang dapat mengakses dashboard manajemen.', 403);
         }
         const workDate = url.searchParams.get('date') || getWibDate();
-        const { data: cycles } = await db.from('work_cycles').select('*, work_assignments(*, profiles(display_name))').eq('outlet_id', outletId).eq('work_date', workDate);
+        if (!isIsoDate(workDate)) return invalidPayload('date wajib berformat YYYY-MM-DD.');
+        const historyDaysRaw = Number(url.searchParams.get('history_days') ?? '7');
+        const historyDays = Number.isInteger(historyDaysRaw) ? Math.min(30, Math.max(1, historyDaysRaw)) : 7;
+        const historyFrom = new Date(Date.parse(`${workDate}T00:00:00Z`) - (historyDays - 1) * 86_400_000).toISOString().slice(0, 10);
+        const { data: cycles, error: cyclesError } = await db.from('work_cycles').select('*, work_assignments(*, profiles!work_assignments_profile_id_fkey(display_name))').eq('outlet_id', outletId).eq('work_date', workDate);
+        if (cyclesError) throw cyclesError;
         const { data: attendance } = await db.from('attendance_records').select('*, profiles(display_name, role), attendance_events(*)').eq('outlet_id', outletId).eq('work_date', workDate);
         const { data: reports } = await db.from('daily_reports').select('*, daily_report_revisions(*)').eq('outlet_id', outletId).eq('work_date', workDate);
         const { data: exceptions } = await db.from('attendance_records').select('*, profiles(display_name)').eq('outlet_id', outletId).eq('work_date', workDate).or('lateness_status.eq.LATE,status.eq.REVIEW_REQUIRED,status.eq.MISSING_CHECKOUT');
+        const { data: historyCycles, error: historyCyclesError } = await db
+          .from('work_cycles')
+          .select('*, work_assignments(*, profiles!work_assignments_profile_id_fkey(display_name))')
+          .eq('outlet_id', outletId)
+          .gte('work_date', historyFrom)
+          .lte('work_date', workDate)
+          .order('work_date', { ascending: false });
+        if (historyCyclesError) throw historyCyclesError;
+        const { data: historyAttendance } = await db
+          .from('attendance_records')
+          .select('id, work_date, profile_id, status, lateness_status, exception_status, scheduled_start_at, scheduled_end_at, profiles(display_name), attendance_events(event_type, server_occurred_at)')
+          .eq('outlet_id', outletId)
+          .gte('work_date', historyFrom)
+          .lte('work_date', workDate);
+        const { data: historyReports } = await db
+          .from('daily_reports')
+          .select('id, work_date, status, current_revision, updated_at')
+          .eq('outlet_id', outletId)
+          .gte('work_date', historyFrom)
+          .lte('work_date', workDate);
 
         return successResponse({
           cycles: cycles ?? [],
           attendance: attendance ?? [],
           reports: reports ?? [],
           exceptions: exceptions ?? [],
+          history: {
+            from: historyFrom,
+            to: workDate,
+            days: historyDays,
+            cycles: historyCycles ?? [],
+            attendance: historyAttendance ?? [],
+            reports: historyReports ?? [],
+          },
         });
       }
 
@@ -1135,24 +1168,93 @@ export default {
         const { data: rosterEntries, error: rosterError } = await query.order('work_date', { ascending: true });
         if (rosterError) throw rosterError;
 
-        const profileIds = [...new Set((rosterEntries ?? []).map((entry) => entry.profile_id).filter(isUuid))];
+        // Realisasi operasional bulan ini: assignment + jam absensi (masuk/keluar).
+        let actualQuery = db
+          .from('work_assignments')
+          .select('id, profile_id, cycle_id, roster_entry_id, duty_role, status, schedule_deviation, work_cycles!inner(work_date, shift_code, area_code, status)')
+          .eq('work_cycles.outlet_id', outletId)
+          .gte('work_cycles.work_date', `${month}-01`)
+          .lt('work_cycles.work_date', `${nextMonth(month)}-01`)
+          .neq('status', 'RESET');
+        if (user.role === 'OPERATOR') actualQuery = actualQuery.eq('profile_id', user.id);
+        const { data: actualAssignments, error: actualError } = await actualQuery;
+        if (actualError) throw actualError;
+
+        const assignmentIds = [...new Set((actualAssignments ?? []).map((assignment: any) => assignment.id).filter(isUuid))];
+        const realizationByAssignment = new Map<string, any>();
+        if (assignmentIds.length > 0) {
+          const { data: attendanceRows, error: attendanceError } = await db
+            .from('attendance_records')
+            .select('id, work_assignment_id, status, lateness_status, exception_status, scheduled_start_at, scheduled_end_at, attendance_events(event_type, server_occurred_at)')
+            .in('work_assignment_id', assignmentIds);
+          if (attendanceError) throw attendanceError;
+          for (const row of attendanceRows ?? []) {
+            const events = (row as any).attendance_events ?? [];
+            const checkIn = events.find((event: any) => event.event_type === 'CHECK_IN');
+            const checkOut = events.find((event: any) => event.event_type === 'CHECK_OUT');
+            realizationByAssignment.set((row as any).work_assignment_id, {
+              attendance_id: (row as any).id,
+              attendance_status: (row as any).status,
+              lateness_status: (row as any).lateness_status,
+              exception_status: (row as any).exception_status,
+              scheduled_start_at: (row as any).scheduled_start_at,
+              scheduled_end_at: (row as any).scheduled_end_at,
+              check_in_at: checkIn?.server_occurred_at ?? null,
+              check_out_at: checkOut?.server_occurred_at ?? null,
+            });
+          }
+        }
+
+        const profileIds = new Set<string>();
+        for (const entry of rosterEntries ?? []) if (isUuid(entry.profile_id)) profileIds.add(entry.profile_id);
+        for (const assignment of actualAssignments ?? []) if (isUuid((assignment as any).profile_id)) profileIds.add((assignment as any).profile_id);
         const profilesById = new Map<string, { username: string | null; display_name: string | null }>();
-        if (profileIds.length > 0) {
+        if (profileIds.size > 0) {
           const { data: profiles, error: profilesError } = await db
             .from('profiles')
             .select('id, username, display_name')
-            .in('id', profileIds);
+            .in('id', [...profileIds]);
           if (profilesError) throw profilesError;
           for (const profile of profiles ?? []) {
             profilesById.set(profile.id, { username: profile.username, display_name: profile.display_name });
           }
         }
 
+        const realizationByRoster = new Map<string, any>();
+        const realizationByProfileDate = new Map<string, any>();
+        const rosterIdSet = new Set((rosterEntries ?? []).map((entry) => entry.id));
+        const unplanned: any[] = [];
+        for (const assignment of actualAssignments ?? []) {
+          const cycle = (assignment as any).work_cycles;
+          const realization = realizationByAssignment.get((assignment as any).id) ?? null;
+          if (realization && cycle?.work_date) {
+            realizationByProfileDate.set(`${(assignment as any).profile_id}:${cycle.work_date}`, realization);
+          }
+          if ((assignment as any).roster_entry_id && rosterIdSet.has((assignment as any).roster_entry_id)) {
+            if (realization) realizationByRoster.set((assignment as any).roster_entry_id, realization);
+          } else {
+            unplanned.push({
+              assignment_id: (assignment as any).id,
+              profile_id: (assignment as any).profile_id,
+              duty_role: (assignment as any).duty_role,
+              assignment_status: (assignment as any).status,
+              schedule_deviation: (assignment as any).schedule_deviation,
+              work_date: cycle?.work_date ?? null,
+              shift_code: cycle?.shift_code ?? null,
+              area_code: cycle?.area_code ?? null,
+              cycle_status: cycle?.status ?? null,
+              profiles: profilesById.get((assignment as any).profile_id) ?? null,
+              realization,
+            });
+          }
+        }
+
         const roster = (rosterEntries ?? []).map((entry) => ({
           ...entry,
           profiles: profilesById.get(entry.profile_id) ?? null,
+          realization: realizationByRoster.get(entry.id) ?? realizationByProfileDate.get(`${entry.profile_id}:${entry.work_date}`) ?? null,
         }));
-        return successResponse({ roster });
+        return successResponse({ roster, unplanned });
       }
 
       if (action === 'roster.save' && request.method === 'POST') {
@@ -1830,6 +1932,38 @@ export default {
         return successResponse(data);
       }
 
+      if (action === 'management.stock.history' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner & Supervisor yang dapat melihat riwayat stok.', 403);
+        }
+        const from = url.searchParams.get('from') || `${getWibDate().slice(0, 8)}01`;
+        const to = url.searchParams.get('to') || getWibDate();
+        if (!isIsoDate(from) || !isIsoDate(to) || from > to
+          || Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`) > 92 * 86_400_000) {
+          return invalidPayload('Rentang riwayat stok wajib valid dan maksimal 92 hari.');
+        }
+        const { data, error } = await db.rpc('rpc_get_management_stock_history', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_from: from, p_to: to,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !Array.isArray(data.rows)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'management.stock.closingDetail' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Owner & Supervisor yang dapat melihat rincian closing.', 403);
+        }
+        const cycleId = url.searchParams.get('cycle_id');
+        if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
+        const { data, error } = await db.rpc('rpc_get_management_stock_closing_detail', {
+          p_actor_id: user.id, p_outlet_id: outletId, p_cycle_id: cycleId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isObject(data.cycle) || !Array.isArray(data.lines)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
       if (action === 'cycle.baseline' && request.method === 'GET') {
         const cycleId = url.searchParams.get('cycle_id');
         if (!isUuid(cycleId)) return invalidPayload('cycle_id UUID wajib diisi.');
@@ -2362,6 +2496,44 @@ export default {
         return successResponse({ run: run ?? null, entries, adjustments });
       }
 
+      if (action === 'payroll.compensation.list' && request.method === 'GET') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh melihat kompensasi.', 403);
+        }
+        const { data, error } = await db.rpc('rpc_get_payroll_compensations', {
+          p_actor_id: user.id, p_outlet_id: outletId,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !Array.isArray(data.profiles)) return invalidRpcResult();
+        return successResponse(data);
+      }
+
+      if (action === 'payroll.compensation.save' && request.method === 'POST') {
+        if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
+          return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh mengatur kompensasi.', 403);
+        }
+        const body = await readJsonObject(request, ['profile_id', 'expected_version', 'effective_from', 'monthly_base', 'daily_rate', 'hourly_rate']);
+        const expectedVersion = body?.expected_version ?? null;
+        if (!body || !isUuid(body.profile_id) || !isIsoDate(body.effective_from)
+          || (expectedVersion !== null && !isPositiveInteger(expectedVersion))
+          || !isWholeAmount(body.monthly_base) || !isWholeAmount(body.daily_rate) || !isWholeAmount(body.hourly_rate)) {
+          return invalidPayload('profile_id, effective_from, dan nominal kompensasi (angka bulat non-negatif) wajib valid.');
+        }
+        const { data, error } = await db.rpc('rpc_save_employee_compensation', {
+          p_actor_id: user.id,
+          p_outlet_id: outletId,
+          p_profile_id: body.profile_id,
+          p_expected_version: expectedVersion,
+          p_effective_from: body.effective_from,
+          p_monthly_base: body.monthly_base,
+          p_daily_rate: body.daily_rate,
+          p_hourly_rate: body.hourly_rate,
+        });
+        if (error) return rpcErrorResponse(error);
+        if (!isObject(data) || !isUuid(data.id) || data.profile_id !== body.profile_id) return invalidRpcResult();
+        return successResponse(data, data.version);
+      }
+
       if (action === 'payroll.preview' && request.method === 'POST') {
         if (user.role !== 'OWNER' && user.role !== 'SUPERVISOR') {
           return errorResponse('FORBIDDEN', 'Hanya Manajemen yang boleh membuat preview payroll.', 403);
@@ -2376,9 +2548,11 @@ export default {
           p_outlet_id: outletId,
           p_period_month: period,
           p_expected_run_version: expectedVersion,
+          p_allow_incomplete: true,
         });
         if (error) return rpcErrorResponse(error);
         if (!result?.run_id) return invalidRpcResult();
+        if (!Array.isArray(result.warnings)) result.warnings = Array.isArray(result.blockers) ? result.blockers : [];
         return successResponse(result);
       }
 

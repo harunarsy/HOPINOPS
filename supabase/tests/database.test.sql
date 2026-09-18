@@ -48,7 +48,7 @@ insert into required_functions values
   ('public.rpc_reconcile_payroll_export(uuid,uuid,uuid,text,text)'),
   ('public.rpc_get_payroll_export_reservation(uuid,uuid,uuid)'),
   ('public.rpc_reset_pin(uuid,uuid,text,text,text,integer)'),
-  ('public.rpc_preview_payroll(uuid,uuid,text,integer)'),
+  ('public.rpc_preview_payroll(uuid,uuid,text,integer,boolean)'),
   ('public.rpc_review_payroll(uuid,uuid,integer)'),
   ('public.rpc_finalize_payroll(uuid,uuid,integer)'),
   ('public.rpc_mark_payroll_paid(uuid,uuid,integer,text,text)'),
@@ -97,7 +97,11 @@ insert into required_functions values
   ('public.rpc_catalog_get(uuid,uuid,public.area_code)'),
   ('public.rpc_catalog_apply(uuid,uuid,public.area_code,integer,jsonb,jsonb,jsonb,text,uuid)'),
   ('public.rpc_get_cycle_physical_baseline(uuid,uuid,uuid)'),
-  ('public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)');
+  ('public.rpc_record_cycle_physical_baseline(uuid,uuid,uuid,integer,jsonb,text,uuid)'),
+  ('public.rpc_get_management_stock_history(uuid,uuid,date,date)'),
+  ('public.rpc_get_management_stock_closing_detail(uuid,uuid,uuid)'),
+  ('public.rpc_get_payroll_compensations(uuid,uuid)'),
+  ('public.rpc_save_employee_compensation(uuid,uuid,uuid,integer,date,numeric,numeric,numeric)');
 
 select ok(
   bool_and(to_regprocedure(signature) is not null),

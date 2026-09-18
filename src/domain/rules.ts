@@ -21,6 +21,27 @@ export const wibDate = (date = new Date()) =>
 export const wibDateKey = (date = new Date()) =>
   new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 
+export const wibClock = (value?: string | Date | null) => {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+};
+
+export const wibDateTimeShort = (value?: string | Date | null) => {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+};
+
+export const wibDateShort = (value?: string | Date | null) => {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' }).format(date);
+};
+
 export const shiftLabel = (shift: ShiftType) => shiftOptions[shift]?.label || shift;
 export const areaLabel = (area: Area) => (area === 'BAR' ? 'Bar' : 'Kitchen');
 
