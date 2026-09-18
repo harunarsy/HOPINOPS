@@ -273,17 +273,17 @@ describe('ReportsView stock summary (E3/U05)', () => {
     expect(badge('Aman').style.color).toBe('#1e5b48');
   });
 
-  it('renders the finance report above the stock report', async () => {
+  it('renders the stock report above the finance report', async () => {
     render(
       <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /rincian keuangan/i })).toBeDefined();
+      expect(screen.getByRole('heading', { name: /stok penutup per area/i })).toBeDefined();
     });
-    const finance = screen.getByRole('heading', { name: /rincian keuangan/i });
     const stock = screen.getByRole('heading', { name: /stok penutup per area/i });
-    expect(finance.compareDocumentPosition(stock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const finance = screen.getByRole('heading', { name: /rincian keuangan/i });
+    expect(stock.compareDocumentPosition(finance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('sends the optional finance note with the draft and omits the key when blank', async () => {

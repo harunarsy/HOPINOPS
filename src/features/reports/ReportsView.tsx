@@ -724,6 +724,113 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         </section>
       )}
 
+      <section className="section-card" aria-labelledby="stock-summary-title" style={{ marginTop: '16px' }}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">RINGKASAN STOK AREA</p>
+            <h2 id="stock-summary-title">Stok Penutup per Area</h2>
+          </div>
+        </div>
+        {reportLoadState === 'loading' ? (
+          <p role="status" style={{ margin: '12px 0 0', color: '#547066' }}>Memuat ringkasan stok dari server...</p>
+        ) : reportLoadState === 'error' ? (
+          <p role="alert" className="form-error" style={{ margin: '12px 0 0' }}>Ringkasan stok tidak dapat dimuat: {reportLoadError}</p>
+        ) : !reportSnapshot || reportSnapshot.stock_lines.length === 0 ? (
+          <p className="muted" style={{ margin: '12px 0 0' }}>
+            Belum ada ringkasan stok tersimpan untuk tanggal ini. Ringkasan muncul setelah kedua area menyelesaikan closing dan laporan dibuat di server.
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
+            <p className="muted" style={{ fontSize: '11px', margin: 0 }}>
+              Urutan prioritas: <strong style={{ color: '#b91c1c' }}>Habis</strong> → <strong style={{ color: '#b45309' }}>Hampir habis</strong> → <strong style={{ color: '#1e5b48' }}>Aman</strong>.
+            </p>
+            {(['BAR', 'KITCHEN'] as const).map((stockArea) => {
+              const lines = sortByStatus(stockLines.filter((line) => line.area_code === stockArea));
+              if (lines.length === 0) return null;
+              const attention = lines.filter((line) => line.stock_status !== 'AMAN').length;
+              return (
+                <div key={stockArea} style={{ padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '4px 10px' }}>
+                    <strong>{stockArea === 'BAR' ? 'Bar' : 'Kitchen'}</strong>
+                    <span className="muted">{lines.length} barang tercatat</span>
+                  </div>
+                  {attention > 0 && (
+                    <p style={{ margin: '4px 0 0', color: '#b45309', fontWeight: 700, fontSize: '12px' }}>{attention} barang perlu perhatian</p>
+                  )}
+                  <ul style={{ margin: '8px 0 0', paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+                    {lines.map((line) => {
+                      const color = stockStatusColor(line.stock_status);
+                      return (
+                        <li key={`${line.area_code}-${line.item_id}`} style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>{line.item_name ?? line.item_id}</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ color: '#547066' }}>
+                              {formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}{line.unit_code ? ` ${line.unit_code}` : ''}
+                            </span>
+                            <span style={{ color: color.fg, background: color.bg, padding: '1px 6px', borderRadius: '999px', fontWeight: 700, fontSize: '11px' }}>
+                              {stockStatusLabel(line.stock_status)}
+                            </span>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
+            <p className="muted" style={{ fontSize: '11px', margin: 0 }}>
+              Rincian mengikuti snapshot server. Kesiapan closing kedua area diperiksa server saat kirim.
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section className="section-card" aria-labelledby="readiness-title" style={{ marginTop: '16px' }}>
+        <p className="eyebrow">KONTROL PENUTUPAN</p>
+        <h2 id="readiness-title">Kesiapan Laporan</h2>
+        <p role="status" style={{ margin: '12px 0 0' }}>{readinessMessage}</p>
+        <ul style={{ margin: '12px 0 0', paddingLeft: '20px' }}>
+          <li>Closing Bar: {closingAreaStatus(barConfirmed)}</li>
+          <li>Closing Kitchen: {closingAreaStatus(kitchenConfirmed)}</li>
+          <li>Finance: {financeIsValid ? 'format valid' : 'perlu diperbaiki'}</li>
+          <li>Keterangan: {trimmedNote ? 'terisi (opsional)' : 'kosong (opsional)'}</li>
+        </ul>
+      </section>
+
+      <section className="section-card" aria-labelledby="template-title" style={{ marginTop: '16px' }}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">SALIN CEPAT</p>
+            <h2 id="template-title">Template Laporan</h2>
+          </div>
+        </div>
+        <p className="muted" style={{ fontSize: '12px', marginTop: '8px' }}>
+          Ringkasan siap tempel ke WhatsApp: tanggal, status, seluruh barang dengan stok akhir dan kategori, plus keuangan dan keterangan.
+        </p>
+        <button
+          type="button"
+          className="outline-button"
+          onClick={() => { void handleCopyTemplate(); }}
+          disabled={!canCopyTemplate}
+          style={{ width: 'auto', marginTop: '12px', padding: '8px 14px' }}
+        >
+          Salin Template Laporan
+        </button>
+        {!canCopyTemplate && (
+          <p className="muted" style={{ fontSize: '11px', margin: '6px 0 0' }}>
+            Template tersedia setelah ada data stok atau keuangan untuk tanggal ini.
+          </p>
+        )}
+        {templateState !== 'idle' && (
+          <div
+            role={templateState === 'error' ? 'alert' : 'status'}
+            style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: `1px solid ${templateState === 'error' ? '#e6b9b0' : '#c6dfd0'}`, background: templateState === 'error' ? '#fbe8e4' : '#e4f1e8', color: templateState === 'error' ? '#8f3f34' : '#1e5b48' }}
+          >
+            {templateMessage}
+          </div>
+        )}
+      </section>
+
       <section className="section-card" aria-labelledby="finance-title" style={{ marginTop: '16px' }}>
         <div className="section-heading">
           <div>
@@ -1013,113 +1120,6 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           <p role={shareState === 'error' ? 'alert' : 'status'} style={{ margin: '10px 0 0', color: shareState === 'error' ? '#8f3f34' : '#547066' }}>
             {shareMessage}
           </p>
-        )}
-      </section>
-
-      <section className="section-card" aria-labelledby="stock-summary-title" style={{ marginTop: '16px' }}>
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">RINGKASAN STOK AREA</p>
-            <h2 id="stock-summary-title">Stok Penutup per Area</h2>
-          </div>
-        </div>
-        {reportLoadState === 'loading' ? (
-          <p role="status" style={{ margin: '12px 0 0', color: '#547066' }}>Memuat ringkasan stok dari server...</p>
-        ) : reportLoadState === 'error' ? (
-          <p role="alert" className="form-error" style={{ margin: '12px 0 0' }}>Ringkasan stok tidak dapat dimuat: {reportLoadError}</p>
-        ) : !reportSnapshot || reportSnapshot.stock_lines.length === 0 ? (
-          <p className="muted" style={{ margin: '12px 0 0' }}>
-            Belum ada ringkasan stok tersimpan untuk tanggal ini. Ringkasan muncul setelah kedua area menyelesaikan closing dan laporan dibuat di server.
-          </p>
-        ) : (
-          <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
-            <p className="muted" style={{ fontSize: '11px', margin: 0 }}>
-              Urutan prioritas: <strong style={{ color: '#b91c1c' }}>Habis</strong> → <strong style={{ color: '#b45309' }}>Hampir habis</strong> → <strong style={{ color: '#1e5b48' }}>Aman</strong>.
-            </p>
-            {(['BAR', 'KITCHEN'] as const).map((stockArea) => {
-              const lines = sortByStatus(stockLines.filter((line) => line.area_code === stockArea));
-              if (lines.length === 0) return null;
-              const attention = lines.filter((line) => line.stock_status !== 'AMAN').length;
-              return (
-                <div key={stockArea} style={{ padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '4px 10px' }}>
-                    <strong>{stockArea === 'BAR' ? 'Bar' : 'Kitchen'}</strong>
-                    <span className="muted">{lines.length} barang tercatat</span>
-                  </div>
-                  {attention > 0 && (
-                    <p style={{ margin: '4px 0 0', color: '#b45309', fontWeight: 700, fontSize: '12px' }}>{attention} barang perlu perhatian</p>
-                  )}
-                  <ul style={{ margin: '8px 0 0', paddingLeft: '18px', display: 'grid', gap: '4px' }}>
-                    {lines.map((line) => {
-                      const color = stockStatusColor(line.stock_status);
-                      return (
-                        <li key={`${line.area_code}-${line.item_id}`} style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>{line.item_name ?? line.item_id}</span>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ color: '#547066' }}>
-                              {formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}{line.unit_code ? ` ${line.unit_code}` : ''}
-                            </span>
-                            <span style={{ color: color.fg, background: color.bg, padding: '1px 6px', borderRadius: '999px', fontWeight: 700, fontSize: '11px' }}>
-                              {stockStatusLabel(line.stock_status)}
-                            </span>
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              );
-            })}
-            <p className="muted" style={{ fontSize: '11px', margin: 0 }}>
-              Rincian mengikuti snapshot server. Kesiapan closing kedua area diperiksa server saat kirim.
-            </p>
-          </div>
-        )}
-      </section>
-
-      <section className="section-card" aria-labelledby="readiness-title" style={{ marginTop: '16px' }}>
-        <p className="eyebrow">KONTROL PENUTUPAN</p>
-        <h2 id="readiness-title">Kesiapan Laporan</h2>
-        <p role="status" style={{ margin: '12px 0 0' }}>{readinessMessage}</p>
-        <ul style={{ margin: '12px 0 0', paddingLeft: '20px' }}>
-          <li>Closing Bar: {closingAreaStatus(barConfirmed)}</li>
-          <li>Closing Kitchen: {closingAreaStatus(kitchenConfirmed)}</li>
-          <li>Finance: {financeIsValid ? 'format valid' : 'perlu diperbaiki'}</li>
-          <li>Keterangan: {trimmedNote ? 'terisi (opsional)' : 'kosong (opsional)'}</li>
-        </ul>
-      </section>
-
-      <section className="section-card" aria-labelledby="template-title" style={{ marginTop: '16px' }}>
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">SALIN CEPAT</p>
-            <h2 id="template-title">Template Laporan</h2>
-          </div>
-        </div>
-        <p className="muted" style={{ fontSize: '12px', marginTop: '8px' }}>
-          Ringkasan siap tempel ke WhatsApp: tanggal, status, seluruh barang dengan stok akhir dan kategori, plus keuangan dan keterangan.
-        </p>
-        <button
-          type="button"
-          className="outline-button"
-          onClick={() => { void handleCopyTemplate(); }}
-          disabled={!canCopyTemplate}
-          style={{ width: 'auto', marginTop: '12px', padding: '8px 14px' }}
-        >
-          Salin Template Laporan
-        </button>
-        {!canCopyTemplate && (
-          <p className="muted" style={{ fontSize: '11px', margin: '6px 0 0' }}>
-            Template tersedia setelah ada data stok atau keuangan untuk tanggal ini.
-          </p>
-        )}
-        {templateState !== 'idle' && (
-          <div
-            role={templateState === 'error' ? 'alert' : 'status'}
-            style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: `1px solid ${templateState === 'error' ? '#e6b9b0' : '#c6dfd0'}`, background: templateState === 'error' ? '#fbe8e4' : '#e4f1e8', color: templateState === 'error' ? '#8f3f34' : '#1e5b48' }}
-          >
-            {templateMessage}
-          </div>
         )}
       </section>
     </div>
