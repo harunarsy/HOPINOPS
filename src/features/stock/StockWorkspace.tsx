@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import type { Area, ShiftType, Item, DutyRole } from '../../domain/types';
-import { fmtNumber, areaLabel, shiftLabel, statusOfStock, movementCategoryLabel } from '../../domain/rules';
+import { fmtNumber, areaLabel, shiftLabel, statusOfStock, movementCategoryLabel, parseQuantityInput, formatQuantityInput } from '../../domain/rules';
 import { api } from '../../lib/api';
 import { idbQueue, type QueueItem } from '../../lib/idb-queue';
 import { CatalogManager } from '../management/CatalogManager';
@@ -25,9 +25,10 @@ const newDraftSaveState = (): DraftSaveState => ({
   receipt: null,
 });
 
-const countStateOf = (value: string, reference: number | null): CountState => {
-  if (reference === null || value.trim() === '' || !Number.isFinite(Number(value))) return 'UNCOUNTED';
-  return Number(value) === reference ? 'MATCHED' : 'VARIANCE';
+const countStateOf = (value: string, reference: number | null, decimalScale = 2): CountState => {
+  const parsed = parseQuantityInput(value, decimalScale);
+  if (reference === null || value.trim() === '' || parsed === null) return 'UNCOUNTED';
+  return parsed === reference ? 'MATCHED' : 'VARIANCE';
 };
 
 const countStateLabel: Record<CountState, string> = {
@@ -576,7 +577,8 @@ export function StockWorkspace({
     const next = { ...openingCounts, [itemId]: value };
     localInputDirtyRef.current = true;
     setOpeningCounts(next);
-    if (value.trim() !== '' && Number(value) === reference) {
+    const parsed = parseQuantityInput(value, items.find((item) => item.id === itemId)?.decimal_scale ?? 2);
+    if (parsed !== null && parsed === reference) {
       // matches system -> no variance -> clear stale reason/notes
       const reasons = { ...openingReasons };
       const notes = { ...openingNotes };
@@ -669,7 +671,7 @@ export function StockWorkspace({
     try {
       const lines = missingOpeningReferences.map((item) => ({
         item_id: item.id,
-        counted_qty: Number(openingCounts[item.id]),
+        counted_qty: parseQuantityInput(openingCounts[item.id], item.decimal_scale) ?? 0,
       }));
       await api.recordCyclePhysicalBaseline(cycleId, expectedVersion, lines, reason, crypto.randomUUID());
       const reference = await api.getOpeningReference(cycleId);
@@ -709,8 +711,8 @@ export function StockWorkspace({
     }
 
     const invalidCount = items.find((it) => {
-      const count = Number(openingCounts[it.id]);
-      return !Number.isFinite(count) || count < 0;
+      const count = parseQuantityInput(openingCounts[it.id], it.decimal_scale);
+      return count === null;
     });
     if (invalidCount) {
       showCriticalError(`Jumlah fisik "${invalidCount.name}" harus berupa angka minimal 0.`);
@@ -718,7 +720,8 @@ export function StockWorkspace({
     }
 
     const incompleteVariance = items.find((it) => {
-      const hasVariance = Number(openingCounts[it.id]) !== openingReferenceByItem.get(it.id);
+      const parsed = parseQuantityInput(openingCounts[it.id], it.decimal_scale);
+      const hasVariance = parsed !== openingReferenceByItem.get(it.id);
       return hasVariance && !openingReasons[it.id]?.trim();
     });
     if (incompleteVariance) {
@@ -729,7 +732,7 @@ export function StockWorkspace({
     setLoading(true);
     try {
       const lines = items.map((it) => {
-        const val = Number(openingCounts[it.id]);
+        const val = parseQuantityInput(openingCounts[it.id], it.decimal_scale) ?? 0;
         return {
           item_id: it.id,
           reference_qty: openingReferenceByItem.get(it.id),
@@ -768,8 +771,8 @@ export function StockWorkspace({
 
     const enteredItems = items.filter((item) => openingCounts[item.id]?.trim() !== '');
     const invalidItem = enteredItems.find((item) => {
-      const count = Number(openingCounts[item.id]);
-      return !Number.isFinite(count) || count < 0;
+      const count = parseQuantityInput(openingCounts[item.id], item.decimal_scale);
+      return count === null;
     });
     if (invalidItem) {
       showCriticalError(`Jumlah fisik "${invalidItem.name}" harus berupa angka minimal 0.`);
@@ -778,7 +781,7 @@ export function StockWorkspace({
 
     const lines = enteredItems.map((item) => ({
       item_id: item.id,
-      counted_qty: Number(openingCounts[item.id]),
+      counted_qty: parseQuantityInput(openingCounts[item.id], item.decimal_scale) ?? 0,
       reason_code: openingReasons[item.id]?.trim() || null,
       notes: openingNotes[item.id]?.trim() || null,
     }));
@@ -816,8 +819,9 @@ export function StockWorkspace({
       return;
     }
 
-    const qty = Number(mvQty);
-    if (!mvItem || !Number.isFinite(qty) || qty <= 0) {
+    const mvItemScale = items.find((item) => item.id === mvItem)?.decimal_scale ?? 2;
+    const qty = parseQuantityInput(mvQty, mvItemScale);
+    if (!mvItem || qty === null || qty <= 0) {
       showCriticalError('Isi jumlah barang yang valid.');
       return;
     }
@@ -962,11 +966,12 @@ export function StockWorkspace({
     }
     if (!await verifyEmptyQueue('koreksi movement')) return;
 
-    const quantity = Number(correctionQty);
+    const correctionItem = items.find((item) => item.id === correctionMovement.item_id);
+    const quantity = parseQuantityInput(correctionQty, correctionItem?.decimal_scale ?? 2);
     const originalQuantity = Number(correctionMovement.quantity);
     const reason = correctionReason.trim();
     const expectedVersion = cycleVersionRef.current;
-    if (!Number.isFinite(quantity) || quantity <= 0 || quantity !== originalQuantity) {
+    if (quantity === null || quantity <= 0 || quantity !== originalQuantity) {
       showCriticalError(`Jumlah koreksi harus sama dengan movement asal: ${fmtNumber(originalQuantity)}.`);
       return;
     }
@@ -1043,8 +1048,8 @@ export function StockWorkspace({
     }
 
     const invalidCount = items.find((it) => {
-      const count = Number(closingCounts[it.id]);
-      return !Number.isFinite(count) || count < 0;
+      const count = parseQuantityInput(closingCounts[it.id], it.decimal_scale);
+      return count === null;
     });
     if (invalidCount) {
       showCriticalError(`Jumlah fisik "${invalidCount.name}" harus berupa angka minimal 0.`);
@@ -1052,7 +1057,8 @@ export function StockWorkspace({
     }
 
     const incompleteVariance = items.find((it) => {
-      const hasVariance = Number(closingCounts[it.id]) !== itemBalances[it.id]?.system;
+      const parsed = parseQuantityInput(closingCounts[it.id], it.decimal_scale);
+      const hasVariance = parsed !== itemBalances[it.id]?.system;
       return hasVariance && !closingReasons[it.id]?.trim();
     });
     if (incompleteVariance) {
@@ -1064,7 +1070,7 @@ export function StockWorkspace({
     try {
       const lines = items.map((it) => {
         const bal = itemBalances[it.id];
-        const val = Number(closingCounts[it.id]);
+        const val = parseQuantityInput(closingCounts[it.id], it.decimal_scale) ?? 0;
         return {
           item_id: it.id,
           opening_qty: bal.opening,
@@ -1106,8 +1112,8 @@ export function StockWorkspace({
 
     const enteredItems = items.filter((item) => closingCounts[item.id]?.trim() !== '');
     const invalidItem = enteredItems.find((item) => {
-      const count = Number(closingCounts[item.id]);
-      return !Number.isFinite(count) || count < 0;
+      const count = parseQuantityInput(closingCounts[item.id], item.decimal_scale);
+      return count === null;
     });
     if (invalidItem) {
       showCriticalError(`Jumlah fisik "${invalidItem.name}" harus berupa angka minimal 0.`);
@@ -1116,7 +1122,7 @@ export function StockWorkspace({
 
     const lines = enteredItems.map((item) => ({
       item_id: item.id,
-      counted_qty: Number(closingCounts[item.id]),
+      counted_qty: parseQuantityInput(closingCounts[item.id], item.decimal_scale) ?? 0,
       reason_code: closingReasons[item.id]?.trim() || null,
       notes: closingNotes[item.id]?.trim() || null,
     }));
@@ -1434,7 +1440,7 @@ export function StockWorkspace({
                 : isOpeningConfirmed && savedLine?.counted_qty != null
                   ? String(savedLine.counted_qty)
                   : '';
-              const countState = countStateOf(val, refVal);
+              const countState = countStateOf(val, refVal, it.decimal_scale);
               const hasDiff = countState === 'VARIANCE';
               const inputId = `opening-count-${it.id}`;
 
@@ -1472,14 +1478,15 @@ export function StockWorkspace({
                       </button>
                       <input
                         id={inputId}
-                        type="number"
-                        min="0"
-                        step="any"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
                         disabled={!canEditOpeningItem(it.id)}
                         value={val}
                         placeholder="Custom"
                         aria-label={`Jumlah fisik stok awal ${it.name}`}
                         onChange={(e) => markOpeningCount(it.id, e.target.value)}
+                        onBlur={() => markOpeningCount(it.id, formatQuantityInput(val, it.decimal_scale))}
                         style={{ width: '76px', padding: '6px', textAlign: 'right', borderRadius: '6px', border: '1px solid #cddcd4' }}
                       />
                       <span>{it.unit_code}</span>
@@ -1688,7 +1695,7 @@ export function StockWorkspace({
                 : isClosingConfirmed && savedLine?.counted_qty != null
                   ? String(savedLine.counted_qty)
                   : '';
-              const countState = countStateOf(val, sysVal);
+              const countState = countStateOf(val, sysVal, it.decimal_scale);
               const hasDiff = countState === 'VARIANCE';
               const inputId = `closing-count-${it.id}`;
 
@@ -1724,14 +1731,15 @@ export function StockWorkspace({
                       </button>
                       <input
                         id={inputId}
-                        type="number"
-                        min="0"
-                        step="any"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
                         disabled={isClosingConfirmed || closingCompleted || sysVal === null}
                         value={val}
                         placeholder="Custom"
                         aria-label={`Jumlah fisik stok akhir ${it.name}`}
                         onChange={(e) => markClosingCount(it.id, e.target.value)}
+                        onBlur={() => markClosingCount(it.id, formatQuantityInput(val, it.decimal_scale))}
                         style={{ width: '90px', padding: '6px', textAlign: 'right', borderRadius: '6px', border: '1px solid #cddcd4' }}
                       />
                       <span>{it.unit_code}</span>
@@ -1863,11 +1871,12 @@ export function StockWorkspace({
             <label htmlFor="movement-quantity" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>Jumlah</label>
             <input
               id="movement-quantity"
-              type="number"
-              min="0"
-              step="any"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
               value={mvQty}
               onChange={(e) => setMvQty(e.target.value)}
+              onBlur={() => setMvQty(formatQuantityInput(mvQty, items.find((item) => item.id === mvItem)?.decimal_scale ?? 2))}
               placeholder="0"
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px', border: '1px solid #cddcd4' }}
             />
@@ -1966,11 +1975,12 @@ export function StockWorkspace({
             </label>
             <input
               id="correction-quantity"
-              type="number"
-              min="0"
-              step="any"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
               value={correctionQty}
               onChange={(event) => setCorrectionQty(event.target.value)}
+              onBlur={() => setCorrectionQty(formatQuantityInput(correctionQty, items.find((item) => item.id === correctionMovement?.item_id)?.decimal_scale ?? 2))}
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px', border: '1px solid #cddcd4' }}
             />
             <label htmlFor="correction-category" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Kategori koreksi</label>

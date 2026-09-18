@@ -53,6 +53,46 @@ function taskLabel(value?: string | null) {
   return value ? labels[value] ?? value.replace(/_/g, ' ').toLowerCase() : 'Belum ditentukan';
 }
 
+const cycleStatusLabels: Record<string, string> = {
+  ACTIVE: 'Belum ada stok awal',
+  OPEN: 'Siap catat transaksi',
+  HANDOVER_READY: 'Siap serah terima',
+  CLOSING_READY: 'Stok akhir sudah dihitung',
+  COMPLETED: 'Selesai',
+  RESET: 'Dibatalkan',
+};
+
+function cycleStatusLabel(value?: string | null) {
+  return value ? cycleStatusLabels[value] ?? taskLabel(value) : 'Belum ditentukan';
+}
+
+const gpsStatusLabels: Record<string, string> = {
+  VERIFIED: 'Sesuai area',
+  OUTSIDE: 'Di luar area',
+  TIMEOUT: 'GPS timeout',
+  UNAVAILABLE: 'GPS tidak tersedia',
+  DENIED: 'Izin lokasi ditolak',
+};
+
+function gpsEvent(attendance: any, eventType: 'CHECK_IN' | 'CHECK_OUT') {
+  const events = Array.isArray(attendance?.attendance_events) ? attendance.attendance_events : [];
+  return events.find((event: any) => event.event_type === eventType) ?? null;
+}
+
+function gpsLabel(event: any) {
+  if (!event) return 'Belum ada data';
+  const status = event.location_status ? gpsStatusLabels[event.location_status] ?? taskLabel(event.location_status) : 'Tidak terverifikasi';
+  const distance = event.selected_distance_m === null || event.selected_distance_m === undefined
+    ? ''
+    : ` · ${Math.round(Number(event.selected_distance_m))} m`;
+  return `${status}${distance}`;
+}
+
+function gpsTone(event: any) {
+  if (!event) return 'neutral';
+  return event.location_status === 'VERIFIED' ? 'good' : 'warn';
+}
+
 function proposedLabel(correction: any) {
   const proposed = correction?.proposed_json ?? {};
   const value = proposed.occurred_at ?? proposed.status ?? proposed.lateness_status ?? proposed.exception_status;
@@ -662,7 +702,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
       </style></head><body>
       <h1>Laporan Riwayat Stok — ${cycle.area_code === 'BAR' ? 'Bar' : 'Kitchen'}</h1>
       <div class="meta">
-        Tanggal: <b>${escapeHtml(cycle.work_date ?? '—')}</b> · Shift: <b>${escapeHtml(taskLabel(cycle.shift_code))}</b> · Status cycle: <b>${escapeHtml(taskLabel(cycle.status))}</b><br/>
+        Tanggal: <b>${escapeHtml(cycle.work_date ?? '—')}</b> · Shift: <b>${escapeHtml(taskLabel(cycle.shift_code))}</b> · Status cycle: <b>${escapeHtml(cycleStatusLabel(cycle.status))}</b><br/>
         Closing: <b>${closing.id ? `${escapeHtml(taskLabel(closing.status))} oleh ${escapeHtml(closing.confirmed_by_name ?? '—')} pada ${escapeHtml(closing.confirmed_at ? formatDateTime(closing.confirmed_at) : '—')}` : 'Belum closing'}</b><br/>
         Diekspor: ${escapeHtml(formatDateTime(new Date().toISOString()))} WIB
       </div>
@@ -1344,7 +1384,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                         {dayCycles.map((cycle: any) => {
                           const primary = (cycle.work_assignments ?? []).find((assignment: any) => assignment.duty_role === 'PRIMARY');
                           return <small key={cycle.id} style={{ color: '#476058' }}>
-                            <b>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</b> — {primary?.profiles?.display_name ?? 'Belum ada PJ'} · {taskLabel(cycle.status)}
+                            <b>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</b> — {primary?.profiles?.display_name ?? 'Belum ada PJ'} · {cycleStatusLabel(cycle.status)}
                           </small>;
                         })}
                       </div>}
@@ -1386,7 +1426,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                     return <article key={cycle.cycle_id} style={{ padding: '14px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9', minWidth: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'start', flexWrap: 'wrap' }}><strong>{taskLabel(cycle.area_code)} · {taskLabel(cycle.shift_code)}</strong><span className={`tag ${locked ? 'neutral' : hasBaseline ? 'good' : 'warn'}`}>{readiness}</span></div>
                       <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>PJ Utama: <strong>{cycle.primary_name || 'Belum ditugaskan'}</strong></p>
-                      <p className="muted" style={{ fontSize: '12px', marginTop: '4px' }}>Cycle: {taskLabel(cycle.cycle_status)}</p>
+                      <p className="muted" style={{ fontSize: '12px', marginTop: '4px' }}>Cycle: {cycleStatusLabel(cycle.cycle_status)}</p>
                       {locked ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Stok patokan sudah menjadi bagian opening. Gunakan koreksi ledger untuk perubahan setelah ini.</p> : hasBaseline ? <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Koreksi stok patokan {taskLabel(cycle.area_code)}</button> : hasReference ? <p className="muted" style={{ fontSize: '12px', marginTop: '10px' }}>Stok patokan berasal dari {cycle.reference_source_type || 'sumber server'}, bukan stok patokan fisik cycle ini.</p> : <button type="button" className="outline-button" onClick={() => openStockForm(cycle)} style={{ marginTop: '12px', width: '100%' }}>Tetapkan stok patokan {taskLabel(cycle.area_code)}</button>}
                     </article>;
                   })}
@@ -1425,7 +1465,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                           <td style={{ padding: '8px', fontWeight: 600 }}>{taskLabel(row.area_code)}</td>
                           <td style={{ padding: '8px' }}>{taskLabel(row.shift_code)}</td>
                           <td style={{ padding: '8px' }}>{row.primary_name ?? '—'}</td>
-                          <td style={{ padding: '8px' }}><span className={`tag ${row.cycle_status === 'COMPLETED' ? 'good' : row.cycle_status === 'CLOSING_READY' ? 'warn' : 'neutral'}`}>{taskLabel(row.cycle_status)}</span></td>
+                          <td style={{ padding: '8px' }}><span className={`tag ${row.cycle_status === 'COMPLETED' ? 'good' : row.cycle_status === 'CLOSING_READY' ? 'warn' : 'neutral'}`}>{cycleStatusLabel(row.cycle_status)}</span></td>
                           <td style={{ padding: '8px' }}>{row.closing_id ? <><strong>{taskLabel(row.closing_status)}</strong><br /><span className="muted">{row.confirmed_by_name ?? '—'} · {row.confirmed_at ? wibDateTimeShort(row.confirmed_at) : '—'}</span></> : <span className="muted">Belum closing</span>}</td>
                           <td style={{ padding: '8px', textAlign: 'right' }}>{row.line_count}/{row.total_items}</td>
                           <td style={{ padding: '8px', textAlign: 'right', color: Number(row.variance_count) > 0 ? '#b45309' : undefined }}>{row.variance_count}</td>
@@ -1583,7 +1623,7 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                 <p className="muted" style={{ padding: '24px', textAlign: 'center' }}>Tidak ada exception kehadiran pada rentang ini.</p>
               ) : <div className="table-responsive" style={{ marginTop: '16px' }}>
                 <table className="management-table attendance-table" style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Jadwal</th><th style={{ padding: '8px' }}>Masuk / Keluar</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
+                  <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Jadwal</th><th style={{ padding: '8px' }}>Masuk / Keluar</th><th style={{ padding: '8px' }}>Lokasi GPS</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{attendanceExceptions.map((attendance) => {
                     const pending = (attendance.attendance_corrections ?? []).filter((correction: any) => correction.status === 'PENDING');
                     return (
@@ -1593,6 +1633,12 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                         <td style={{ padding: '8px' }}>
                           <span style={{ display: 'block' }}>Masuk: <b>{wibClock(attendanceEventTime(attendance, 'CHECK_IN'))}</b></span>
                           <span style={{ display: 'block' }}>Keluar: <b>{wibClock(attendanceEventTime(attendance, 'CHECK_OUT'))}</b></span>
+                        </td>
+                        <td style={{ padding: '8px' }}>
+                          <span style={{ display: 'block' }}>Masuk: <span className={`tag ${gpsTone(gpsEvent(attendance, 'CHECK_IN'))}`}>{gpsLabel(gpsEvent(attendance, 'CHECK_IN'))}</span></span>
+                          {gpsEvent(attendance, 'CHECK_OUT') && (
+                            <span style={{ display: 'block', marginTop: '4px' }}>Keluar: <span className={`tag ${gpsTone(gpsEvent(attendance, 'CHECK_OUT'))}`}>{gpsLabel(gpsEvent(attendance, 'CHECK_OUT'))}</span></span>
+                          )}
                         </td>
                         <td style={{ padding: '8px' }}>{taskLabel(attendance.lateness_status)}<br /><span className="muted">{taskLabel(attendance.exception_status)}</span></td>
                         <td style={{ padding: '8px' }}>{pending.length ? pending.map((correction: any) => <div key={correction.id}><strong>{taskLabel(correction.correction_type)}:</strong> {proposedLabel(correction)}</div>) : 'Belum ada permintaan koreksi'}</td>

@@ -291,6 +291,12 @@ function rpcErrorResponse(error: any) {
     VERSION_CONFLICT: 'Data sudah berubah sejak halaman dimuat. Muat ulang halaman lalu coba lagi.',
     IDEMPOTENCY_CONFLICT: 'Perintah terkirim dua kali dengan isi berbeda. Muat ulang halaman lalu coba lagi.',
     INVALID_ARGUMENT: 'Data yang dikirim belum lengkap.',
+    ITEM_IN_ACTIVE_CYCLE: 'Varian tidak bisa diubah saat area masih punya shift berjalan. Selesaikan closing shift dulu; perubahan berlaku untuk cycle berikutnya.',
+    ITEM_SET_LOCKED: 'Area ini masih punya cycle aktif, jadi varian baru belum bisa ditambah. Selesaikan closing shift dulu.',
+    ITEM_ARCHIVED: 'Varian yang sudah diarsipkan tidak dapat diubah.',
+    INVALID_ITEM: 'Data varian tidak valid (nama, satuan, atau batas stok minimum).',
+    ITEM_EXISTS: 'Kode varian sudah dipakai.',
+    GLOBAL_ITEM_SCHEMA: 'Varian tidak bisa diubah saat ada outlet aktif lain.',
   };
   if (domainCode && domainMessages[domainCode]) {
     return errorResponse(domainCode, domainMessages[domainCode], status);
@@ -1188,7 +1194,8 @@ export default {
           .gte('work_date', `${month}-01`)
           .lt('work_date', `${nextMonth(month)}-01`);
         if (user.role === 'OPERATOR') query = query.eq('profile_id', user.id);
-        const { data: rosterEntries, error: rosterError } = await query.order('work_date', { ascending: true });
+        // Jadwal terbaru di atas: hari ini dulu, ke bawah mundur ke tanggal sebelumnya.
+        const { data: rosterEntries, error: rosterError } = await query.order('work_date', { ascending: false }).order('shift_code', { ascending: true });
         if (rosterError) throw rosterError;
 
         // Realisasi operasional bulan ini: assignment + jam absensi (masuk/keluar).

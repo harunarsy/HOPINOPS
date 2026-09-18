@@ -142,6 +142,22 @@ export function CatalogManager({ fixedArea, mutationScope = 'MANAGEMENT', locked
     setArea(fixedArea);
   }, [fixedArea]);
 
+  // Dialog katalog kini berupa popup; Escape menutup popup yang sedang terbuka.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (editTarget) { setEditTarget(null); return; }
+      if (historyTarget) { setHistoryTarget(null); return; }
+      if (unitHistoryTarget) { setUnitHistoryTarget(null); return; }
+      if (unitManagerOpen) { setUnitManagerOpen(false); return; }
+      if (archiveTarget) { setArchiveTarget(null); return; }
+      if (restoreTarget) { setRestoreTarget(null); return; }
+      if (unitArchiveTarget) { setUnitArchiveTarget(null); return; }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [editTarget, historyTarget, unitHistoryTarget, unitManagerOpen, archiveTarget, restoreTarget, unitArchiveTarget]);
+
   const load = async (targetArea: Area) => {
     const requestId = ++loadRequestRef.current;
     setLoading(true); setError('');

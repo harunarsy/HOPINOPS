@@ -45,6 +45,54 @@ export const wibDateShort = (value?: string | Date | null) => {
 export const shiftLabel = (shift: ShiftType) => shiftOptions[shift]?.label || shift;
 export const areaLabel = (area: Area) => (area === 'BAR' ? 'Bar' : 'Kitchen');
 
+function roundToScale(value: number, decimalScale: number) {
+  const scale = Math.min(6, Math.max(0, Math.trunc(decimalScale)));
+  return Number(value.toFixed(scale));
+}
+
+/**
+ * Operator mengetik jumlah dengan koma ATAU titik sebagai pemisah desimal:
+ * "1,234" dan "1.234" sama-sama dibaca 1,234 (mis. 1 kilo 234 gram).
+ * Satuan tanpa desimal (pcs/pack) membaca "1.234" sebagai 1.234 lalu dibulatkan,
+ * sementara "1.234.567" (pemisah berulang) dibaca sebagai ribuan.
+ */
+export function parseQuantityInput(raw: string | null | undefined, decimalScale = 2): number | null {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim().replace(/[\s\u00a0]/g, '');
+  if (text === '' || !/^[0-9.,]+$/.test(text)) return null;
+
+  const dots = (text.match(/\./g) ?? []).length;
+  const commas = (text.match(/,/g) ?? []).length;
+  let normalized = text;
+
+  if (dots > 0 && commas > 0) {
+    const decimalSeparator = text.lastIndexOf('.') > text.lastIndexOf(',') ? '.' : ',';
+    const thousandsSeparator = decimalSeparator === '.' ? ',' : '.';
+    normalized = text.split(thousandsSeparator).join('');
+    if (decimalSeparator === ',') normalized = normalized.replace(',', '.');
+  } else if (dots > 1) {
+    normalized = text.split('.').join('');
+  } else if (commas > 1) {
+    normalized = text.split(',').join('');
+  } else if (dots === 1) {
+    const [whole, fraction] = text.split('.');
+    normalized = decimalScale === 0 && fraction.length === 3 ? `${whole}${fraction}` : text;
+  } else if (commas === 1) {
+    normalized = text.replace(',', '.');
+  }
+
+  const value = Number(normalized);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return roundToScale(value, decimalScale);
+}
+
+/** Bentuk tampilan kolom input setelah operator selesai mengetik (gaya Indonesia). */
+export function formatQuantityInput(raw: string | null | undefined, decimalScale = 2): string {
+  const value = parseQuantityInput(raw, decimalScale);
+  if (value === null) return typeof raw === 'string' ? raw.trim() : '';
+  return value.toFixed(Math.min(6, Math.max(0, Math.trunc(decimalScale)))).replace('.', ',');
+}
+
 export function statusOfStock(closingQty: number | null, lowThreshold: number): StockStatus {
   if (closingQty === null || closingQty === undefined) return 'Belum diisi';
   if (closingQty <= 0) return 'Habis';

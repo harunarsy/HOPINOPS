@@ -1,3 +1,4 @@
+import { parseQuantityInput, formatQuantityInput } from '../domain/rules';
 import { describe, it, expect } from 'vitest';
 
 describe('HOPIN Domain & Business Rules', () => {
@@ -76,5 +77,42 @@ describe('HOPIN Domain & Business Rules', () => {
     expect(recordedTotal).toBe(1250000);
     expect(receivedTotal).toBe(1300000);
     expect(cashDifference).toBe(50000);
+  });
+});
+
+describe('Input jumlah stok (koma & titik)', () => {
+  it('membaca koma dan titik sebagai desimal yang sama', () => {
+    expect(parseQuantityInput('1,234', 3)).toBe(1.234);
+    expect(parseQuantityInput('1.234', 3)).toBe(1.234);
+    expect(parseQuantityInput('0,5', 2)).toBe(0.5);
+    expect(parseQuantityInput('0.5', 2)).toBe(0.5);
+  });
+
+  it('membaca pemisah berulang sebagai ribuan', () => {
+    expect(parseQuantityInput('1.234.567', 2)).toBe(1234567);
+    expect(parseQuantityInput('1,234,567', 2)).toBe(1234567);
+    expect(parseQuantityInput('1.234,5', 2)).toBe(1234.5);
+    expect(parseQuantityInput('1,234.5', 2)).toBe(1234.5);
+  });
+
+  it('satuan tanpa desimal membaca 3 digit setelah titik sebagai ribuan', () => {
+    expect(parseQuantityInput('1.234', 0)).toBe(1234);
+    expect(parseQuantityInput('1.234', 2)).toBe(1.23);
+  });
+
+  it('menolak input kosong atau bukan angka tanpa melempar error', () => {
+    expect(parseQuantityInput('', 2)).toBeNull();
+    expect(parseQuantityInput('   ', 2)).toBeNull();
+    expect(parseQuantityInput('abc', 2)).toBeNull();
+    expect(parseQuantityInput('-5', 2)).toBeNull();
+    expect(parseQuantityInput(null, 2)).toBeNull();
+    expect(parseQuantityInput(undefined, 2)).toBeNull();
+    expect(parseQuantityInput('0', 0)).toBe(0);
+  });
+
+  it('menampilkan kembali dalam format Indonesia', () => {
+    expect(formatQuantityInput('1.234', 3)).toBe('1,234');
+    expect(formatQuantityInput('1234', 0)).toBe('1234');
+    expect(formatQuantityInput('', 2)).toBe('');
   });
 });
