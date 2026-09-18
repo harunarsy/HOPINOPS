@@ -20,11 +20,12 @@ type Props = {
   gps?: GpsSettingsInput;
   onSuccess: () => void;
   onCancel?: () => void;
+  onRecoverableConflict?: (code: string) => void;
 };
 
 type GpsUiState = 'WARMING' | 'READY' | 'DENIED' | 'BLOCKED' | 'UNSUPPORTED';
 
-export function SwipeAttendance({ actionType, assignmentId, gps, onSuccess, onCancel }: Props) {
+export function SwipeAttendance({ actionType, assignmentId, gps, onSuccess, onCancel, onRecoverableConflict }: Props) {
   const [sliderPos, setSliderPos] = useState(0);
   const [status, setStatus] = useState<'IDLE' | 'LOCATING' | 'VERIFYING' | 'SUCCESS' | 'ERROR'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
@@ -157,7 +158,17 @@ export function SwipeAttendance({ actionType, assignmentId, gps, onSuccess, onCa
       setTimeout(onSuccess, 1000);
     } catch (err: any) {
       console.error(err);
-      if (getErrorCode(err) === 'ATTENDANCE_NOTE_REQUIRED' || getErrorMessage(err).includes('Catatan alasan wajib diisi')) {
+      const code = getErrorCode(err);
+      const recoverableCheckoutConflict = !isCheckIn
+        && (code === 'CHECK_IN_REQUIRED' || code === 'ALREADY_CHECKED_OUT' || code === 'NO_OPEN_ATTENDANCE');
+      if (recoverableCheckoutConflict) {
+        setStatus('IDLE');
+        setSliderPos(0);
+        setErrorMessage('');
+        onRecoverableConflict?.(code);
+        return;
+      }
+      if (code === 'ATTENDANCE_NOTE_REQUIRED' || getErrorMessage(err).includes('Catatan alasan wajib diisi')) {
         setNeedsNote(true);
         setStatus('IDLE');
         setSliderPos(0);

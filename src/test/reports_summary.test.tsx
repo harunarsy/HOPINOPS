@@ -150,4 +150,43 @@ describe('ReportsView stock summary (E3/U05)', () => {
       expect(screen.getByText(/belum ada ringkasan stok tersimpan/i)).toBeDefined();
     });
   });
+
+  it('lets a manager open a past report and closing from the report list', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getCurrentUser).mockResolvedValue({ role: 'OWNER' } as any);
+    vi.mocked(api.listReports).mockResolvedValue([
+      { id: 'rep-2', work_date: '2026-09-05', status: 'SUBMITTED', current_revision: 1, updated_at: '2026-09-06T00:00:00Z' },
+    ] as any);
+
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /2026-09-05/ })).toBeDefined();
+    });
+    await user.click(screen.getByRole('button', { name: /2026-09-05/ }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.getReport)).toHaveBeenLastCalledWith('2026-09-05');
+    });
+    expect(screen.getByText(/status 2026-09-05/i)).toBeDefined();
+  });
+
+  it('steps to the previous work date with the day navigation control', async () => {
+    const user = userEvent.setup();
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(api.getReport)).toHaveBeenCalledWith('2026-09-06');
+    });
+    await user.click(screen.getByRole('button', { name: /hari sebelumnya/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.getReport)).toHaveBeenLastCalledWith('2026-09-05');
+    });
+    expect((screen.getByLabelText(/tanggal kerja/i) as HTMLInputElement).value).toBe('2026-09-05');
+  });
 });

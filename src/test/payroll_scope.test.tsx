@@ -114,6 +114,23 @@ describe('ManagementView payroll period isolation', () => {
     expect((screen.getByRole('button', { name: /tambahkan jadwal/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('shows the reviewer note on each overtime claim row', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listOvertime).mockResolvedValue([
+      {
+        id: 'ot-1', raw_extra_minutes: 85, credited_hours: 1, status: 'REJECTED',
+        reason: 'bukan lembur, telat checkout',
+        attendance_records: { work_date: '2026-09-18', profile_id: 'profile-2', profiles: { display_name: 'Arel', role: 'OPERATOR' } },
+      },
+    ] as any);
+
+    render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /review kehadiran/i }));
+
+    expect(await screen.findByText('bukan lembur, telat checkout')).toBeDefined();
+    expect(screen.getByText('Catatan')).toBeDefined();
+  });
+
   it('lets management record a zero baseline directly from Stok Area', async () => {
     const user = userEvent.setup();
     vi.mocked(api.getManagementStockReadiness).mockResolvedValue({

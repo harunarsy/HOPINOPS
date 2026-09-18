@@ -287,6 +287,9 @@ export default function App() {
         err,
         'Checkout tercatat, tetapi assignment belum dapat diselesaikan. Anda tetap masuk agar kondisi ini dapat dipulihkan.',
       ));
+      // Checkout sudah tersimpan di server; tarik status terbaru agar UI tidak
+      // lagi menampilkan tombol check-out untuk attendance yang sudah ditutup.
+      await loadBootstrap(true);
     } finally {
       setCheckoutCompleting(false);
     }
@@ -414,7 +417,10 @@ export default function App() {
     </div>
   );
 
-  const effectiveCheckoutRecoveryError = checkoutRecoveryError || (activeAttendance?.status === 'CHECKED_OUT'
+  const checkoutAlreadyRecorded = Boolean(activeAttendance?.check_out_event_id)
+    || activeAttendance?.status === 'CHECKED_OUT'
+    || activeAttendance?.status === 'APPROVED';
+  const effectiveCheckoutRecoveryError = checkoutRecoveryError || (checkoutAlreadyRecorded && activeAssignment
     ? 'Checkout sudah tercatat, tetapi assignment masih aktif. Selesaikan assignment sebelum keluar.'
     : '');
 
@@ -801,6 +807,11 @@ export default function App() {
             assignmentId={activeAssignment.id}
             gps={settings}
             onSuccess={completeAssignmentAndLogout}
+            onRecoverableConflict={() => {
+              setShowCheckOutModal(false);
+              setCheckoutRecoveryError('Checkout sudah tercatat di server, tetapi assignment masih aktif. Selesaikan assignment sebelum keluar.');
+              void loadBootstrap(true);
+            }}
             onCancel={() => setShowCheckOutModal(false)}
           />
           {checkoutCompleting && (
@@ -906,7 +917,13 @@ export default function App() {
         canManage={currentUser.role === 'OWNER' || currentUser.role === 'SUPERVISOR'}
         onRefresh={() => loadBootstrap(true)}
         onDirtyChange={setWorkspaceDirty}
-        onCheckOutRequest={() => setShowCheckOutModal(true)}
+        onCheckOutRequest={() => {
+          if (checkoutAlreadyRecorded) {
+            setCheckoutRecoveryError('Checkout sudah tercatat, tetapi assignment masih aktif. Selesaikan assignment sebelum keluar.');
+            return;
+          }
+          setShowCheckOutModal(true);
+        }}
         onGoReports={() => setShowReportsView(true)}
       />
       {emergencyCheckoutDialog}

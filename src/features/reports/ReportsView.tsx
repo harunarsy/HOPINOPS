@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FinanceData } from '../../domain/types';
-import { fmtRupiah } from '../../domain/rules';
+import { fmtRupiah, wibDateShort } from '../../domain/rules';
 import { api } from '../../lib/api';
 import { getUserFacingError, sanitizeUserMessage } from '../../lib/user-facing-error';
 
@@ -43,6 +43,14 @@ const emptyFinance: FinanceDraft = {
   debit_mandiri: '',
 };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function shiftIsoDate(isoDate: string, days: number): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  if (!year || !month || !day) return isoDate;
+  const base = new Date(Date.UTC(year, month - 1, day));
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
 
 const financeFields: { key: keyof FinanceData; label: string; help: string }[] = [
   { key: 'cash_app', label: 'Cash POS / Aplikasi (Sistem)', help: 'Nilai cash yang tercatat di POS.' },
@@ -129,10 +137,15 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const [bonusBlockers, setBonusBlockers] = useState<string[]>([]);
   const [bonusState, setBonusState] = useState<OperationState>('idle');
   const [bonusStale, setBonusStale] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(workDate);
   const draftIdempotencyKeyRef = useRef<string | null>(null);
   const draftInFlightRef = useRef(false);
   const shareIdempotencyKeyRef = useRef<string | null>(null);
   const shareInFlightRef = useRef(false);
+
+  useEffect(() => {
+    setSelectedDate(workDate);
+  }, [workDate]);
 
   useEffect(() => {
     let active = true;
@@ -163,7 +176,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
     const loadReport = async () => {
       try {
-        const snapshot = await api.getReport(workDate) as ReportSnapshot;
+        const snapshot = await api.getReport(selectedDate) as ReportSnapshot;
         if (!active) return;
         const financeSource = financeFromSnapshot(snapshot);
         const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
@@ -185,7 +198,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
             setBonusState('success');
             return;
           }
-          const preview = await api.previewBonus(workDate);
+          const preview = await api.previewBonus(selectedDate);
           if (!active) return;
           setBonusPreview(preview.preview ?? null);
           setBonusBlockers((preview.blockers ?? []).map(blockerMessage));
@@ -212,7 +225,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     return () => {
       active = false;
     };
-  }, [workDate]);
+  }, [selectedDate]);
 
   useEffect(() => {
     let active = true;
@@ -246,7 +259,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     return () => {
       active = false;
     };
-  }, [workDate]);
+  }, []);
 
   const financeErrors = Object.fromEntries(
     financeFields.map(({ key }) => {
@@ -266,7 +279,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     ? parsedFinance.cash_real + parsedFinance.qris_mandiri + parsedFinance.debit_mandiri
     : null;
   const cashDiff = parsedFinance ? parsedFinance.cash_real - parsedFinance.cash_app : null;
-  const currentReport = managerReports.find((report) => report.work_date === workDate);
+  const currentReport = managerReports.find((report) => report.work_date === selectedDate);
   const reportIsImmutable = Boolean(reportSnapshot?.report && !['DRAFT', 'NEEDS_CLARIFICATION'].includes(reportSnapshot.report.status));
   const receiptFields = receipt
     ? [
@@ -316,7 +329,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setDraftState('loading');
     setDraftMessage('Menyimpan draft finance ke server...');
     try {
-      const saved = await api.saveReportFinance(workDate, draftVersion, parsedFinance, draftIdempotencyKeyRef.current);
+      const saved = await api.saveReportFinance(selectedDate, draftVersion, parsedFinance, draftIdempotencyKeyRef.current);
       setDraftVersion(saved.version);
       setServerDraftFinance(parsedFinance);
       setFinanceDirty(false);
@@ -344,7 +357,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         setBonusState('success');
         return;
       }
-      const preview = await api.previewBonus(workDate);
+      const preview = await api.previewBonus(selectedDate);
       setBonusPreview(preview.preview ?? null);
       setBonusBlockers((preview.blockers ?? []).map(blockerMessage));
       setBonusState('success');
@@ -372,7 +385,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
     let serverReceipt: ReportReceipt;
     try {
-      serverReceipt = await api.submitReport(workDate, financeToSubmit) as ReportReceipt;
+      serverReceipt = await api.submitReport(selectedDate, financeToSubmit) as ReportReceipt;
     } catch (error) {
       setSubmitState('error');
       setSubmitMessage(messageFrom(error, 'Laporan gagal dikirim. Data belum dinyatakan terkirim.'));
@@ -385,7 +398,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setSubmitMessage('Laporan diterima server. Simpan receipt berikut sebagai bukti pengiriman.');
 
     try {
-      const snapshot = await api.getReport(workDate) as ReportSnapshot;
+      const snapshot = await api.getReport(selectedDate) as ReportSnapshot;
       const financeSource = financeFromSnapshot(snapshot);
       const hydratedFinance = financeSource === null ? null : parseServerFinance(financeSource);
       if (financeSource !== null && !hydratedFinance) throw new Error('Data keuangan server tidak valid setelah submit.');
@@ -468,7 +481,35 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         <div>
           <p className="eyebrow">FINALISASI OPERASIONAL HARIAN</p>
           <h1>Laporan Harian</h1>
-          <p className="muted">Rekonsiliasi keuangan untuk tanggal kerja {workDate}.</p>
+          <p className="muted">Rekonsiliasi keuangan untuk tanggal kerja {selectedDate} ({wibDateShort(selectedDate)}).</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginTop: '10px' }}>
+            <button type="button" className="outline-button" style={{ width: 'auto', padding: '6px 10px' }} onClick={() => setSelectedDate(shiftIsoDate(selectedDate, -1))}>
+              ‹ Hari sebelumnya
+            </button>
+            <label htmlFor="report-work-date" style={{ fontSize: '12px', fontWeight: 600, color: '#476058' }}>Tanggal kerja</label>
+            <input
+              id="report-work-date"
+              type="date"
+              value={selectedDate}
+              max={workDate}
+              onChange={(event) => { if (event.target.value) setSelectedDate(event.target.value); }}
+              style={{ padding: '6px 8px', borderRadius: '8px', border: '1px solid #cddcd4' }}
+            />
+            <button
+              type="button"
+              className="outline-button"
+              style={{ width: 'auto', padding: '6px 10px' }}
+              onClick={() => setSelectedDate(shiftIsoDate(selectedDate, 1))}
+              disabled={selectedDate >= workDate}
+            >
+              Hari berikutnya ›
+            </button>
+            {selectedDate !== workDate && (
+              <button type="button" className="outline-button" style={{ width: 'auto', padding: '6px 10px' }} onClick={() => setSelectedDate(workDate)}>
+                Hari ini
+              </button>
+            )}
+          </div>
         </div>
         <button className="outline-button" onClick={handleBack}>
           Kembali ke Workspace
@@ -499,17 +540,33 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           {managerLoadState === 'success' && (
             <div style={{ display: 'grid', gap: '12px', marginTop: '16px' }}>
               <div role="status" style={{ padding: '12px', borderRadius: '10px', background: '#e4f1e8', color: '#1e5b48' }}>
-                <strong>Status {workDate}: </strong>
+                <strong>Status {selectedDate}: </strong>
                 {currentReport ? `${currentReport.status} (revisi ${currentReport.current_revision})` : 'Belum ada laporan di server.'}
               </div>
               {managerReports.length > 0 ? (
                 <ul aria-label="Laporan terbaru" style={{ display: 'grid', gap: '8px', margin: 0, padding: 0, listStyle: 'none' }}>
-                  {managerReports.map((report) => (
-                    <li key={report.id} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '6px 12px', padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px' }}>
-                      <strong>{report.work_date}</strong>
-                      <span style={{ color: '#547066' }}>{report.status} / revisi {report.current_revision}</span>
-                    </li>
-                  ))}
+                  {managerReports.map((report) => {
+                    const isSelected = report.work_date === selectedDate;
+                    return (
+                      <li key={report.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDate(report.work_date)}
+                          aria-current={isSelected ? 'date' : undefined}
+                          style={{
+                            display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '6px 12px',
+                            width: '100%', padding: '10px 12px', borderRadius: '9px', textAlign: 'left', cursor: 'pointer',
+                            border: isSelected ? '1px solid #1e5b48' : '1px solid #e0ece6',
+                            background: isSelected ? '#e4f1e8' : '#ffffff',
+                            color: 'inherit', font: 'inherit',
+                          }}
+                        >
+                          <strong>{report.work_date}</strong>
+                          <span style={{ color: '#547066' }}>{report.status} / revisi {report.current_revision} · lihat</span>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p className="muted">Daftar laporan server masih kosong.</p>
