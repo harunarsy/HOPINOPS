@@ -131,6 +131,29 @@ describe('ManagementView payroll period isolation', () => {
     expect(screen.getByText('Catatan')).toBeDefined();
   });
 
+  it('shows the check-in and check-out reason on the attendance review row', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAttendanceExceptions).mockResolvedValue([
+      {
+        id: 'att-1', work_date: '2026-09-18', profile_id: 'profile-2', status: 'REVIEW_REQUIRED',
+        lateness_status: 'LATE', exception_status: 'PENDING_REVIEW',
+        scheduled_start_at: '2026-09-18T04:00:00Z', scheduled_end_at: '2026-09-18T10:00:00Z',
+        profiles: { display_name: 'AREL', role: 'OPERATOR' },
+        attendance_events: [
+          { id: 'e1', event_type: 'CHECK_IN', server_occurred_at: '2026-09-18T04:45:42Z', location_status: 'TIMEOUT', note: 'GPS dalam kitchen' },
+          { id: 'e2', event_type: 'CHECK_OUT', server_occurred_at: '2026-09-18T11:25:12Z', location_status: 'OUTSIDE', selected_distance_m: 5614, note: 'Saya sudah di rumah' },
+        ],
+        attendance_corrections: [],
+      },
+    ] as any);
+
+    render(<ManagementView user={ownerUser} onLogout={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /review kehadiran/i }));
+
+    expect(await screen.findByText(/GPS dalam kitchen/i)).toBeDefined();
+    expect(screen.getByText(/Saya sudah di rumah/i)).toBeDefined();
+  });
+
   it('lets management record a zero baseline directly from Stok Area', async () => {
     const user = userEvent.setup();
     vi.mocked(api.getManagementStockReadiness).mockResolvedValue({

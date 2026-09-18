@@ -1626,6 +1626,8 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                   <thead><tr style={{ borderBottom: '1px solid #cddcd4', color: '#476058' }}><th style={{ padding: '8px' }}>Kehadiran</th><th style={{ padding: '8px' }}>Jadwal</th><th style={{ padding: '8px' }}>Masuk / Keluar</th><th style={{ padding: '8px' }}>Lokasi GPS</th><th style={{ padding: '8px' }}>Masalah</th><th style={{ padding: '8px' }}>Usulan koreksi</th><th style={{ padding: '8px' }}>Alasan</th><th style={{ padding: '8px' }}>Aksi</th></tr></thead>
                   <tbody>{attendanceExceptions.map((attendance) => {
                     const pending = (attendance.attendance_corrections ?? []).filter((correction: any) => correction.status === 'PENDING');
+                    const checkInNote = gpsEvent(attendance, 'CHECK_IN')?.note ?? '';
+                    const checkOutNote = gpsEvent(attendance, 'CHECK_OUT')?.note ?? '';
                     return (
                       <tr key={attendance.id} style={{ borderBottom: '1px solid #eef3f0', verticalAlign: 'top' }}>
                         <td style={{ padding: '8px' }}><strong>{attendance.profiles?.display_name ?? 'Pengguna'}</strong><br /><span className="muted">{attendance.work_date} · {taskLabel(attendance.status)}</span></td>
@@ -1642,7 +1644,12 @@ const [rosterFilterError, setRosterFilterError] = useState('');
                         </td>
                         <td style={{ padding: '8px' }}>{taskLabel(attendance.lateness_status)}<br /><span className="muted">{taskLabel(attendance.exception_status)}</span></td>
                         <td style={{ padding: '8px' }}>{pending.length ? pending.map((correction: any) => <div key={correction.id}><strong>{taskLabel(correction.correction_type)}:</strong> {proposedLabel(correction)}</div>) : 'Belum ada permintaan koreksi'}</td>
-                        <td style={{ padding: '8px', color: '#476058' }}>{pending.map((correction: any) => <div key={correction.id}>{correction.reason}</div>)}</td>
+                        <td style={{ padding: '8px', color: '#476058' }}>
+                          {checkInNote && <div>Masuk: {checkInNote}</div>}
+                          {checkOutNote && <div>Keluar: {checkOutNote}</div>}
+                          {pending.map((correction: any) => <div key={correction.id}>{correction.reason}</div>)}
+                          {!checkInNote && !checkOutNote && pending.length === 0 && <span className="muted">—</span>}
+                        </td>
                         <td style={{ padding: '8px' }}>
                           {pending.map((correction: any) => correction.requested_by === user.id || attendance.profile_id === user.id ? <span key={correction.id} className="muted">Reviewer lain diperlukan</span> : <div key={correction.id} style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setAttendanceReview({ attendance, correction, decision: 'APPROVED' }); }} style={{ padding: '5px 8px', fontSize: '11px' }}>Setujui</button><button type="button" className="outline-button" onClick={() => { setReviewNote(''); setAttendanceReview({ attendance, correction, decision: 'REJECTED' }); }} style={{ padding: '5px 8px', fontSize: '11px', color: '#b91c1c', borderColor: '#fecaca' }}>Tolak</button></div>)}
                           {attendance.status === 'REVIEW_REQUIRED' && pending.length === 0 && attendance.profile_id !== user.id && (user.role === 'OWNER' || attendance.profiles?.role === 'OPERATOR') && (
