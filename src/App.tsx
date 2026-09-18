@@ -760,6 +760,7 @@ export default function App() {
           <SwipeAttendance
             actionType="CHECK_IN"
             assignmentId={activeAssignment.id}
+            gps={settings}
             onSuccess={async () => {
               setShowCheckInModal(false);
               await loadBootstrap();
@@ -798,6 +799,7 @@ export default function App() {
           <SwipeAttendance
             actionType="CHECK_OUT"
             assignmentId={activeAssignment.id}
+            gps={settings}
             onSuccess={completeAssignmentAndLogout}
             onCancel={() => setShowCheckOutModal(false)}
           />

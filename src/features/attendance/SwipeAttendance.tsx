@@ -1,121 +1,116 @@
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { getErrorCode, getErrorMessage, getUserFacingError } from '../../lib/user-facing-error';
+import {
+  LOCATION_ISSUE_MESSAGES,
+  geolocationSupportIssue,
+  gpsGuideSteps,
+  normalizeGpsSettings,
+  queryGeolocationPermission,
+  startGpsWatch,
+  type GpsSettingsInput,
+  type GpsWatch,
+  type LocationIssue,
+  type LocationResult,
+} from '../../lib/geolocation';
 
 type Props = {
   actionType: 'CHECK_IN' | 'CHECK_OUT';
   assignmentId?: string;
+  gps?: GpsSettingsInput;
   onSuccess: () => void;
   onCancel?: () => void;
 };
 
-type GpsSample = {
-  latitude: number;
-  longitude: number;
-  accuracy_m: number;
-  client_sampled_at: string;
-};
+type GpsUiState = 'WARMING' | 'READY' | 'DENIED' | 'BLOCKED' | 'UNSUPPORTED';
 
-type LocationFailure = 'DENIED' | 'TIMEOUT' | 'UNAVAILABLE';
-
-type LocationIssue = LocationFailure | 'INSECURE' | 'IN_APP_BROWSER';
-
-type LocationResult = {
-  samples: GpsSample[];
-  failure?: LocationFailure;
-  issue?: LocationIssue;
-};
-
-const LOCATION_ISSUE_MESSAGES: Record<LocationIssue, string> = {
-  DENIED: 'Izin lokasi ditolak. Buka ikon kunci di address bar → izinkan Lokasi, lalu tekan Coba Lagi.',
-  IN_APP_BROWSER: 'Aplikasi ini terbuka dari dalam aplikasi lain (WhatsApp/Instagram). Buka di Chrome atau Safari agar popup izin lokasi muncul.',
-  INSECURE: 'Popup izin lokasi hanya muncul di koneksi aman (https). Buka alamat aplikasi versi https.',
-  TIMEOUT: 'GPS belum dapat sinyal. Coba di area terbuka, lalu tekan Coba Lagi.',
-  UNAVAILABLE: 'Lokasi tidak tersedia di perangkat/browser ini. Pastikan GPS aktif, lalu tekan Coba Lagi.',
-};
-
-function detectInAppBrowser(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent;
-  if (/Android/i.test(ua) && (/(^|;\s)wv\)/.test(ua) || /\bwv\b/i.test(ua))) return true;
-  if (/FBAN|FBAV|Instagram|Line\/|WhatsApp|Twitter/i.test(ua)) return true;
-  // iOS in-app browser (WKWebView) tidak memuat token Safari; Safari/Chrome iOS (CriOS) memuatnya.
-  if (/iPhone|iPad|iPod/i.test(ua) && !/Safari|CriOS|FxiOS|EdgiOS/i.test(ua)) return true;
-  return false;
-}
-
-export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel }: Props) {
+export function SwipeAttendance({ actionType, assignmentId, gps, onSuccess, onCancel }: Props) {
   const [sliderPos, setSliderPos] = useState(0);
   const [status, setStatus] = useState<'IDLE' | 'LOCATING' | 'VERIFYING' | 'SUCCESS' | 'ERROR'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
   const [note, setNote] = useState('');
   const [needsNote, setNeedsNote] = useState(false);
+  const [gpsState, setGpsState] = useState<GpsUiState>('WARMING');
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [bypassGps, setBypassGps] = useState(false);
   const locationRef = useRef<LocationResult | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
   const inFlightRef = useRef(false);
+  const watchRef = useRef<GpsWatch | null>(null);
+  const supportIssueRef = useRef<LocationIssue | null>(null);
 
   const isCheckIn = actionType === 'CHECK_IN';
+  const gpsSettings = useMemo(() => normalizeGpsSettings(gps), [gps]);
+  const gpsSettingsRef = useRef(gpsSettings);
+  gpsSettingsRef.current = gpsSettings;
 
-  const collectGpsSamples = async (): Promise<LocationResult> => {
-    // Popup izin lokasi tidak mungkin muncul di kondisi ini — beri pesan yang
-    // bisa ditindaklanjuti alih-alih menunggu timeout tanpa penjelasan.
-    if (typeof window !== 'undefined' && !window.isSecureContext) {
-      return { samples: [], failure: 'UNAVAILABLE', issue: 'INSECURE' };
+  // Watch hidup sejak layar dibuka: prompt izin muncul lebih awal dan receiver
+  // GPS sudah terkunci saat karyawan menggeser, bukan baru mulai dari nol.
+  const startWatch = () => {
+    supportIssueRef.current = geolocationSupportIssue();
+    if (supportIssueRef.current) {
+      setGpsState(supportIssueRef.current === 'DENIED' ? 'DENIED' : 'UNSUPPORTED');
+      return;
     }
-    if (!navigator.geolocation) {
-      return { samples: [], failure: 'UNAVAILABLE', issue: 'UNAVAILABLE' };
+    setGpsState('WARMING');
+    setGpsAccuracy(null);
+    const watch = startGpsWatch({
+      onSample: (sample) => {
+        setGpsAccuracy(sample.accuracy_m);
+        setGpsState('READY');
+      },
+      onIssue: (issue) => {
+        setGpsState(issue === 'DENIED' ? 'DENIED' : 'BLOCKED');
+      },
+    });
+    watchRef.current = watch;
+    if (!watch) {
+      setGpsState('UNSUPPORTED');
+      return;
     }
-    if (detectInAppBrowser()) {
-      return { samples: [], failure: 'UNAVAILABLE', issue: 'IN_APP_BROWSER' };
-    }
-
-    return new Promise((resolve) => {
-      const samples: GpsSample[] = [];
-      let settled = false;
-      let watchId: number | undefined;
-
-      const finish = (issue?: LocationIssue) => {
-        if (settled) return;
-        settled = true;
-        if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
-        clearTimeout(timeoutId);
-        if (samples.length > 0) {
-          resolve({ samples });
-          return;
-        }
-        const failure: LocationFailure = issue === 'DENIED' || issue === 'TIMEOUT' ? issue : 'UNAVAILABLE';
-        resolve({ samples, failure, issue: issue ?? 'UNAVAILABLE' });
-      };
-
-      const timeoutId = window.setTimeout(() => finish('TIMEOUT'), 10000);
-
-      try {
-        watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            if (samples.length >= 3) return;
-            samples.push({
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy_m: Math.round(pos.coords.accuracy),
-              client_sampled_at: new Date(pos.timestamp).toISOString(),
-            });
-            if (samples.length === 3) finish();
-          },
-          (error) => {
-            const issue: LocationIssue = error.code === 1
-              ? 'DENIED'
-              : error.code === 3
-                ? 'TIMEOUT'
-                : 'UNAVAILABLE';
-            finish(issue);
-          },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-        );
-      } catch {
-        finish('UNAVAILABLE');
-      }
+    void queryGeolocationPermission().then((permission) => {
+      if (permission === 'denied') setGpsState('DENIED');
     });
   };
+
+  useEffect(() => {
+    startWatch();
+    return () => {
+      watchRef.current?.stop();
+      watchRef.current = null;
+    };
+  }, []);
+
+  const retryGps = () => {
+    watchRef.current?.stop();
+    watchRef.current = null;
+    locationRef.current = null;
+    setBypassGps(false);
+    setErrorMessage('');
+    startWatch();
+  };
+
+  const collectGpsSamples = async (): Promise<LocationResult> => {
+    const supportIssue = supportIssueRef.current;
+    if (supportIssue) return { samples: [], failure: 'UNAVAILABLE', issue: supportIssue };
+    const watch = watchRef.current;
+    if (!watch) return { samples: [], failure: 'UNAVAILABLE', issue: 'UNAVAILABLE' };
+    return watch.waitForSamples(gpsSettingsRef.current);
+  };
+
+  const gpsUnavailable = gpsState === 'DENIED' || gpsState === 'BLOCKED' || gpsState === 'UNSUPPORTED';
+  const gpsBlocked = gpsUnavailable && !bypassGps && status === 'IDLE' && !needsNote;
+  const gpsIssue: LocationIssue = supportIssueRef.current
+    ?? (gpsState === 'DENIED' ? 'DENIED' : 'UNAVAILABLE');
+  const gpsStatusText = gpsState === 'READY'
+    ? `GPS aktif${gpsAccuracy !== null ? ` · akurasi ±${gpsAccuracy} m` : ''}`
+    : gpsState === 'WARMING'
+      ? 'Menyalakan GPS… izinkan akses lokasi bila popup muncul'
+      : gpsState === 'DENIED'
+        ? 'Izin lokasi ditolak'
+        : gpsState === 'UNSUPPORTED'
+          ? LOCATION_ISSUE_MESSAGES[supportIssueRef.current ?? 'UNAVAILABLE']
+          : 'GPS belum aktif di perangkat';
 
   const performAttendance = async (providedNote?: string) => {
     if (inFlightRef.current) return;
@@ -191,7 +186,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
   const trackRef = useRef<HTMLDivElement>(null);
 
   const startDrag = (clientX: number) => {
-    if (status !== 'IDLE' || needsNote) return;
+    if (status !== 'IDLE' || needsNote || gpsBlocked) return;
     setIsDragging(true);
     updateDragPosition(clientX);
   };
@@ -203,7 +198,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
     const offsetX = Math.max(0, Math.min(clientX - rect.left - 26, width));
     const percent = Math.round((offsetX / width) * 100);
     setSliderPos(percent);
-    if (percent >= 90 && !inFlightRef.current && status === 'IDLE') {
+    if (percent >= 90 && !inFlightRef.current && status === 'IDLE' && !gpsBlocked) {
       setIsDragging(false);
       setSliderPos(100);
       void performAttendance();
@@ -221,7 +216,7 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = Number(e.target.value);
     setSliderPos(val);
-    if (val >= 90 && status === 'IDLE' && !inFlightRef.current) {
+    if (val >= 90 && status === 'IDLE' && !inFlightRef.current && !gpsBlocked) {
       void performAttendance();
     }
   };
@@ -237,6 +232,29 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
             : 'Geser ke kanan untuk check-out dan mengakhiri jam kerja.'}
         </p>
       </div>
+
+      {status === 'IDLE' && !needsNote && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            padding: '8px 12px',
+            borderRadius: '10px',
+            fontSize: '12px',
+            fontWeight: 600,
+            textAlign: 'center',
+            background: gpsState === 'READY' ? '#e5f2ea' : gpsState === 'WARMING' ? '#fdf3dd' : '#fde8e8',
+            color: gpsState === 'READY' ? '#1e5b48' : gpsState === 'WARMING' ? '#92600a' : '#a12424',
+          }}
+        >
+          <span aria-hidden="true">{gpsState === 'READY' ? '✓' : gpsState === 'WARMING' ? '…' : '!'}</span>
+          <span>{gpsStatusText}</span>
+        </div>
+      )}
 
       {status === 'LOCATING' && (
         <div role="status" aria-live="polite" style={{ textAlign: 'center', padding: '20px' }}>
@@ -309,7 +327,32 @@ export function SwipeAttendance({ actionType, assignmentId, onSuccess, onCancel 
         </div>
       )}
 
-      {status === 'IDLE' && !needsNote && (
+      {gpsBlocked && (
+        <div style={{ marginTop: '14px', padding: '14px', borderRadius: '12px', background: '#fdecec', border: '1px solid #f3c9c9' }}>
+          <strong style={{ fontSize: '13px', color: '#a12424', display: 'block', marginBottom: '6px' }}>
+            Absensi dikunci sampai GPS aktif
+          </strong>
+          <p className="muted" style={{ fontSize: '12px', marginBottom: '10px' }}>
+            {LOCATION_ISSUE_MESSAGES[gpsIssue]}
+          </p>
+          <details style={{ fontSize: '12px', marginBottom: '10px' }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Cara mengaktifkan GPS di perangkat ini</summary>
+            <ol style={{ margin: '8px 0 0 18px', padding: 0, lineHeight: 1.6 }}>
+              {gpsGuideSteps().map((step) => <li key={step}>{step}</li>)}
+            </ol>
+          </details>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button type="button" className="primary-button" style={{ flex: 1 }} onClick={retryGps}>
+              Coba Lagi
+            </button>
+            <button type="button" className="outline-button" style={{ flex: 1 }} onClick={() => setBypassGps(true)}>
+              Absen tanpa GPS
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === 'IDLE' && !needsNote && !gpsBlocked && (
         <div
           ref={trackRef}
           style={{
