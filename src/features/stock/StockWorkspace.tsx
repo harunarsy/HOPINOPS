@@ -1056,16 +1056,6 @@ export function StockWorkspace({
       return;
     }
 
-    const incompleteVariance = items.find((it) => {
-      const parsed = parseQuantityInput(closingCounts[it.id], it.decimal_scale);
-      const hasVariance = parsed !== itemBalances[it.id]?.system;
-      return hasVariance && !closingReasons[it.id]?.trim();
-    });
-    if (incompleteVariance) {
-      showCriticalError(`Pilih kategori alasan selisih closing untuk "${incompleteVariance.name}".`);
-      return;
-    }
-
     setLoading(true);
     try {
       const lines = items.map((it) => {
@@ -1749,7 +1739,7 @@ export function StockWorkspace({
                   {hasDiff && !isClosingConfirmed && !closingCompleted && (
                     <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #cddcd4' }}>
                       <label htmlFor={`closing-reason-${it.id}`} style={{ display: 'block', fontSize: '11px', fontWeight: 700, marginBottom: '4px' }}>
-                        Kategori alasan selisih (wajib)
+                        Kategori alasan selisih (opsional)
                       </label>
                       <select
                         id={`closing-reason-${it.id}`}
