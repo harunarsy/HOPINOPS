@@ -379,5 +379,8 @@ describe('ReportsView stock summary (E3/U05)', () => {
     expect(text).toContain('STOK PENUTUP — KITCHEN (1 barang)');
     expect(text).toMatch(/Cash Fisik Nyata: Rp\s?105\.000/);
     expect(text).toContain('Keterangan: Catatan kas');
+    expect(text.indexOf('KEUANGAN')).toBeGreaterThan(-1);
+    expect(text.indexOf('KEUANGAN')).toBeLessThan(text.indexOf('STOK PENUTUP — BAR'));
+    expect(text.indexOf('- gula:')).toBeLessThan(text.indexOf('- kopi:'));
   });
 });

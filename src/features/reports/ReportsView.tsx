@@ -554,20 +554,6 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       '',
     ];
 
-    (['BAR', 'KITCHEN'] as const).forEach((area) => {
-      const areaLines = sortByStatus(stockLines.filter((line) => line.area_code === area));
-      lines.push(`STOK PENUTUP — ${area} (${areaLines.length} barang)`);
-      if (areaLines.length === 0) {
-        lines.push('- Belum ada data stok tersimpan.');
-      } else {
-        areaLines.forEach((line) => {
-          const unit = line.unit_code ? ` ${line.unit_code}` : '';
-          lines.push(`- ${line.item_name ?? line.item_id}: ${formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}${unit} — ${stockStatusLabel(line.stock_status)}`);
-        });
-      }
-      lines.push('');
-    });
-
     lines.push('KEUANGAN');
     if (parsedFinance) {
       lines.push(`Cash POS / Aplikasi (Sistem): ${fmtRupiah(parsedFinance.cash_app)}`);
@@ -582,7 +568,23 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       lines.push('- Nilai keuangan belum lengkap di perangkat.');
     }
     lines.push(`Keterangan: ${trimmedNote || '-'}`);
-    return lines.join('\n');
+    lines.push('');
+
+    (['BAR', 'KITCHEN'] as const).forEach((area) => {
+      const areaLines = sortByStatus(stockLines.filter((line) => line.area_code === area));
+      lines.push(`STOK PENUTUP — ${area} (${areaLines.length} barang)`);
+      if (areaLines.length === 0) {
+        lines.push('- Belum ada data stok tersimpan.');
+      } else {
+        areaLines.forEach((line) => {
+          const unit = line.unit_code ? ` ${line.unit_code}` : '';
+          lines.push(`- ${line.item_name ?? line.item_id}: ${formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}${unit} — ${stockStatusLabel(line.stock_status)}`);
+        });
+      }
+      lines.push('');
+    });
+
+    return lines.join('\n').trimEnd();
   };
 
   const handleCopyTemplate = async () => {
