@@ -47,7 +47,7 @@ describe('ReportsView stock summary (E3/U05)', () => {
     });
     expect(screen.getByText('Bar')).toBeDefined();
     expect(screen.getByText('Kitchen')).toBeDefined();
-    expect(screen.getByText(/1 perlu perhatian/i)).toBeDefined();
+    expect(screen.getByText(/1 barang perlu perhatian/i)).toBeDefined();
     expect(screen.getByRole('heading', { name: /kesiapan laporan/i })).toBeDefined();
     expect(screen.getByText(/closing bar:/i)).toBeDefined();
   });
@@ -188,5 +188,153 @@ describe('ReportsView stock summary (E3/U05)', () => {
       expect(vi.mocked(api.getReport)).toHaveBeenLastCalledWith('2026-09-05');
     });
     expect((screen.getByLabelText(/tanggal kerja/i) as HTMLInputElement).value).toBe('2026-09-05');
+  });
+
+  it('derives closing readiness from server closing_readiness, not stock line presence', async () => {
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      stock_lines: [{ item_id: 'kopi', area_code: 'BAR', closing_qty: 5, stock_status: 'AMAN' }],
+      closing_readiness: { bar: { confirmed_closings: 1 }, kitchen: { confirmed_closings: 1 } },
+    } as any);
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/closing bar: terkonfirmasi \(1 closing\)/i)).toBeDefined();
+    });
+    expect(screen.getByText(/closing kitchen: terkonfirmasi \(1 closing\)/i)).toBeDefined();
+    expect(screen.queryAllByText(/menunggu closing terkonfirmasi/i)).toHaveLength(0);
+  });
+
+  it('flags more than one confirmed closing per area as needing attention', async () => {
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      closing_readiness: { bar: { confirmed_closings: 2 }, kitchen: { confirmed_closings: 0 } },
+    } as any);
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 closing terkonfirmasi, server minta tepat 1/i)).toBeDefined();
+    });
+    const submitBtn = screen.getByRole('button', { name: /kirim laporan resmi/i }) as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(true);
+  });
+
+  it('renders per-item stock detail with quantity, unit, and category', async () => {
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      stock_lines: [
+        { item_id: 'kopi', item_name: 'Kopi Susu', unit_code: 'kilo', decimal_scale_snapshot: 3, area_code: 'BAR', closing_qty: 5.5, stock_status: 'AMAN' },
+        { item_id: 'gula', item_name: 'Gula Pasir', unit_code: 'kg', decimal_scale_snapshot: 2, area_code: 'BAR', closing_qty: 0, stock_status: 'HABIS' },
+      ],
+    } as any);
+    render(
+      <ReportsView isFinalizer={false} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Kopi Susu')).toBeDefined();
+    });
+    expect(screen.getByText('Gula Pasir')).toBeDefined();
+    expect(screen.getByText(/5,500 kilo · Aman/)).toBeDefined();
+    expect(screen.getByText(/0,00 kg · Habis/)).toBeDefined();
+  });
+
+  it('sends the optional finance note with the draft and omits the key when blank', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      closing_readiness: { bar: { confirmed_closings: 1 }, kitchen: { confirmed_closings: 1 } },
+    } as any);
+    vi.mocked(api.saveReportFinance).mockResolvedValue({ version: 2 } as any);
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/cash fisik nyata/i)).toBeDefined();
+    });
+    await user.type(screen.getByLabelText(/cash fisik nyata/i), '105000');
+    await user.type(screen.getByLabelText(/cash pos/i), '95000');
+    await user.type(screen.getByLabelText(/qris mandiri/i), '520000');
+    await user.type(screen.getByLabelText(/debit mandiri/i), '50000');
+    await user.type(screen.getByLabelText(/keterangan/i), '  Kas selisih karena kembalian  ');
+    await user.click(screen.getByRole('button', { name: /simpan draft/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.saveReportFinance)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(api.saveReportFinance).mock.calls[0][2]).toEqual({
+      cash_real: 105000,
+      cash_app: 95000,
+      qris_mandiri: 520000,
+      debit_mandiri: 50000,
+      note: 'Kas selisih karena kembalian',
+    });
+  });
+
+  it('omits the note key entirely when keterangan is left blank', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      closing_readiness: { bar: { confirmed_closings: 1 }, kitchen: { confirmed_closings: 1 } },
+    } as any);
+    vi.mocked(api.saveReportFinance).mockResolvedValue({ version: 2 } as any);
+    render(
+      <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/cash fisik nyata/i)).toBeDefined();
+    });
+    await user.type(screen.getByLabelText(/cash fisik nyata/i), '105000');
+    await user.type(screen.getByLabelText(/cash pos/i), '95000');
+    await user.type(screen.getByLabelText(/qris mandiri/i), '520000');
+    await user.type(screen.getByLabelText(/debit mandiri/i), '50000');
+    await user.type(screen.getByLabelText(/keterangan/i), '   ');
+    await user.click(screen.getByRole('button', { name: /simpan draft/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.saveReportFinance)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(api.saveReportFinance).mock.calls[0][2]).not.toHaveProperty('note');
+  });
+
+  it('copies a full-detail report template with stock, finance, and keterangan', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      report: { id: 'rep-1', status: 'SUBMITTED', current_revision: 1, version: 2 },
+      revision: { id: 'rev-1', public_id: 'PUB-1', status: 'SUBMITTED' },
+      finance: { cash_real: 105000, cash_app: 95000, qris_mandiri: 520000, debit_mandiri: 50000, note: 'Catatan kas' },
+      closing_readiness: { bar: { confirmed_closings: 1 }, kitchen: { confirmed_closings: 1 } },
+    } as any);
+    render(
+      <ReportsView isFinalizer={false} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /salin template laporan/i })).toBeDefined();
+    });
+    await user.click(screen.getByRole('button', { name: /salin template laporan/i }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    const text = writeText.mock.calls[0][0] as string;
+    expect(text).toContain('LAPORAN HARIAN HOPIN');
+    expect(text).toContain('Tanggal: 2026-09-06');
+    expect(text).toContain('Status: SUBMITTED · revisi 1');
+    expect(text).toContain('STOK PENUTUP — BAR (2 barang)');
+    expect(text).toContain('- kopi: 5,00 — Aman');
+    expect(text).toContain('- gula: 0,00 — Habis');
+    expect(text).toContain('STOK PENUTUP — KITCHEN (1 barang)');
+    expect(text).toMatch(/Cash Fisik Nyata: Rp\s?105\.000/);
+    expect(text).toContain('Keterangan: Catatan kas');
   });
 });

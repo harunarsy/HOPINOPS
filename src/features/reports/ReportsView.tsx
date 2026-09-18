@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FinanceData } from '../../domain/types';
-import { fmtRupiah, wibDateShort } from '../../domain/rules';
+import { fmtRupiah, wibDate, wibDateShort } from '../../domain/rules';
 import { api } from '../../lib/api';
 import { getUserFacingError, sanitizeUserMessage } from '../../lib/user-facing-error';
 
@@ -11,7 +11,18 @@ type Props = {
   onBack: () => void;
 };
 
-type FinanceDraft = Record<keyof FinanceData, string>;
+type FinanceFieldKey = 'cash_real' | 'cash_app' | 'qris_mandiri' | 'debit_mandiri';
+type FinanceDraft = Record<FinanceFieldKey, string>;
+type StockLineSnapshot = {
+  item_id: string;
+  area_code: string;
+  closing_qty: number;
+  stock_status: string;
+  item_name?: string | null;
+  unit_code?: string | null;
+  decimal_scale_snapshot?: number | null;
+};
+type ClosingReadiness = { bar: { confirmed_closings: number }; kitchen: { confirmed_closings: number } };
 type ManagerReport = {
   id: string;
   work_date: string;
@@ -31,6 +42,7 @@ type ReportSnapshot = {
   finance: (FinanceData & Record<string, unknown>) | null;
   stock_lines: unknown[];
   finance_draft: ({ version: number; finance_json: FinanceData } & Record<string, unknown>) | null;
+  closing_readiness: ClosingReadiness | null;
 };
 type LoadState = 'checking' | 'not-applicable' | 'loading' | 'success' | 'error';
 type OperationState = 'idle' | 'loading' | 'success' | 'error';
@@ -52,7 +64,7 @@ function shiftIsoDate(isoDate: string, days: number): string {
   return base.toISOString().slice(0, 10);
 }
 
-const financeFields: { key: keyof FinanceData; label: string; help: string }[] = [
+const financeFields: { key: FinanceFieldKey; label: string; help: string }[] = [
   { key: 'cash_app', label: 'Cash POS / Aplikasi (Sistem)', help: 'Nilai cash yang tercatat di POS.' },
   { key: 'cash_real', label: 'Cash Fisik Nyata (Hitung Brankas/Laci)', help: 'Nilai cash hasil hitung fisik.' },
   { key: 'qris_mandiri', label: 'QRIS Mandiri (Net Settlement)', help: 'Nilai settlement QRIS bersih.' },
@@ -79,12 +91,48 @@ function parseServerFinance(value: unknown): FinanceData | null {
   const source = value as Record<string, unknown>;
   const parsed = financeFields.map(({ key }) => source[key]);
   if (!parsed.every((amount) => typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0)) return null;
+  const rawNote = typeof source.note === 'string' ? source.note.trim() : '';
   return {
     cash_real: source.cash_real as number,
     cash_app: source.cash_app as number,
     qris_mandiri: source.qris_mandiri as number,
     debit_mandiri: source.debit_mandiri as number,
+    ...(rawNote && rawNote.length <= 500 ? { note: rawNote } : {}),
   };
+}
+
+const stockStatusLabels: Record<string, string> = {
+  AMAN: 'Aman',
+  HAMPIR_HABIS: 'Hampir habis',
+  HABIS: 'Habis',
+};
+
+function stockStatusLabel(status: string): string {
+  return stockStatusLabels[status] ?? status;
+}
+
+function formatSnapshotQty(qty: unknown, decimalScale: unknown): string {
+  if (typeof qty !== 'number' || !Number.isFinite(qty)) return '—';
+  const scale = typeof decimalScale === 'number' && Number.isInteger(decimalScale)
+    ? Math.min(6, Math.max(0, decimalScale))
+    : 2;
+  return qty.toFixed(scale).replace('.', ',');
+}
+
+function snapshotLines(snapshot: ReportSnapshot | null): StockLineSnapshot[] {
+  if (!snapshot) return [];
+  return (snapshot.stock_lines as StockLineSnapshot[]).filter((line) => typeof line?.area_code === 'string');
+}
+
+function confirmedClosings(snapshot: ReportSnapshot | null, area: 'bar' | 'kitchen'): number {
+  const value = snapshot?.closing_readiness?.[area]?.confirmed_closings;
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function closingAreaStatus(count: number): string {
+  if (count === 1) return 'terkonfirmasi (1 closing)';
+  if (count > 1) return `perlu perhatian: ${count} closing terkonfirmasi, server minta tepat 1`;
+  return 'belum terkonfirmasi';
 }
 
 function financeToInputs(value: FinanceData): FinanceDraft {
@@ -94,6 +142,10 @@ function financeToInputs(value: FinanceData): FinanceDraft {
     qris_mandiri: String(value.qris_mandiri),
     debit_mandiri: String(value.debit_mandiri),
   };
+}
+
+function noteFromFinance(value: FinanceData | null | undefined): string {
+  return typeof value?.note === 'string' ? value.note : '';
 }
 
 function financeFromSnapshot(snapshot: ReportSnapshot) {
@@ -118,6 +170,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null);
   const [serverDraftFinance, setServerDraftFinance] = useState<FinanceData | null>(null);
   const [financeDirty, setFinanceDirty] = useState(false);
+  const [financeNote, setFinanceNote] = useState('');
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [draftState, setDraftState] = useState<OperationState>('idle');
   const [draftMessage, setDraftMessage] = useState('');
@@ -131,6 +184,8 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const [receipt, setReceipt] = useState<ReportReceipt | null>(null);
   const [shareState, setShareState] = useState<OperationState>('idle');
   const [shareMessage, setShareMessage] = useState('');
+  const [templateState, setTemplateState] = useState<OperationState>('idle');
+  const [templateMessage, setTemplateMessage] = useState('');
   const [recipientId, setRecipientId] = useState('');
   const [shareReason, setShareReason] = useState('');
   const [bonusPreview, setBonusPreview] = useState<{ recorded_total: number; tier_percent: number; pool_amount: number; participant_count: number } | null>(null);
@@ -156,6 +211,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setFinance({ ...emptyFinance });
     setServerDraftFinance(null);
     setFinanceDirty(false);
+    setFinanceNote('');
     setDraftVersion(null);
     setDraftState('idle');
     setDraftMessage('');
@@ -165,6 +221,8 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setReceipt(null);
     setShareState('idle');
     setShareMessage('');
+    setTemplateState('idle');
+    setTemplateMessage('');
     setRecipientId('');
     setShareReason('');
     setBonusPreview(null);
@@ -189,6 +247,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
 
         setReportSnapshot(snapshot);
         setFinance(hydratedFinance ? financeToInputs(hydratedFinance) : { ...emptyFinance });
+        setFinanceNote(hydratedFinance ? noteFromFinance(hydratedFinance) : '');
         setServerDraftFinance(snapshot.finance_draft ? hydratedFinance : null);
         setDraftVersion(snapshot.finance_draft?.version ?? null);
         setReceipt(receiptFromReport(snapshot));
@@ -211,8 +270,9 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       } catch (error) {
         if (!active) return;
         if (codeFrom(error) === 'NOT_FOUND') {
-          setReportSnapshot({ report: null, revision: null, finance: null, stock_lines: [], finance_draft: null });
+          setReportSnapshot({ report: null, revision: null, finance: null, stock_lines: [], finance_draft: null, closing_readiness: null });
           setFinance({ ...emptyFinance });
+          setFinanceNote('');
           setReportLoadState('success');
           return;
         }
@@ -267,10 +327,20 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       const valid = /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
       return [key, valid ? '' : 'Wajib bilangan bulat 0 atau lebih dalam rentang aman.'];
     }),
-  ) as Record<keyof FinanceData, string>;
+  ) as Record<FinanceFieldKey, string>;
   const financeIsValid = Object.values(financeErrors).every((error) => !error);
-  const parsedFinance = financeIsValid
-    ? Object.fromEntries(Object.entries(finance).map(([key, value]) => [key, Number(value)])) as FinanceData
+  const parsedFinance: FinanceData | null = financeIsValid
+    ? {
+        cash_real: Number(finance.cash_real),
+        cash_app: Number(finance.cash_app),
+        qris_mandiri: Number(finance.qris_mandiri),
+        debit_mandiri: Number(finance.debit_mandiri),
+      }
+    : null;
+  // Keterangan selalu opsional: hanya ikut terkirim bila terisi.
+  const trimmedNote = financeNote.trim();
+  const financePayload: FinanceData | null = parsedFinance
+    ? (trimmedNote ? { ...parsedFinance, note: trimmedNote } : parsedFinance)
     : null;
   const recordedTotal = parsedFinance
     ? parsedFinance.cash_app + parsedFinance.qris_mandiri + parsedFinance.debit_mandiri
@@ -293,8 +363,11 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const recipientIsValid = uuidPattern.test(recipientId.trim());
   const reasonIsValid = shareReason.trim().length > 0 && shareReason.trim().length <= 1000;
   const canShareReport = Boolean(isManager && reportSnapshot?.revision && reportSnapshot.report && recipientIsValid && reasonIsValid);
-  const stockAreas = new Set((reportSnapshot?.stock_lines ?? []).map((line: any) => line.area_code));
-  const closingReady = stockAreas.has('BAR') && stockAreas.has('KITCHEN');
+  const stockLines = snapshotLines(reportSnapshot);
+  const barConfirmed = confirmedClosings(reportSnapshot, 'bar');
+  const kitchenConfirmed = confirmedClosings(reportSnapshot, 'kitchen');
+  const closingReady = barConfirmed === 1 && kitchenConfirmed === 1;
+  const canCopyTemplate = stockLines.length > 0 || Boolean(parsedFinance);
   const readinessMessage = reportIsImmutable
     ? 'Laporan sudah ditutup dan tidak dapat diubah.'
     : !closingReady
@@ -322,21 +395,21 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
           : '';
 
   const handleSaveDraft = async () => {
-    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || draftInFlightRef.current) return;
+    if (!financePayload || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || draftInFlightRef.current) return;
 
     draftInFlightRef.current = true;
     draftIdempotencyKeyRef.current ??= crypto.randomUUID();
     setDraftState('loading');
     setDraftMessage('Menyimpan draft finance ke server...');
     try {
-      const saved = await api.saveReportFinance(selectedDate, draftVersion, parsedFinance, draftIdempotencyKeyRef.current);
+      const saved = await api.saveReportFinance(selectedDate, draftVersion, financePayload, draftIdempotencyKeyRef.current);
       setDraftVersion(saved.version);
-      setServerDraftFinance(parsedFinance);
+      setServerDraftFinance(financePayload);
       setFinanceDirty(false);
       setBonusStale(true);
       setReportSnapshot((current) => current ? {
         ...current,
-        finance_draft: { ...(current.finance_draft ?? {}), ...saved, finance_json: parsedFinance },
+        finance_draft: { ...(current.finance_draft ?? {}), ...saved, finance_json: financePayload },
       } as ReportSnapshot : current);
       setDraftState('success');
       setDraftMessage(`Draft finance tersimpan di server (versi ${saved.version}).`);
@@ -374,9 +447,9 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   };
 
   const handleSubmitReport = async () => {
-    if (!parsedFinance || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || !closingReady || submitState === 'loading' || submitState === 'success') return;
+    if (!financePayload || !isFinalizer || reportLoadState !== 'success' || reportIsImmutable || !closingReady || submitState === 'loading' || submitState === 'success') return;
 
-    const financeToSubmit = !financeDirty && serverDraftFinance ? serverDraftFinance : parsedFinance;
+    const financeToSubmit = !financeDirty && serverDraftFinance ? serverDraftFinance : financePayload;
 
     setSubmitState('loading');
     setSubmitMessage('Mengirim finance dan meminta validasi kesiapan dari server...');
@@ -404,6 +477,7 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       if (financeSource !== null && !hydratedFinance) throw new Error('Data keuangan server tidak valid setelah submit.');
       setReportSnapshot(snapshot);
       setFinance(hydratedFinance ? financeToInputs(hydratedFinance) : financeToInputs(financeToSubmit));
+      setFinanceNote(hydratedFinance ? noteFromFinance(hydratedFinance) : noteFromFinance(financeToSubmit));
       setServerDraftFinance(snapshot.finance_draft ? hydratedFinance : null);
       setFinanceDirty(false);
       setDraftVersion(snapshot.finance_draft?.version ?? null);
@@ -449,8 +523,60 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     }
   };
 
-  const handleShareReport = async () => {
+  const buildReportTemplate = () => {
     const report = reportSnapshot?.report;
+    const lines: string[] = [
+      'LAPORAN HARIAN HOPIN',
+      `Tanggal: ${selectedDate} (${wibDate(new Date(`${selectedDate}T00:00:00+07:00`))})`,
+      `Status: ${report ? `${report.status} · revisi ${report.current_revision}` : 'Belum ada laporan di server'}`,
+      '',
+    ];
+
+    (['BAR', 'KITCHEN'] as const).forEach((area) => {
+      const areaLines = stockLines.filter((line) => line.area_code === area);
+      lines.push(`STOK PENUTUP — ${area} (${areaLines.length} barang)`);
+      if (areaLines.length === 0) {
+        lines.push('- Belum ada data stok tersimpan.');
+      } else {
+        areaLines.forEach((line) => {
+          const unit = line.unit_code ? ` ${line.unit_code}` : '';
+          lines.push(`- ${line.item_name ?? line.item_id}: ${formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}${unit} — ${stockStatusLabel(line.stock_status)}`);
+        });
+      }
+      lines.push('');
+    });
+
+    lines.push('KEUANGAN');
+    if (parsedFinance) {
+      lines.push(`Cash POS / Aplikasi (Sistem): ${fmtRupiah(parsedFinance.cash_app)}`);
+      lines.push(`Cash Fisik Nyata: ${fmtRupiah(parsedFinance.cash_real)}`);
+      lines.push(`QRIS Mandiri: ${fmtRupiah(parsedFinance.qris_mandiri)}`);
+      lines.push(`Debit Mandiri: ${fmtRupiah(parsedFinance.debit_mandiri)}`);
+      lines.push(`Total Transaksi Tercatat: ${fmtRupiah(parsedFinance.cash_app + parsedFinance.qris_mandiri + parsedFinance.debit_mandiri)}`);
+      lines.push(`Total Uang Masuk Aktual: ${fmtRupiah(parsedFinance.cash_real + parsedFinance.qris_mandiri + parsedFinance.debit_mandiri)}`);
+      const diff = parsedFinance.cash_real - parsedFinance.cash_app;
+      lines.push(`Selisih Kas Fisik: ${diff < 0 ? '-' : '+'}${fmtRupiah(Math.abs(diff))}`);
+    } else {
+      lines.push('- Nilai keuangan belum lengkap di perangkat.');
+    }
+    lines.push(`Keterangan: ${trimmedNote || '-'}`);
+    return lines.join('\n');
+  };
+
+  const handleCopyTemplate = async () => {
+    const text = buildReportTemplate();
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard tidak tersedia di browser ini.');
+      await navigator.clipboard.writeText(text);
+      setTemplateState('success');
+      setTemplateMessage('Template laporan berhasil disalin. Tempel ke WhatsApp.');
+    } catch (error) {
+      setTemplateState('error');
+      setTemplateMessage(messageFrom(error, 'Template laporan gagal disalin.'));
+    }
+  };
+
+  const handleShareReport = async () => {    const report = reportSnapshot?.report;
     const revision = reportSnapshot?.revision;
     const reason = shareReason.trim();
     const recipient = recipientId.trim();
@@ -594,17 +720,28 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         ) : (
           <div style={{ display: 'grid', gap: '8px', marginTop: '12px' }}>
             {(['BAR', 'KITCHEN'] as const).map((stockArea) => {
-              const lines = (reportSnapshot.stock_lines as { item_id: string; area_code: string; closing_qty: number; stock_status: string }[])
-                .filter((line) => line.area_code === stockArea);
+              const lines = stockLines.filter((line) => line.area_code === stockArea);
               if (lines.length === 0) return null;
               const attention = lines.filter((line) => line.stock_status !== 'AMAN').length;
               return (
                 <div key={stockArea} style={{ padding: '10px 12px', border: '1px solid #e0ece6', borderRadius: '9px' }}>
-                  <strong>{stockArea === 'BAR' ? 'Bar' : 'Kitchen'}</strong>
-                  <span className="muted"> · {lines.length} barang tercatat</span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '4px 10px' }}>
+                    <strong>{stockArea === 'BAR' ? 'Bar' : 'Kitchen'}</strong>
+                    <span className="muted">{lines.length} barang tercatat</span>
+                  </div>
                   {attention > 0 && (
-                    <span style={{ color: '#b45309', fontWeight: 700 }}> · {attention} perlu perhatian</span>
+                    <p style={{ margin: '4px 0 0', color: '#b45309', fontWeight: 700, fontSize: '12px' }}>{attention} barang perlu perhatian</p>
                   )}
+                  <ul style={{ margin: '8px 0 0', paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+                    {lines.map((line) => (
+                      <li key={`${line.area_code}-${line.item_id}`} style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 8px', justifyContent: 'space-between' }}>
+                        <span>{line.item_name ?? line.item_id}</span>
+                        <span style={{ color: '#547066' }}>
+                          {formatSnapshotQty(line.closing_qty, line.decimal_scale_snapshot)}{line.unit_code ? ` ${line.unit_code}` : ''} · {stockStatusLabel(line.stock_status)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               );
             })}
@@ -620,10 +757,45 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
         <h2 id="readiness-title">Kesiapan Laporan</h2>
         <p role="status" style={{ margin: '12px 0 0' }}>{readinessMessage}</p>
         <ul style={{ margin: '12px 0 0', paddingLeft: '20px' }}>
-          <li>Closing Bar: {stockAreas.has('BAR') ? 'terbaca dari snapshot server' : 'belum tersedia'}</li>
-          <li>Closing Kitchen: {stockAreas.has('KITCHEN') ? 'terbaca dari snapshot server' : 'belum tersedia'}</li>
+          <li>Closing Bar: {closingAreaStatus(barConfirmed)}</li>
+          <li>Closing Kitchen: {closingAreaStatus(kitchenConfirmed)}</li>
           <li>Finance: {financeIsValid ? 'format valid' : 'perlu diperbaiki'}</li>
+          <li>Keterangan: {trimmedNote ? 'terisi (opsional)' : 'kosong (opsional)'}</li>
         </ul>
+      </section>
+
+      <section className="section-card" aria-labelledby="template-title" style={{ marginTop: '16px' }}>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">SALIN CEPAT</p>
+            <h2 id="template-title">Template Laporan</h2>
+          </div>
+        </div>
+        <p className="muted" style={{ fontSize: '12px', marginTop: '8px' }}>
+          Ringkasan siap tempel ke WhatsApp: tanggal, status, seluruh barang dengan stok akhir dan kategori, plus keuangan dan keterangan.
+        </p>
+        <button
+          type="button"
+          className="outline-button"
+          onClick={() => { void handleCopyTemplate(); }}
+          disabled={!canCopyTemplate}
+          style={{ width: 'auto', marginTop: '12px', padding: '8px 14px' }}
+        >
+          Salin Template Laporan
+        </button>
+        {!canCopyTemplate && (
+          <p className="muted" style={{ fontSize: '11px', margin: '6px 0 0' }}>
+            Template tersedia setelah ada data stok atau keuangan untuk tanggal ini.
+          </p>
+        )}
+        {templateState !== 'idle' && (
+          <div
+            role={templateState === 'error' ? 'alert' : 'status'}
+            style={{ marginTop: '12px', padding: '12px', borderRadius: '10px', border: `1px solid ${templateState === 'error' ? '#e6b9b0' : '#c6dfd0'}`, background: templateState === 'error' ? '#fbe8e4' : '#e4f1e8', color: templateState === 'error' ? '#8f3f34' : '#1e5b48' }}
+          >
+            {templateMessage}
+          </div>
+        )}
       </section>
 
       <section className="section-card" aria-labelledby="finance-title" style={{ marginTop: '16px' }}>
@@ -696,6 +868,35 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                 </div>
               );
             })}
+          </div>
+
+          <div style={{ marginTop: '12px' }}>
+            <label htmlFor="report-note" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>
+              Keterangan (opsional)
+            </label>
+            <textarea
+              id="report-note"
+              name="note"
+              rows={3}
+              maxLength={500}
+              value={financeNote}
+              disabled={fieldsDisabled}
+              onChange={(event) => {
+                setFinanceNote(event.target.value);
+                setFinanceDirty(true);
+                setBonusStale(true);
+                setDraftState('idle');
+                setDraftMessage('');
+                setSubmitState('idle');
+                setSubmitMessage('');
+                draftIdempotencyKeyRef.current = null;
+              }}
+              placeholder="Catatan tambahan untuk laporan ini. Boleh dikosongkan."
+              style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #cddcd4', resize: 'vertical', font: 'inherit' }}
+            />
+            <p className="muted" style={{ fontSize: '11px', margin: '4px 0 0' }}>
+              Tidak pernah wajib dan boleh diisi pada kondisi apa pun. Ikut tersimpan ke laporan resmi serta template salin. {trimmedNote.length}/500
+            </p>
           </div>
 
           <div style={{ marginTop: '20px', padding: '16px', background: '#f8faf9', borderRadius: '10px', border: '1px solid #e0ece6' }}>

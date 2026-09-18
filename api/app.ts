@@ -403,6 +403,28 @@ function isWholeAmount(value: unknown, allowNegative = false): value is number {
     && (allowNegative || value >= 0);
 }
 
+// Finance laporan: empat angka whole nonnegative wajib, keterangan opsional.
+// Keterangan kosong/whitespace dinormalisasi menjadi tanpa key sama sekali,
+// supaya checksum dan idempotency konsisten dengan payload yang tersimpan.
+function normalizeReportFinance(value: unknown): {
+  cash_real: number; cash_app: number; qris_mandiri: number; debit_mandiri: number; note?: string;
+} | null {
+  if (!isObject(value)) return null;
+  if (!hasOnlyKeys(value, ['cash_real', 'cash_app', 'qris_mandiri', 'debit_mandiri', 'note'])) return null;
+  if (!isWholeAmount(value.cash_real) || !isWholeAmount(value.cash_app)
+    || !isWholeAmount(value.qris_mandiri) || !isWholeAmount(value.debit_mandiri)) return null;
+  if (value.note !== undefined && value.note !== null && typeof value.note !== 'string') return null;
+  const note = typeof value.note === 'string' ? value.note.trim() : '';
+  if (note.length > 500) return null;
+  return {
+    cash_real: value.cash_real,
+    cash_app: value.cash_app,
+    qris_mandiri: value.qris_mandiri,
+    debit_mandiri: value.debit_mandiri,
+    ...(note ? { note } : {}),
+  };
+}
+
 function isStrongTemporaryPin(pin: string): boolean {
   return !WEAK_PINS.has(pin) && !/^(\d)\1{5}$/.test(pin);
 }
@@ -2260,12 +2282,13 @@ export default {
           p_work_date: workDate,
         });
         if (error) return rpcErrorResponse(error);
-        if (!isObject(data) || !hasOnlyKeys(data, ['report', 'revision', 'finance', 'stock_lines', 'finance_draft'])
+        if (!isObject(data) || !hasOnlyKeys(data, ['report', 'revision', 'finance', 'stock_lines', 'finance_draft', 'closing_readiness'])
           || (data.report !== null && !isObject(data.report))
           || (data.revision !== null && !isObject(data.revision))
           || (data.finance !== null && !isObject(data.finance))
           || !Array.isArray(data.stock_lines)
-          || (data.finance_draft !== null && !isObject(data.finance_draft))) return invalidRpcResult();
+          || (data.finance_draft !== null && !isObject(data.finance_draft))
+          || !isObject(data.closing_readiness)) return invalidRpcResult();
         return successResponse(data);
       }
 
@@ -2273,15 +2296,11 @@ export default {
         if (!isOperationalRole(user.role)) return errorResponse('FORBIDDEN', 'Role ini tidak diizinkan menyimpan finance laporan.', 403);
         const body = await readJsonObject(request, ['work_date', 'expected_version', 'idempotency_key', 'finance']);
         const expectedVersion = body?.expected_version ?? null;
-        const finance = body?.finance;
+        const finance = normalizeReportFinance(body?.finance);
         if (!body || !isIsoDate(body.work_date)
           || (expectedVersion !== null && !isPositiveInteger(expectedVersion))
-          || !isUuid(body.idempotency_key) || !isObject(finance)
-          || !hasOnlyKeys(finance, ['cash_real', 'cash_app', 'qris_mandiri', 'debit_mandiri'])
-          || Object.keys(finance).length !== 4
-          || !isWholeAmount(finance.cash_real) || !isWholeAmount(finance.cash_app)
-          || !isWholeAmount(finance.qris_mandiri) || !isWholeAmount(finance.debit_mandiri)) {
-          return invalidPayload('work_date, expected_version, idempotency_key, dan empat nilai finance whole nonnegative wajib valid.');
+          || !isUuid(body.idempotency_key) || !finance) {
+          return invalidPayload('work_date, expected_version, idempotency_key, dan empat nilai finance whole nonnegative wajib valid; keterangan opsional maksimal 500 karakter.');
         }
         const { data, error } = await db.rpc('rpc_save_report_finance', {
           p_actor_id: user.id,
@@ -2334,12 +2353,10 @@ export default {
         const body = await readJsonObject(request, ['work_date', 'finance']);
         if (!body) return invalidPayload();
         const workDate = body.work_date || getWibDate();
-        const finance = {
-          cash_real: body.finance?.cash_real,
-          cash_app: body.finance?.cash_app,
-          qris_mandiri: body.finance?.qris_mandiri,
-          debit_mandiri: body.finance?.debit_mandiri,
-        };
+        const finance = normalizeReportFinance(body.finance);
+        if (!finance) {
+          return invalidPayload('Empat nilai finance whole nonnegative wajib valid; keterangan opsional maksimal 500 karakter.');
+        }
         const checksum = await sha256Buffer(new TextEncoder().encode(JSON.stringify({ outletId, workDate, finance })));
 
         const { data: rpcRes, error: rpcErr } = await db.rpc('rpc_submit_daily_report', {

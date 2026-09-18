@@ -77,4 +77,5 @@ export type FinanceData = {
   cash_app: number;
   qris_mandiri: number;
   debit_mandiri: number;
+  note?: string;
 };

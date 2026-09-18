@@ -13,7 +13,7 @@ export type ApiResponse<T = any> = {
 type LocationSample = { latitude: number; longitude: number; accuracy_m: number; client_sampled_at: string };
 type LocationFailure = 'DENIED' | 'TIMEOUT' | 'UNAVAILABLE';
 type DraftLine = { item_id: string; counted_qty: number; reason_code?: string | null; notes?: string | null };
-type ReportFinance = { cash_real: number; cash_app: number; qris_mandiri: number; debit_mandiri: number };
+type ReportFinance = { cash_real: number; cash_app: number; qris_mandiri: number; debit_mandiri: number; note?: string };
 type StockSnapshotLine = { item_id: string; counted_qty: number; reason_code?: string | null; notes?: string | null };
 type PhysicalBaselineLine = { item_id: string; counted_qty: number };
 type PayrollExportReceipt = { export_id: string; filename: string; file_path?: string; checksum: string; label: 'DRAFT' | 'FINALIZED'; idempotent_replay?: boolean };
