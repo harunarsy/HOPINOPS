@@ -53,8 +53,12 @@ function roundToScale(value: number, decimalScale: number) {
 /**
  * Operator mengetik jumlah dengan koma ATAU titik sebagai pemisah desimal:
  * "1,234" dan "1.234" sama-sama dibaca 1,234 (mis. 1 kilo 234 gram).
- * Satuan tanpa desimal (pcs/pack) membaca "1.234" sebagai 1.234 lalu dibulatkan,
- * sementara "1.234.567" (pemisah berulang) dibaca sebagai ribuan.
+ * "1.234.567" (pemisah berulang) selalu dibaca ribuan.
+ *
+ * Satu titik dengan tepat 3 angka di belakang juga dibaca ribuan — gaya
+ * penulisan Indonesia — kecuali pada satuan berskala 3 (kilo), karena di sana
+ * tiga angka desimal memang sah. Tanpa aturan ini, operator yang mengetik ulang
+ * angka yang tampil di layar ("2.443") akan tercatat 1000x lebih kecil.
  */
 export function parseQuantityInput(raw: string | null | undefined, decimalScale = 2): number | null {
   if (raw === null || raw === undefined) return null;
@@ -76,7 +80,8 @@ export function parseQuantityInput(raw: string | null | undefined, decimalScale 
     normalized = text.split(',').join('');
   } else if (dots === 1) {
     const [whole, fraction] = text.split('.');
-    normalized = decimalScale === 0 && fraction.length === 3 ? `${whole}${fraction}` : text;
+    const looksLikeThousands = fraction.length === 3 && /^[0-9]{1,3}$/.test(whole);
+    normalized = decimalScale < 3 && looksLikeThousands ? `${whole}${fraction}` : text;
   } else if (commas === 1) {
     normalized = text.replace(',', '.');
   }

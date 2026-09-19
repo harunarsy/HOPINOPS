@@ -95,9 +95,15 @@ describe('Input jumlah stok (koma & titik)', () => {
     expect(parseQuantityInput('1,234.5', 2)).toBe(1234.5);
   });
 
-  it('satuan tanpa desimal membaca 3 digit setelah titik sebagai ribuan', () => {
+  it('membaca satu titik dengan 3 angka sebagai ribuan, kecuali satuan berskala 3', () => {
     expect(parseQuantityInput('1.234', 0)).toBe(1234);
-    expect(parseQuantityInput('1.234', 2)).toBe(1.23);
+    expect(parseQuantityInput('1.234', 2)).toBe(1234);
+    expect(parseQuantityInput('2.443', 2)).toBe(2443);
+    expect(parseQuantityInput('1.000', 2)).toBe(1000);
+    expect(parseQuantityInput('0.500', 2)).toBe(500);
+    expect(parseQuantityInput('1.234', 3)).toBe(1.234);
+    expect(parseQuantityInput('1.23', 2)).toBe(1.23);
+    expect(parseQuantityInput('1.2345', 2)).toBe(1.23);
   });
 
   it('menolak input kosong atau bukan angka tanpa melempar error', () => {

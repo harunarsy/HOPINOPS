@@ -1443,7 +1443,7 @@ export function StockWorkspace({
                       )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
                       <small style={{ display: 'block', color: '#476058' }}>
-                        Patokan Server: {refVal === null ? 'Belum tersedia' : `${fmtNumber(refVal)} ${it.unit_code}`}
+                        Patokan Server: {refVal === null ? 'Belum tersedia' : `${formatQuantityInput(String(refVal), it.decimal_scale)} ${it.unit_code}`}
                       </small>
                       <small style={{ display: 'block', color: countState === 'VARIANCE' ? '#b45309' : '#496b5d', fontWeight: 700 }}>
                         Status: {countStateLabel[countState]}
@@ -1697,7 +1697,7 @@ export function StockWorkspace({
                         <small style={{ display: 'block', color: '#1e5b48', fontWeight: 700 }}>{sectionNameOf(it.id)}</small>
                       )}
                       <label htmlFor={inputId} style={{ display: 'block', fontWeight: 700 }}>{it.name}</label>
-                      <small style={{ display: 'block', color: '#476058' }}>Sisa Catatan: {sysVal === null ? 'Belum tersedia' : `${fmtNumber(sysVal)} ${it.unit_code}`}</small>
+                      <small style={{ display: 'block', color: '#476058' }}>Sisa Catatan: {sysVal === null ? 'Belum tersedia' : `${formatQuantityInput(String(sysVal), it.decimal_scale)} ${it.unit_code}`}</small>
                       <small style={{ display: 'block', color: countState === 'VARIANCE' ? '#b45309' : '#496b5d', fontWeight: 700 }}>
                         Status: {countStateLabel[countState]}
                       </small>
