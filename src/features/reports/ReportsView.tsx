@@ -208,6 +208,9 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
   const [shareMessage, setShareMessage] = useState('');
   const [templateState, setTemplateState] = useState<OperationState>('idle');
   const [templateMessage, setTemplateMessage] = useState('');
+  const [reviewNote, setReviewNote] = useState('');
+  const [reviewState, setReviewState] = useState<OperationState>('idle');
+  const [reviewMessage, setReviewMessage] = useState('');
   const [recipientId, setRecipientId] = useState('');
   const [shareReason, setShareReason] = useState('');
   const [bonusPreview, setBonusPreview] = useState<{ recorded_total: number; tier_percent: number; pool_amount: number; participant_count: number } | null>(null);
@@ -245,6 +248,9 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
     setShareMessage('');
     setTemplateState('idle');
     setTemplateMessage('');
+    setReviewNote('');
+    setReviewState('idle');
+    setReviewMessage('');
     setRecipientId('');
     setShareReason('');
     setBonusPreview(null);
@@ -622,6 +628,33 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
       setShareMessage(messageFrom(error, 'Laporan gagal dibagikan. Coba lagi untuk mengulang request yang sama.'));
     } finally {
       shareInFlightRef.current = false;
+    }
+  };
+
+  const handleReviewReport = async (status: 'APPROVED' | 'NEEDS_CLARIFICATION') => {
+    const revision = reportSnapshot?.revision;
+    if (!isManager || !revision || reviewState === 'loading') return;
+    const note = reviewNote.trim();
+    if (status === 'NEEDS_CLARIFICATION' && !note) return;
+
+    setReviewState('loading');
+    setReviewMessage(status === 'APPROVED' ? 'Menyetujui laporan...' : 'Mengirim permintaan klarifikasi...');
+    try {
+      await api.reviewReport(revision.id, status, status === 'NEEDS_CLARIFICATION' ? note : undefined);
+      setReviewState('success');
+      setReviewMessage(status === 'APPROVED'
+        ? 'Laporan ditandai APPROVED.'
+        : 'Laporan dikembalikan untuk klarifikasi. Pengirim dapat memperbaiki lalu mengirim ulang.');
+      setReviewNote('');
+      try {
+        setReportSnapshot(await api.getReport(selectedDate) as ReportSnapshot);
+        setManagerReports(await api.listReports());
+      } catch {
+        // Status review sudah tersimpan di server; kegagalan refresh tidak membatalkannya.
+      }
+    } catch (error) {
+      setReviewState('error');
+      setReviewMessage(messageFrom(error, 'Review laporan gagal. Coba lagi.'));
     }
   };
 
@@ -1103,6 +1136,54 @@ export function ReportsView({ isFinalizer, workDate, onRefresh, onBack }: Props)
                 {shareState === 'loading' ? 'Membagikan...' : 'Bagikan Laporan'}
               </button>
             </div>
+          </section>
+        )}
+
+        {isManager && reportSnapshot?.revision?.status === 'SUBMITTED' && (
+          <section aria-labelledby="review-report-title" style={{ marginTop: '16px', padding: '16px', borderRadius: '10px', border: '1px solid #e0ece6', background: '#f8faf9' }}>
+            <p className="eyebrow">REVIEW MANAJEMEN</p>
+            <h3 id="review-report-title">Review Laporan</h3>
+            <p className="muted" style={{ fontSize: '12px', marginTop: '6px' }}>
+              Setujui laporan, atau kembalikan untuk klarifikasi bila ada angka yang perlu diperbaiki. Pengirim tidak dapat mereview laporannya sendiri.
+            </p>
+            <div style={{ marginTop: '12px' }}>
+              <label htmlFor="report-review-note" style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#476058', marginBottom: '4px' }}>
+                Catatan (wajib untuk minta klarifikasi)
+              </label>
+              <textarea
+                id="report-review-note"
+                rows={3}
+                maxLength={1000}
+                value={reviewNote}
+                disabled={reviewState === 'loading'}
+                onChange={(event) => { setReviewNote(event.target.value); setReviewState('idle'); setReviewMessage(''); }}
+                placeholder="Contoh: gramasi Gula Pasir dan Chatramue perlu dihitung ulang."
+                style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #cddcd4', resize: 'vertical', font: 'inherit' }}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginTop: '12px' }}>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={reviewState === 'loading'}
+                onClick={() => { void handleReviewReport('APPROVED'); }}
+              >
+                Setujui Laporan
+              </button>
+              <button
+                type="button"
+                className="outline-button"
+                disabled={reviewState === 'loading' || !reviewNote.trim()}
+                onClick={() => { void handleReviewReport('NEEDS_CLARIFICATION'); }}
+              >
+                Minta Klarifikasi
+              </button>
+            </div>
+            {reviewState !== 'idle' && (
+              <p role={reviewState === 'error' ? 'alert' : 'status'} style={{ margin: '10px 0 0', color: reviewState === 'error' ? '#8f3f34' : '#1e5b48' }}>
+                {reviewMessage}
+              </p>
+            )}
           </section>
         )}
 

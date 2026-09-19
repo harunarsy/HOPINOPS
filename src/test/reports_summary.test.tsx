@@ -12,6 +12,7 @@ vi.mock('../lib/api', () => ({
     saveReportFinance: vi.fn(),
     submitReport: vi.fn(),
     shareReport: vi.fn(),
+    reviewReport: vi.fn(),
     previewBonus: vi.fn(),
   },
 }));
@@ -273,8 +274,7 @@ describe('ReportsView stock summary (E3/U05)', () => {
     expect(badge('Aman').style.color).toBe('#1e5b48');
   });
 
-  it('renders the stock report above the finance report', async () => {
-    render(
+  it('renders the stock report above the finance report', async () => {    render(
       <ReportsView isFinalizer={true} workDate="2026-09-06" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
     );
 
@@ -382,5 +382,34 @@ describe('ReportsView stock summary (E3/U05)', () => {
     expect(text.indexOf('KEUANGAN')).toBeGreaterThan(-1);
     expect(text.indexOf('KEUANGAN')).toBeLessThan(text.indexOf('STOK PENUTUP — BAR'));
     expect(text.indexOf('- gula:')).toBeLessThan(text.indexOf('- kopi:'));
+  });
+
+  it('lets a manager send a submitted report back for clarification', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getCurrentUser).mockResolvedValue({ role: 'OWNER' } as any);
+    vi.mocked(api.listReports).mockResolvedValue([]);
+    vi.mocked(api.getReport).mockResolvedValue({
+      ...snapshotWithStock,
+      report: { id: 'rep-1', status: 'SUBMITTED', current_revision: 1, version: 2 },
+      revision: { id: 'rev-1', public_id: 'PUB-1', status: 'SUBMITTED' },
+      closing_readiness: { bar: { confirmed_closings: 1 }, kitchen: { confirmed_closings: 1 } },
+    } as any);
+    vi.mocked(api.reviewReport).mockResolvedValue({ revision_id: 'rev-1', status: 'NEEDS_CLARIFICATION' } as any);
+
+    render(
+      <ReportsView isFinalizer={false} workDate="2026-09-18" onRefresh={vi.fn().mockResolvedValue(true)} onBack={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /review laporan/i })).toBeDefined();
+    });
+    expect((screen.getByRole('button', { name: /minta klarifikasi/i }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.type(screen.getByLabelText(/catatan/i), 'Gramasi Gula Pasir perlu dihitung ulang');
+    await user.click(screen.getByRole('button', { name: /minta klarifikasi/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(api.reviewReport)).toHaveBeenCalledWith('rev-1', 'NEEDS_CLARIFICATION', 'Gramasi Gula Pasir perlu dihitung ulang');
+    });
   });
 });
