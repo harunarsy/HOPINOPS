@@ -128,6 +128,7 @@ export function movementCategoryLabel(category: string): string {
     INTERNAL: 'Pemakaian Internal',
     TRANSFER_OUT: 'Pindahan Keluar',
     WASTE: 'Waste / Rusak',
+    VOID: 'Dibatalkan (salah input)',
   };
   return map[category] ?? category;
 }

@@ -16,7 +16,7 @@ type DraftSaveState = {
   receipt: DraftReceipt | null;
 };
 type CountState = 'UNCOUNTED' | 'MATCHED' | 'VARIANCE';
-type CorrectionCategory = 'PURCHASE' | 'RETURN_IN' | 'TRANSFER_IN' | 'USAGE' | 'INTERNAL' | 'TRANSFER_OUT' | 'WASTE';
+type CorrectionCategory = 'PURCHASE' | 'RETURN_IN' | 'TRANSFER_IN' | 'USAGE' | 'INTERNAL' | 'TRANSFER_OUT' | 'WASTE' | 'VOID';
 
 const newDraftSaveState = (): DraftSaveState => ({
   expectedVersion: null,
@@ -121,7 +121,7 @@ export function StockWorkspace({
   const [conflictDiscardItem, setConflictDiscardItem] = useState<QueueItem | null>(null);
   const [correctionMovement, setCorrectionMovement] = useState<any | null>(null);
   const [correctionQty, setCorrectionQty] = useState('');
-  const [correctionCategory, setCorrectionCategory] = useState<CorrectionCategory>('USAGE');
+  const [correctionCategory, setCorrectionCategory] = useState<CorrectionCategory>('VOID');
   const [correctionReason, setCorrectionReason] = useState('');
   const syncInFlightRef = useRef(false);
   const activeScopeRef = useRef('');
@@ -949,10 +949,9 @@ export function StockWorkspace({
   };
 
   const openCorrection = (movement: any) => {
-    const direction = movement.direction === 'IN' ? 'OUT' : 'IN';
     setCorrectionMovement(movement);
     setCorrectionQty(String(movement.quantity));
-    setCorrectionCategory(direction === 'IN' ? 'PURCHASE' : 'USAGE');
+    setCorrectionCategory('VOID');
     setCorrectionReason('');
     setCriticalError('');
   };
@@ -961,10 +960,10 @@ export function StockWorkspace({
     if (!correctionMovement) return;
     setCriticalError('');
     if (isMovementFinal) {
-      showCriticalError('Koreksi diblokir setelah finalisasi shift.');
+      showCriticalError('Shift sudah difinalisasi (handover/closing selesai), jadi movement tidak bisa dibatalkan lagi. Catat penyesuaian pada cycle berikutnya.');
       return;
     }
-    if (!await verifyEmptyQueue('koreksi movement')) return;
+    if (!await verifyEmptyQueue('pembatalan movement')) return;
 
     const correctionItem = items.find((item) => item.id === correctionMovement.item_id);
     const quantity = parseQuantityInput(correctionQty, correctionItem?.decimal_scale ?? 2);
@@ -972,11 +971,11 @@ export function StockWorkspace({
     const reason = correctionReason.trim();
     const expectedVersion = cycleVersionRef.current;
     if (quantity === null || quantity <= 0 || quantity !== originalQuantity) {
-      showCriticalError(`Jumlah koreksi harus sama dengan movement asal: ${fmtNumber(originalQuantity)}.`);
+      showCriticalError(`Jumlah pembatalan harus sama dengan movement asal: ${fmtNumber(originalQuantity)}.`);
       return;
     }
     if (!reason) {
-      showCriticalError('Alasan koreksi wajib diisi.');
+      showCriticalError('Alasan pembatalan wajib diisi.');
       return;
     }
     if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
@@ -1005,13 +1004,13 @@ export function StockWorkspace({
       cycleVersionRef.current = nextVersion;
       setCorrectionMovement(null);
       setCorrectionReason('');
-      showToast('Movement koreksi tersimpan sebagai catatan penyeimbang.');
+      showToast('Movement dibatalkan. Catatan penyeimbang tersimpan.');
       const refreshed = await onRefresh();
       if (!refreshed) {
-        showCriticalError('Koreksi berhasil, tetapi ledger gagal dimuat ulang.');
+        showCriticalError('Pembatalan berhasil, tetapi ledger gagal dimuat ulang.');
       }
     } catch (err: any) {
-      showCriticalError(getUserFacingError(err, 'Gagal menyimpan koreksi. Muat ulang ledger lalu coba lagi.'));
+      showCriticalError(getUserFacingError(err, 'Gagal membatalkan movement. Muat ulang ledger lalu coba lagi.'));
     } finally {
       setLoading(false);
     }
@@ -1628,9 +1627,9 @@ export function StockWorkspace({
                             className="outline-button"
                             onClick={() => openCorrection(m)}
                             disabled={loading || !queueStateLoaded || unresolvedCount > 0}
-                            title={unresolvedCount > 0 ? 'Selesaikan antrean perangkat sebelum koreksi.' : undefined}
+                            title={unresolvedCount > 0 ? 'Selesaikan antrean perangkat sebelum menghapus.' : 'Batalkan movement ini (salah input)'}
                           >
-                            Koreksi
+                            Hapus
                           </button>
                         )}
                       </div>
@@ -1953,11 +1952,11 @@ export function StockWorkspace({
         <div className="modal-backdrop" role="presentation">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="correction-dialog-title" style={{ maxWidth: '460px' }}>
             <div className="modal-head">
-              <h3 id="correction-dialog-title">Koreksi Perubahan Stok</h3>
+              <h3 id="correction-dialog-title">Hapus / Koreksi Perubahan Stok</h3>
               <button type="button" className="close-button" aria-label="Tutup dialog" onClick={() => setCorrectionMovement(null)} disabled={loading}>×</button>
             </div>
             <p className="muted" style={{ margin: '12px 0' }}>
-              Server menyimpan koreksi berlawanan arah. Movement asal tetap ada untuk audit.
+              Server menyimpan penyeimbang berlawanan arah bertanda VOID. Movement asal tetap ada untuk audit, dan saldo kembali seperti sebelum salah input.
             </p>
             {criticalError && <p className="form-error" role="alert">{criticalError}</p>}
             <label htmlFor="correction-quantity" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>
@@ -1973,13 +1972,14 @@ export function StockWorkspace({
               onBlur={() => setCorrectionQty(formatQuantityInput(correctionQty, items.find((item) => item.id === correctionMovement?.item_id)?.decimal_scale ?? 2))}
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px', border: '1px solid #cddcd4' }}
             />
-            <label htmlFor="correction-category" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Kategori koreksi</label>
+            <label htmlFor="correction-category" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Kategori penyeimbang</label>
             <select
               id="correction-category"
               value={correctionCategory}
               onChange={(event) => setCorrectionCategory(event.target.value as CorrectionCategory)}
               style={{ width: '100%', padding: '8px', borderRadius: '6px', marginBottom: '12px' }}
             >
+              <option value="VOID">Dibatalkan (salah input)</option>
               {correctionMovement.direction === 'OUT' ? (
                 <>
                   <option value="PURCHASE">Pembelian</option>
@@ -1995,7 +1995,7 @@ export function StockWorkspace({
                 </>
               )}
             </select>
-            <label htmlFor="correction-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Alasan koreksi</label>
+            <label htmlFor="correction-reason" style={{ display: 'block', fontSize: '12px', fontWeight: 700, marginBottom: '4px' }}>Alasan</label>
             <textarea
               id="correction-reason"
               autoFocus
@@ -2007,7 +2007,7 @@ export function StockWorkspace({
             <div className="modal-actions" style={{ marginTop: '16px' }}>
               <button type="button" className="outline-button" onClick={() => setCorrectionMovement(null)} disabled={loading}>Batal</button>
               <button type="button" className="primary-button" onClick={() => void handleCorrectMovement()} disabled={loading || !correctionReason.trim()}>
-                {loading ? 'Menyimpan...' : 'Simpan Koreksi'}
+                {loading ? 'Menyimpan...' : 'Simpan'}
               </button>
             </div>
           </div>

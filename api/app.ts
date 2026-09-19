@@ -2185,8 +2185,8 @@ export default {
           'category', 'quantity', 'idempotency_key', 'reason',
         ]);
         const validCategory = body?.direction === 'IN'
-          ? ['PURCHASE', 'RETURN_IN', 'TRANSFER_IN'].includes(body?.category)
-          : body?.direction === 'OUT' && ['USAGE', 'INTERNAL', 'TRANSFER_OUT', 'WASTE'].includes(body?.category);
+          ? ['PURCHASE', 'RETURN_IN', 'TRANSFER_IN', 'VOID'].includes(body?.category)
+          : body?.direction === 'OUT' && ['USAGE', 'INTERNAL', 'TRANSFER_OUT', 'WASTE', 'VOID'].includes(body?.category);
         if (!body || !isUuid(body.cycle_id) || !isPositiveInteger(body.expected_version)
           || !isUuid(body.original_movement_id) || !['IN', 'OUT'].includes(body.direction)
           || !validCategory || !isQuantity(body.quantity) || !isUuid(body.idempotency_key)

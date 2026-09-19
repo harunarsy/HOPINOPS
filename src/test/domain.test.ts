@@ -1,4 +1,4 @@
-import { parseQuantityInput, formatQuantityInput } from '../domain/rules';
+import { parseQuantityInput, formatQuantityInput, movementCategoryLabel } from '../domain/rules';
 import { describe, it, expect } from 'vitest';
 
 describe('HOPIN Domain & Business Rules', () => {
@@ -80,8 +80,7 @@ describe('HOPIN Domain & Business Rules', () => {
   });
 });
 
-describe('Input jumlah stok (koma & titik)', () => {
-  it('membaca koma dan titik sebagai desimal yang sama', () => {
+describe('Input jumlah stok (koma & titik)', () => {  it('membaca koma dan titik sebagai desimal yang sama', () => {
     expect(parseQuantityInput('1,234', 3)).toBe(1.234);
     expect(parseQuantityInput('1.234', 3)).toBe(1.234);
     expect(parseQuantityInput('0,5', 2)).toBe(0.5);
@@ -120,5 +119,17 @@ describe('Input jumlah stok (koma & titik)', () => {
     expect(formatQuantityInput('1.234', 3)).toBe('1,234');
     expect(formatQuantityInput('1234', 0)).toBe('1234');
     expect(formatQuantityInput('', 2)).toBe('');
+  });
+});
+
+describe('Label kategori stok bergerak', () => {
+  it('menerjemahkan kategori yang dipakai operator', () => {
+    expect(movementCategoryLabel('PURCHASE')).toBe('Pembelian');
+    expect(movementCategoryLabel('WASTE')).toBe('Waste / Rusak');
+    expect(movementCategoryLabel('VOID')).toBe('Dibatalkan (salah input)');
+  });
+
+  it('mempertahankan kategori tak dikenal apa adanya', () => {
+    expect(movementCategoryLabel('SESUATU')).toBe('SESUATU');
   });
 });
